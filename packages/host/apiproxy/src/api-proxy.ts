@@ -3341,11 +3341,34 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     },
 
     events: {
-      mux(_request, signal) {
+      mux(request, signal) {
         const queue = new FrameQueue<RpcRequest<MuxFrame>>()
         muxQueues.add(queue)
-        for (const session of ctx.sessions.list()) {
+        // Cursor resume: the client may pass the last seq it has per session.
+        // Events at/below the cursor are NOT replayed — the client already has
+        // them — so reconnect becomes an incremental tail instead of a full
+        // history refetch. Without a cursor the subscription is a full baseline
+        // (previous behavior).
+        const since: Record<SessionId, number> = request.payload.since ?? {}
+        const replay = (session: Session): void => {
+          const from = since[session.id]
+          // Replay events FIRST, then the subscribed baseline frame — the
+          // baseline is the client's signal that the tail is complete.
+          if (from !== undefined) {
+            for (const event of session.events) {
+              if (event.seq <= from) continue
+              const view = viewFor(
+                ctx, event,
+                callId => backscanArgs(session.events, callId),
+                ctx.agents.get(session.id),
+              )
+              queue.push(frame({ type: 'session/event', sessionId: session.id, event, ...view === undefined ? {} : { view } }))
+            }
+          }
           subscribeSession(queue, session)
+        }
+        for (const session of ctx.sessions.list()) {
+          replay(session)
         }
         for (const pending of pendingQuestions.values()) {
           queue.push({
@@ -3387,6 +3410,11 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         const openCalls = new Map<SessionId, Map<string, { name: string; args: unknown }>>()
         const disposers = [
           ctx.on('session/event', (session: Session, event: SessionEvent) => {
+            // Cursor resume: events at/below the client's cursor were already
+            // replayed from the in-memory log on subscribe — do not push them
+            // again as live.
+            const cursor = since[session.id]
+            if (cursor !== undefined && event.seq <= cursor) return
             if (event.type === 'tool/call') {
               const data = event.data as ToolCallData
               try {
