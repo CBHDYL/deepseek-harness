@@ -38,30 +38,43 @@ rm -rf "$BACKUP_G"
 cp -R "$G" "$BACKUP_G"
 echo "  全局备份 -> $BACKUP_G"
 
-echo "== 3/6 替换全局包 lib/（源码 build:lib 产物）=="
+echo "== 3/6 替换全局包 lib/（源码目录→全局包名 精确映射）=="
 replaced=0
-for pkg in \
-  dsh-agent-loop dsh-agent dsh-session dsh-system-prompt dsh-tools dsh-scope \
-  dsh-llm dsh-repeat-tool-reminder dsh-jobs-local dsh-mcp-client \
-  dsh-web-fetch-http dsh-host-apiproxy dsh-goal dsh-hooks-codex \
-  dsh-session-projection-cache dsh-sandbox-policy; do
-  srclib=$(find "$SRC/packages" -maxdepth 3 -type d -path "*/$pkg/lib" 2>/dev/null | head -1)
-  if [ -n "$srclib" ] && [ -d "$G/$pkg" ]; then
-    cp -R "$srclib/." "$G/$pkg/lib/"
+while read -r srcdir pkg; do
+  [ -z "$srcdir" ] && continue
+  if [ -d "$SRC/packages/$srcdir/lib" ] && [ -d "$G/$pkg" ]; then
+    cp -R "$SRC/packages/$srcdir/lib/." "$G/$pkg/lib/"
     replaced=$((replaced+1))
   fi
-done
+done <<'MAP'
+core/agent-loop dsh-agent-loop
+core/agent dsh-agent
+core/session dsh-session
+core/system-prompt dsh-system-prompt
+core/tools dsh-tools
+core/scope dsh-scope
+llm/llm dsh-llm
+guard/repeat-tool-reminder dsh-repeat-tool-reminder
+jobs/jobs-local dsh-jobs-local
+mcp/mcp-client dsh-mcp-client
+host/apiproxy dsh-host-apiproxy
+goal/goal dsh-goal
+session/session-projection-cache dsh-session-projection-cache
+sandbox/sandbox-policy dsh-sandbox-policy
+MAP
 echo "  替换 $replaced 个包 lib"
+cp "$SRC/vendor/include/lib/index.js" "$G/cordis-plugin-include/lib/index.js" || true
+echo "  vendor include 已替换"
 
 echo "== 4/6 复制新增 guard 包 + 覆盖 base patch =="
-for pkg in dsh-escalation-hider dsh-output-repetition-guard dsh-action-policy-guard; do
-  srcdir=$(find "$SRC/packages/guard" -maxdepth 1 -type d -name "$pkg" | head -1)
-  if [ -n "$srcdir" ] && [ -d "$srcdir/lib" ]; then
-    rm -rf "$G/$pkg"
-    mkdir -p "$G/$pkg"
-    cp "$srcdir/package.json" "$G/$pkg/"
-    cp -R "$srcdir/lib" "$G/$pkg/lib"
-    echo "  新增包 $pkg"
+for pkg in escalation-hider output-repetition-guard action-policy-guard; do
+  srcdir="$SRC/packages/guard/$pkg"
+  if [ -d "$srcdir/lib" ]; then
+    rm -rf "$G/dsh-$pkg"
+    mkdir -p "$G/dsh-$pkg"
+    cp "$srcdir/package.json" "$G/dsh-$pkg/"
+    cp -R "$srcdir/lib" "$G/dsh-$pkg/lib"
+    echo "  新增包 dsh-$pkg"
   fi
 done
 cp "$SRC/packages/bundle/base/cordis.patch.yml" "$G/dsh-base/cordis.patch.yml"
