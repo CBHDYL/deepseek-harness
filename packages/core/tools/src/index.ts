@@ -219,7 +219,19 @@ export interface ToolOutputDefinition {
 }
 
 /** A registered tool: its schema plus the execution function. */
+/**
+ * Declared execution effect of a tool, used by action-policy guards to gate
+ * side-effectful work. `'read-only'` tools mutate nothing; `'side-effectful'`
+ * tools may mutate state or reach the outside world. Undeclared tools are
+ * treated conservatively by the guard (configurable). This field is execution
+ * metadata only — it is never part of the model-visible schema.
+ */
+export type ToolEffects = 'read-only' | 'side-effectful'
+
 export interface ToolDefinition extends ToolSchema {
+  /** Declared execution effect for action-policy guards; absent = undeclared. */
+  readonly effects?: ToolEffects
+
   /** Mandatory canonical output declaration. */
   readonly output: ToolOutputDefinition
   /**

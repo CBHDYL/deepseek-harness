@@ -378,11 +378,9 @@ export class ReactLoopAgent implements Agent {
         turn, step, assembly.tools, system, this.session.deriveMessages(), signal,
       )
       attempt += 1
-      console.error('DBG attempt-start', attempt, request.provider)
       this.session.append('request/attempt-start', {
         turn, step, attempt, provider: request.provider, model: request.model,
       })
-      console.error('DBG attempt-start appended ok')
       const assembler = new BlockAssembler()
       const chunkSeqs: number[] = []
       try {
@@ -455,9 +453,7 @@ export class ReactLoopAgent implements Agent {
         continue
       }
 
-      console.error('DBG attempt-end ok append')
       this.session.append('request/attempt-end', { turn, step, attempt, outcome: 'ok' })
-      console.error('DBG attempt-end ok appended')
 
       const message = createAssistantMessage({
         content: assembler.blocks(),
