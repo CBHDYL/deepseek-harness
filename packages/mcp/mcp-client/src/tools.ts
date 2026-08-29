@@ -31,6 +31,12 @@ export interface ToolBridgeOptions {
   registrationFailure: 'contain' | 'throw'
   serverName: string
   toolCallTimeoutMs: number
+  /** Maximum tools/list pages to drain before aborting (server pagination loop guard). */
+  maxSyncPages: number
+  /** Maximum tools per server before aborting the sync. */
+  maxToolsPerServer: number
+  /** Whole-sync deadline in ms (a stalled server cannot wedge startup forever). */
+  syncTimeoutMs: number
 }
 
 /** State for one sync generation: the current set of disposers keyed by public name. */
@@ -148,8 +154,24 @@ export async function syncTools(
 ): Promise<ToolDisposers> {
   // Phase 1: fetch and build the next generation without touching the registry.
   const definitions = new Map<string, ToolDefinition>()
+  const seenCursors = new Set<string>()
   let cursor: string | undefined
+  let pages = 0
+  const syncDeadline = Date.now() + opts.syncTimeoutMs
   do {
+    pages += 1
+    if (pages > opts.maxSyncPages) {
+      throw new Error(`mcp-client(${opts.serverName}): tools/list exceeded ${opts.maxSyncPages} pages — aborting (server pagination loop)`)
+    }
+    if (Date.now() > syncDeadline) {
+      throw new Error(`mcp-client(${opts.serverName}): tools/list sync exceeded ${opts.syncTimeoutMs}ms — aborting`)
+    }
+    if (cursor !== undefined) {
+      if (seenCursors.has(cursor)) {
+        throw new Error(`mcp-client(${opts.serverName}): tools/list returned the same cursor twice — aborting (server pagination loop)`)
+      }
+      seenCursors.add(cursor)
+    }
     const response = await listToolsUncached(client, cursor)
     for (const tool of response.tools) {
       const publicName = publicToolName(opts.serverName, tool.name)
@@ -170,8 +192,11 @@ export async function syncTools(
         opts,
       ))
     }
+    if (definitions.size > opts.maxToolsPerServer) {
+      throw new Error(`mcp-client(${opts.serverName}): tool list exceeds ${opts.maxToolsPerServer} tools — aborting`)
+    }
     cursor = response.nextCursor
-  } while (cursor)
+  } while (cursor !== undefined)
 
   // Phase 2: swap generations.
   for (const dispose of previous.values()) dispose()

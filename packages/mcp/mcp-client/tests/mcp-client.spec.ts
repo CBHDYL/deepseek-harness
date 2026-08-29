@@ -147,6 +147,9 @@ const defaultOpts: ToolBridgeOptions = {
   registrationFailure: 'contain',
   serverName: 'srv',
   toolCallTimeoutMs: 60_000,
+  maxSyncPages: 50,
+  maxToolsPerServer: 2000,
+  syncTimeoutMs: 30_000,
 }
 
 // ---- Tests ----
@@ -212,6 +215,32 @@ describe('syncTools', () => {
 
     expect(ctx.tools.get('mcp__github__search')).toBeDefined()
     expect(ctx.tools.get('mcp__web__search')).toBeDefined()
+  })
+
+  it('aborts when the server repeats a pagination cursor (loop guard)', async () => {
+    const loopClient = {
+      request: async (request: { method: string }) => {
+        if (request.method !== 'tools/list') throw new Error('unexpected MCP request')
+        return { tools: [], nextCursor: 'same-cursor' }
+      },
+    }
+    await expect(syncTools(loopClient as never, ctx, defaultOpts, new Map()))
+      .rejects.toThrow(/same cursor twice/)
+  })
+
+  it('aborts when pagination exceeds maxSyncPages', async () => {
+    // Each page adds a tool with a distinct name (a duplicate raw name would
+    // fire the duplicate-name error first), so the page cap is what trips.
+    let page = 0
+    const loopClient = {
+      request: async () => {
+        page += 1
+        if (page > 51) return { tools: [], nextCursor: undefined }
+        return { tools: [{ name: `t${page}`, inputSchema: { type: 'object' } }], nextCursor: `cursor-${page}` }
+      },
+    }
+    await expect(syncTools(loopClient as never, ctx, { ...defaultOpts, maxSyncPages: 50 }, new Map()))
+      .rejects.toThrow(/exceeded 50 pages/)
   })
 
   it('coexists with a native tool of the same raw name', async () => {

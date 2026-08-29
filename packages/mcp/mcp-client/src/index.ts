@@ -31,7 +31,14 @@ export const name = 'mcp-client'
 export const inject = ['tools']
 
 /** Default timeout for individual MCP tool calls (ms). */
+/** Default per-tool-call timeout in milliseconds. */
 const DEFAULT_TOOL_CALL_TIMEOUT_MS = 60_000
+/** Default maximum tools/list pages drained per sync. */
+const DEFAULT_MAX_SYNC_PAGES = 50
+/** Default maximum tools registered per server. */
+const DEFAULT_MAX_TOOLS_PER_SERVER = 2000
+/** Default whole-sync deadline in milliseconds. */
+const DEFAULT_SYNC_TIMEOUT_MS = 30_000
 
 /** Valid `serverName`, kept below the public tool-name budget. */
 const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
@@ -66,6 +73,12 @@ export interface StdioConfig {
   cwd: string
   /** Per-tool-call timeout in milliseconds. */
   toolCallTimeoutMs: number
+  /** Maximum tools/list pages to drain before aborting (default 50). */
+  maxSyncPages?: number
+  /** Maximum tools per server before aborting the sync (default 2000). */
+  maxToolsPerServer?: number
+  /** Whole-sync deadline in ms (default 30000). */
+  syncTimeoutMs?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -88,6 +101,12 @@ export interface StreamableHttpConfig {
   headers: Record<string, string>
   /** Per-tool-call timeout in milliseconds. */
   toolCallTimeoutMs: number
+  /** Maximum tools/list pages to drain before aborting (default 50). */
+  maxSyncPages?: number
+  /** Maximum tools per server before aborting the sync (default 2000). */
+  maxToolsPerServer?: number
+  /** Whole-sync deadline in ms (default 30000). */
+  syncTimeoutMs?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -113,6 +132,9 @@ export const Config = z.union([
     env: z.dict(String).default({}),
     cwd: z.string().default(''),
     toolCallTimeoutMs: z.number().default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
+    maxSyncPages: z.number().default(DEFAULT_MAX_SYNC_PAGES),
+    maxToolsPerServer: z.number().default(DEFAULT_MAX_TOOLS_PER_SERVER),
+    syncTimeoutMs: z.number().default(DEFAULT_SYNC_TIMEOUT_MS),
     failOnStartupError: z.boolean().default(false),
     reconnect: Reconnect,
   }),
@@ -122,6 +144,9 @@ export const Config = z.union([
     url: z.string().required(),
     headers: z.dict(String).default({}),
     toolCallTimeoutMs: z.number().default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
+    maxSyncPages: z.number().default(DEFAULT_MAX_SYNC_PAGES),
+    maxToolsPerServer: z.number().default(DEFAULT_MAX_TOOLS_PER_SERVER),
+    syncTimeoutMs: z.number().default(DEFAULT_SYNC_TIMEOUT_MS),
     failOnStartupError: z.boolean().default(false),
     reconnect: Reconnect,
   }),
