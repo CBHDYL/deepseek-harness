@@ -84,4 +84,4 @@ else
   echo "已回滚到 $BACKUP" >&2
   exit 1
 fi
-echo "== 5/5 完成。备份在 $BACKUP（确认无误后可删除）=="
+echo "== 5/5 完成。备份在 ${BACKUP}（确认无误后可删除）=="
