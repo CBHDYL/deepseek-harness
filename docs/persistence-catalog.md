@@ -90,7 +90,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }[T]
 ```
 
-Sources: [`packages/core/session/src/types.ts:360`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:367`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:396`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:428`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:371`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:378`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:407`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:439`](../packages/core/session/src/types.ts)
 
 ## Events
 
@@ -474,6 +474,37 @@ Source: [`packages/hooks/hook-protocol/src/types.ts:19`](../packages/hooks/hook-
 
 Source: [`packages/hooks/hook-protocol/src/types.ts:31`](../packages/hooks/hook-protocol/src/types.ts)
 
+### `job/*`
+
+<a id="jobend--log-only"></a>
+
+#### `job/end` — log-only
+
+```ts persistence-catalog
+/**
+ * The terminal settlement of a {@link SessionEventMap['job/start']} job.
+ */
+'job/end': { jobId: string; status: 'completed' | 'failed' | 'killed'; detail?: string; finishedAt: number }
+```
+
+Source: [`packages/core/session/src/types.ts:344`](../packages/core/session/src/types.ts)
+
+<a id="jobstart--log-only"></a>
+
+#### `job/start` — log-only
+
+```ts persistence-catalog
+/**
+ * One background job opened for this session's owner agent. Durable
+ * orchestration journal: a crash or restart can reconstruct which jobs were
+ * in flight and how they settled, even though the job registry itself is
+ * process-local.
+ */
+'job/start': { jobId: string; kind: string; label: string }
+```
+
+Source: [`packages/core/session/src/types.ts:340`](../packages/core/session/src/types.ts)
+
 ### `llm/*`
 
 <a id="llmretry--log-only"></a>
@@ -674,7 +705,7 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 'session/end-seed': Record<string, never>
 ```
 
-Source: [`packages/core/session/src/types.ts:356`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:367`](../packages/core/session/src/types.ts)
 
 <a id="sessiontitle--log-only"></a>
 

@@ -34,6 +34,8 @@ export const KNOWN_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   'goal/change',
   'hook/invoked',
   'hook/result',
+  'job/end',
+  'job/start',
   'llm/retry',
   'llm/retry-started',
   'permission/preset',

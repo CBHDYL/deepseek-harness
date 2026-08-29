@@ -332,6 +332,17 @@ export interface SessionEventMap {
     failure?: LlmFailure
   }
   /**
+   * One background job opened for this session's owner agent. Durable
+   * orchestration journal: a crash or restart can reconstruct which jobs were
+   * in flight and how they settled, even though the job registry itself is
+   * process-local.
+   */
+  'job/start': { jobId: string; kind: string; label: string }
+  /**
+   * The terminal settlement of a {@link SessionEventMap['job/start']} job.
+   */
+  'job/end': { jobId: string; status: 'completed' | 'failed' | 'killed'; detail?: string; finishedAt: number }
+  /**
    * Marks the end of a constructor seed. Events before it have smaller seq
    * values and came from the seed (resume, fork, or replay); this lifecycle
    * produced none of them. This log-only event is the durable projection of

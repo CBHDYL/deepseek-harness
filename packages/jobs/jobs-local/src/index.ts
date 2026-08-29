@@ -152,6 +152,17 @@ export class LocalJobRegistry extends JobRegistry {
     this.counters.set(spec.kind, count)
     const id = JobId(`${spec.kind}-${count}`)
 
+    // Durable orchestration journal: record the job's opening in its owner's
+    // session so a crash or restart can reconstruct in-flight work even
+    // though the registry itself is process-local.
+    if (spec.owner !== undefined) {
+      try {
+        spec.owner.session.append('job/start', { jobId: String(id), kind: spec.kind, label: spec.label })
+      } catch (error: unknown) {
+        this.selfCtx.logger.warn(`jobs: could not journal job/start for ${String(id)}: ${String(error)}`)
+      }
+    }
+
     let markSettled!: () => void
     const settled = new Promise<void>((resolve) => { markSettled = resolve })
     const job: TrackedTask = {
@@ -419,6 +430,18 @@ export class LocalJobRegistry extends JobRegistry {
     job.detail = outcome.detail
     job.output = outcome.output
     job.finishedAt = Date.now()
+    if (job.owner !== undefined) {
+      try {
+        job.owner.session.append('job/end', {
+          jobId: String(job.id),
+          status: job.status as 'completed' | 'failed' | 'killed',
+          ...job.detail === undefined ? {} : { detail: job.detail },
+          finishedAt: job.finishedAt,
+        })
+      } catch (error: unknown) {
+        this.selfCtx.logger.warn(`jobs: could not journal job/end for ${job.id}: ${String(error)}`)
+      }
+    }
     if (job.waiters > 0) job.reported = true
     const snapshot = this.snapshot(job)
     const waitResolvers = [...job.waitResolvers]
