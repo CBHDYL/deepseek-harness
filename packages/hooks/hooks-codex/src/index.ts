@@ -37,6 +37,9 @@ import {
 import { parseCodexConfig, type CodexHookConfig } from './config.ts'
 /* jscpd:ignore-end */
 
+/** Default Stop-hook continuation budget per turn (see {@link Config.stopContinuationLimit}). */
+const DEFAULT_STOP_CONTINUATION_LIMIT = 8
+
 export const name = 'hooks-codex'
 export const inject = ['shell']
 
@@ -78,9 +81,6 @@ let handlerCounter = 0
 function nextHandlerId(point: string): string {
   return `codex:${point}:${++handlerCounter}`
 }
-
-/** Default Stop-hook continuation budget per turn (see {@link Config.stopContinuationLimit}). */
-const DEFAULT_STOP_CONTINUATION_LIMIT = 8
 
 const PLUGIN_SOURCE: MessageSource = { kind: 'plugin', plugin: 'hooks-codex' }
 

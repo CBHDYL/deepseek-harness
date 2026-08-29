@@ -3,15 +3,16 @@
  * enforces time and size limits, classifies and decodes text, and leaves presentation to
  * `@deepseek-ai/dsh-tool-web`. Requests carry no browser cookies or ambient credentials.
  *
- * Private-network and SSRF protection is not implemented; do not enable this provider where
- * it can reach sensitive internal targets.
+ * Private-network and SSRF protection resolves every hostname and refuses
+ * loopback/private/link-local/multicast targets before any socket opens.
  * @module @deepseek-ai/dsh-web-fetch-http/provider
  */
 
 import { WebError } from '@deepseek-ai/dsh-web'
 import type { WebFetchBody, WebFetchProvider, WebFetchRequest, WebFetchResult } from '@deepseek-ai/dsh-web'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
-import { classifyContentType, decoderForCharset, isSameOrigin, parseCharset, validateFetchUrl } from './policy.ts'
+import { lookup } from 'node:dns/promises'
+import { classifyContentType, decoderForCharset, isBlockedAddress, isSameOrigin, parseCharset, validateFetchUrl } from './policy.ts'
 
 /** Resolved provider limits (the plugin's schemastery Config supplies defaults). */
 export interface HttpFetchLimits {
@@ -27,6 +28,13 @@ export interface HttpFetchLimits {
   maxRedirects: number
   /** `User-Agent` header sent on every request. */
   userAgent: string
+  /**
+   * Resolve every hostname and refuse targets whose addresses are loopback,
+   * private, link-local, multicast, or unspecified (SSRF protection). Default
+   * true. DNS-rebinding TOCTOU between this check and the socket connect is a
+   * documented residual; the check closes the direct private-network vector.
+   */
+  blockPrivateAddresses: boolean
 }
 
 /** Stable id this provider registers under. */
@@ -58,6 +66,7 @@ export class HttpFetchProvider implements WebFetchProvider {
     let redirectsFollowed = 0
 
     for (;;) {
+      await this.checkTarget(currentUrl)
       const response = await this.requestOnce(currentUrl, signal)
 
       if (isRedirectStatus(response.status)) {
@@ -97,6 +106,38 @@ export class HttpFetchProvider implements WebFetchProvider {
       }
 
       return await this.readBody(response, currentUrl, signal)
+    }
+  }
+
+  /**
+   * SSRF gate: when enabled, resolve the target hostname and refuse the
+   * request if ANY resolved address is loopback/private/link-local/multicast/
+   * unspecified (see {@link isBlockedAddress}). Runs for every hop, including
+   * same-origin redirects, so a redirect cannot become a back door to an
+   * internal target.
+   */
+  private async checkTarget(url: URL): Promise<void> {
+    if (!this.limits.blockPrivateAddresses) return
+    const hostname = url.hostname
+    if (isBlockedAddress(hostname)) {
+      throw new WebError(`blocked target "${hostname}" (loopback/private/link-local range)`, 'WEB_BLOCKED_URL')
+    }
+    let addresses: string[]
+    try {
+      const resolved = await lookup(hostname, { all: true })
+      addresses = resolved.map(entry => entry.address)
+    } catch (error: unknown) {
+      throw new WebError(`DNS resolution failed for "${hostname}"`, 'WEB_PROVIDER_ERROR', { cause: error })
+    }
+    if (addresses.length === 0) {
+      throw new WebError(`no addresses resolved for "${hostname}"`, 'WEB_PROVIDER_ERROR')
+    }
+    const blocked = addresses.find(address => isBlockedAddress(address))
+    if (blocked !== undefined) {
+      throw new WebError(
+        `host "${hostname}" resolves to blocked address "${blocked}" (loopback/private/link-local range)`,
+        'WEB_BLOCKED_URL',
+      )
     }
   }
 

@@ -54,6 +54,45 @@ export function isSameOrigin(a: URL, b: URL): boolean {
 }
 
 /**
+ * Whether an IP address must never be fetched by an agent-driven HTTP tool:
+ * loopback, RFC1918 private, link-local, CGNAT, benchmarking, multicast,
+ * unspecified, IPv6 ULA/link-local/multicast, and IPv4-mapped forms of any of
+ * the above. The 169.254.0.0/16 range also covers cloud metadata endpoints
+ * (169.254.169.254). Unparseable input is treated as blocked (fail closed).
+ */
+export function isBlockedAddress(address: string): boolean {
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address)
+  if (v4 !== null) {
+    const a = Number(v4[1])
+    const b = Number(v4[2])
+    if (a > 255 || b > 255 || Number(v4[3]) > 255 || Number(v4[4]) > 255) return true
+    if (a === 0) return true // 0.0.0.0/8 unspecified
+    if (a === 10) return true // 10.0.0.0/8 private
+    if (a === 127) return true // 127.0.0.0/8 loopback
+    if (a === 169 && b === 254) return true // 169.254.0.0/16 link-local + cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true // 172.16.0.0/12 private
+    if (a === 192 && b === 168) return true // 192.168.0.0/16 private
+    if (a === 100 && b >= 64 && b <= 127) return true // 100.64.0.0/10 CGNAT
+    if (a === 198 && (b === 18 || b === 19)) return true // 198.18.0.0/15 benchmarking
+    if (a >= 224) return true // 224.0.0.0/4 multicast + reserved
+    return false
+  }
+  const lower = address.toLowerCase()
+  const isV6 = lower.includes(':')
+  if (isV6) {
+    if (lower === '::' || lower === '::1') return true // unspecified + loopback
+    if (lower.startsWith('fc') || lower.startsWith('fd')) return true // fc00::/7 ULA
+    if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) return true // fe80::/10 link-local
+    if (lower.startsWith('ff')) return true // ff00::/8 multicast
+    const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
+    const mappedV4 = mapped?.[1]
+    if (mappedV4 !== undefined) return isBlockedAddress(mappedV4) // IPv4-mapped IPv6
+    return false
+  }
+  return true // not a parseable IP → fail closed
+}
+
+/**
  * Classify a response `Content-Type` into a decodable body kind, or `undefined`
  * for an unsupported (e.g. binary) type. `text/html` and `application/xhtml+xml`
  * are `html`; other `text/*` plus a few structured text types are `text`.

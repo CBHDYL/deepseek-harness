@@ -6,7 +6,7 @@ import WebRuntime from '@deepseek-ai/dsh-web'
 import { HttpFetchProvider, LOCAL_FETCH_PROVIDER_ID } from '@deepseek-ai/dsh-web-fetch-http'
 import type { HttpFetchLimits } from '@deepseek-ai/dsh-web-fetch-http'
 import * as fetchPlugin from '@deepseek-ai/dsh-web-fetch-http'
-import { classifyContentType, decoderForCharset, isSameOrigin, parseCharset, validateFetchUrl } from '../src/policy.ts'
+import { classifyContentType, decoderForCharset, isBlockedAddress, isSameOrigin, parseCharset, validateFetchUrl } from '../src/policy.ts'
 
 const limits: HttpFetchLimits = {
   maxUrlLength: 2048,
@@ -15,6 +15,7 @@ const limits: HttpFetchLimits = {
   timeoutMs: 5_000,
   maxRedirects: 5,
   userAgent: 'test-agent/1.0',
+  blockPrivateAddresses: false,
 }
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void
@@ -62,6 +63,25 @@ describe('policy helpers', () => {
     expect(isSameOrigin(new URL('https://a.com/x'), new URL('https://a.com/y'))).toBe(true)
     expect(isSameOrigin(new URL('https://a.com'), new URL('https://b.com'))).toBe(false)
     expect(isSameOrigin(new URL('http://a.com'), new URL('https://a.com'))).toBe(false)
+  })
+
+  it('classifies blocked addresses (SSRF ranges) fail-closed', () => {
+    for (const address of ['127.0.0.1', '127.8.8.8', '10.0.0.1', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.169.254', '100.64.0.1', '100.127.1.1', '198.18.0.1', '224.0.0.1', '0.0.0.0', '::1', '::', 'fc00::1', 'fd12:3456::1', 'fe80::1', 'ff02::1', '::ffff:127.0.0.1', 'not-an-ip']) {
+      expect(isBlockedAddress(address), address).toBe(true)
+    }
+    for (const address of ['8.8.8.8', '1.1.1.1', '93.184.216.34', '172.32.0.1', '2001:4860:4860::8888', '2606:4700:4700::1111']) {
+      expect(isBlockedAddress(address), address).toBe(false)
+    }
+  })
+
+  it('refuses a loopback target when SSRF blocking is enabled', async () => {
+    const result = provider({ blockPrivateAddresses: true }).fetch({ url: base })
+    await expect(result).rejects.toMatchObject({ code: 'WEB_BLOCKED_URL' })
+  })
+
+  it('refuses localhost (resolves to loopback) when SSRF blocking is enabled', async () => {
+    const result = provider({ blockPrivateAddresses: true }).fetch({ url: base.replace('127.0.0.1', 'localhost') })
+    await expect(result).rejects.toMatchObject({ code: 'WEB_BLOCKED_URL' })
   })
 
   it('parses the charset parameter', () => {
@@ -371,7 +391,7 @@ describe('web-fetch-http plugin registration', () => {
   it('registers the provider into ctx.web (HMR-safe)', async () => {
     const ctx = new Context()
     await ctx.plugin(WebRuntime, { fetchProvider: LOCAL_FETCH_PROVIDER_ID })
-    const fiber = await ctx.plugin(fetchPlugin, {})
+    const fiber = await ctx.plugin(fetchPlugin, { blockPrivateAddresses: false })
     await expect(ctx.web.fetch({ url: `${base}/` }))
       .resolves.toMatchObject({ statusCode: 200 })
     await fiber.dispose()
@@ -421,7 +441,7 @@ describe('web-fetch-http plugin registration', () => {
   it('accepts maxRedirects: 0 (follow no redirects) as valid config', async () => {
     const ctx = new Context()
     await ctx.plugin(WebRuntime, { fetchProvider: LOCAL_FETCH_PROVIDER_ID })
-    const fiber = await ctx.plugin(fetchPlugin, { maxRedirects: 0 })
+    const fiber = await ctx.plugin(fetchPlugin, { maxRedirects: 0, blockPrivateAddresses: false })
     await expect(ctx.web.fetch({ url: `${base}/` }))
       .resolves.toMatchObject({ statusCode: 200 })
     await fiber.dispose()
