@@ -366,6 +366,123 @@ describe('fold onto the downstream decision', () => {
   })
 })
 
+describe('circuit-breaker veto', () => {
+  async function countingHarness(vetoAt: number, thresholds = [3, 5, 8]): Promise<{ ctx: Context; count: () => number }> {
+    const ctx = await harness({ thresholds, vetoAt })
+    let executions = 0
+    ctx.tools.register(defineContentToolFixture({
+      name: 'counted',
+      description: 'c',
+      parameters: {},
+      async execute() {
+        executions += 1
+        return [{ type: 'text', text: 'ok' }]
+      },
+    }))
+    return { ctx, count: () => executions }
+  }
+
+  it('denies the Nth identical call before its body runs, after reminders at lower thresholds', async () => {
+    const { ctx, count } = await countingHarness(4)
+    const adapter = new MockAdapter([
+      toolCallResponse('c1', 'counted', { q: 'same' }),
+      toolCallResponse('c2', 'counted', { q: 'same' }),
+      toolCallResponse('c3', 'counted', { q: 'same' }),
+      toolCallResponse('c4', 'counted', { q: 'same' }),
+      toolCallResponse('c5', 'counted', { q: 'same' }),
+      textResponse('done'),
+    ])
+    ctx.llm.registerAdapter(['mock'], adapter)
+    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    // The breaker denies calls 4 and 5 BEFORE dispatch: the body ran exactly 3 times.
+    expect(count()).toBe(3)
+    const results = [...agent.session.events].filter((e): e is SessionEvent<'tool/result'> => e.type === 'tool/result')
+    expect(results).toHaveLength(5)
+    expect(results[0]!.data.message.content[0].isError).toBe(false)
+    expect(results[3]!.data.message.content[0].isError).toBe(true)
+    expect(results[4]!.data.message.content[0].isError).toBe(true)
+    const text = (block: unknown) => (block as { content: { text?: string }[] }).content.map(b => b.text ?? '').join('')
+    expect(text(results[3]!.data.message.content[0])).toContain('Circuit breaker')
+    expect(text(results[4]!.data.message.content[0])).toContain('Circuit breaker')
+    // Reminders still fire at 3 (gentle) and 5 (detailed) — veto is additive, not replacing.
+    expect(reminders(agent).length).toBe(2)
+  })
+
+  it('vetoes same-failure calls even when arguments vary (failure fingerprint chain)', async () => {
+    const ctx = await harness({ thresholds: [7], vetoAt: 3 })
+    let executions = 0
+    ctx.tools.register(defineContentToolFixture({
+      name: 'boom',
+      description: 'b',
+      parameters: {},
+      async execute() {
+        executions += 1
+        throw new Error('sealed')
+      },
+    }))
+    const adapter = new MockAdapter([
+      toolCallResponse('c1', 'boom', { q: 1 }),
+      toolCallResponse('c2', 'boom', { q: 2 }),
+      toolCallResponse('c3', 'boom', { q: 3 }),
+      textResponse('done'),
+    ])
+    ctx.llm.registerAdapter(['mock'], adapter)
+    const agent = ctx.agentLoop.create(SessionId('a2'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    // The third same-failure call runs (outcome is unknowable in advance) but its
+    // result is replaced by the breaker's feedback — the model sees the veto.
+    expect(executions).toBe(3)
+    const results = [...agent.session.events].filter((e): e is SessionEvent<'tool/result'> => e.type === 'tool/result')
+    expect(results[2]!.data.message.content[0].isError).toBe(true)
+    const text = (block: unknown) => (block as { content: { text?: string }[] }).content.map(b => b.text ?? '').join('')
+    expect(text(results[2]!.data.message.content[0])).toContain('Circuit breaker')
+  })
+
+  it('does not veto when the same tool succeeds with identical arguments (progress, not a loop)', async () => {
+    const { ctx, count } = await countingHarness(3)
+    const adapter = new MockAdapter([
+      toolCallResponse('c1', 'counted', { q: 1 }),
+      toolCallResponse('c2', 'counted', { q: 1 }),
+      toolCallResponse('c3', 'counted', { q: 1 }),
+      toolCallResponse('c4', 'counted', { q: 1 }),
+      textResponse('done'),
+    ])
+    ctx.llm.registerAdapter(['mock'], adapter)
+    const agent = ctx.agentLoop.create(SessionId('a3'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    // Identical arguments, all successful: the args chain still trips the veto at 3 —
+    // an identical-success loop is exactly the loop worth breaking (same call, same args, no progress signal).
+    expect(count()).toBe(2)
+    const results = [...agent.session.events].filter((e): e is SessionEvent<'tool/result'> => e.type === 'tool/result')
+    expect(results[2]!.data.message.content[0].isError).toBe(true)
+  })
+
+  it('leaves behavior unchanged when vetoAt is not configured (advisory only)', async () => {
+    const ctx = await harness()
+    const adapter = new MockAdapter([
+      toolCallResponse('c1', 'probe', { q: 1 }),
+      toolCallResponse('c2', 'probe', { q: 1 }),
+      toolCallResponse('c3', 'probe', { q: 1 }),
+      toolCallResponse('c4', 'probe', { q: 1 }),
+      textResponse('done'),
+    ])
+    ctx.llm.registerAdapter(['mock'], adapter)
+    const agent = ctx.agentLoop.create(SessionId('a4'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    const results = [...agent.session.events].filter((e): e is SessionEvent<'tool/result'> => e.type === 'tool/result')
+    expect(results.every(r => !r.data.message.content[0].isError)).toBe(true)
+  })
+})
+
 describe('config validation fails loud', () => {
   async function spine(): Promise<Context> {
     const ctx = new Context()

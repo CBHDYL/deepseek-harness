@@ -348,6 +348,7 @@ export class ReactLoopAgent implements Agent {
         for await (const chunk of stream) {
           signal.throwIfAborted()
           chunkSeqs.push(this.session.append('assistant/chunk', { turn, step, chunk }).seq)
+          this.dispatch.emit('agent/stream-chunk', { turn, step, chunk })
           assembler.push(chunk)
         }
         signal.throwIfAborted()

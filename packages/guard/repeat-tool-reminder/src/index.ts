@@ -12,7 +12,7 @@ import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { MessageSource } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
-import type { PostToolDecision, ToolExecution } from '@deepseek-ai/dsh-tools'
+import type { PostToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 
 export const name = 'repeat-tool-reminder'
 
@@ -40,6 +40,14 @@ export interface Config {
    * always compares the FULL canonical string).
    */
   argumentsPreviewChars?: number
+  /**
+   * Optional circuit breaker: after this many consecutive identical calls —
+   * or consecutive calls failing with the same failure fingerprint, even when
+   * arguments differ — the guard DENIES the call before dispatch (identical
+   * arguments) or blocks its result with breaker feedback (same-failure run).
+   * Default undefined = advisory reminders only (fully backward compatible).
+   */
+  vetoAt?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -47,6 +55,9 @@ export const Config: z<Config> = z.object({
   include: z.array(z.string()).default([]),
   exclude: z.array(z.string()).default([]),
   argumentsPreviewChars: z.number().default(500),
+  // schemastery has no optional/int combinators; 0 is the "disabled" sentinel
+  // for the circuit breaker (validated in apply).
+  vetoAt: z.number().default(0),
 })
 
 /**
@@ -76,6 +87,40 @@ function detailedReminder(toolName: string, count: number, canonicalArguments: s
     + 'these exact arguments again. Inspect the latest result and choose a '
     + 'different action, different arguments, or finish the task if enough '
     + 'evidence has been gathered.'
+}
+
+/**
+ * Circuit-breaker feedback text. Delivered as the call's error result when
+ * `vetoAt` is configured and the same call (or the same failure) repeats past
+ * the threshold — the model sees this instead of a silent retry.
+ */
+function vetoFeedback(toolName: string, count: number, dimension: 'identical' | 'failure'): string {
+  return `Circuit breaker: ${toolName} has been invoked ${count} times with the same ${dimension === 'identical' ? 'arguments in a row' : 'failure in a row'} `
+    + `(vetoAt=${count}). This call was ${dimension === 'identical' ? 'denied before dispatch' : 'blocked after it failed again'}. `
+    + 'Do not call this tool the same way again. Inspect the latest result, choose a different '
+    + 'action or different arguments, or finish the task.'
+}
+
+/**
+ * Normalize a failure message into a stable fingerprint: quoted values (paths,
+ * arguments, modes) are collapsed and whitespace is flattened, so the same
+ * semantic failure with different embedded values — e.g. a sandbox escalation
+ * error whose quoted modes or justification wording drift — still fingerprints
+ * identically, while genuinely different failures reset the chain.
+ */
+function normalizeFailureMessage(message: string): string {
+  return message.replace(/"[^"]*"/g, '""').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * The failure dimension of a call result: `code:…` when the failure carries a
+ * structured HarnessError code, else `msg:…` over the normalized message.
+ * Successful results have no fingerprint — they never advance the failure chain.
+ */
+function failureFingerprint(result: ToolExecutionResult): string | undefined {
+  if (!result.isError) return undefined
+  if (result.error.info?.code) return `code:${result.error.info.code}`
+  return `msg:${normalizeFailureMessage(result.error.message)}`
 }
 
 /**
@@ -140,12 +185,23 @@ function validateThresholds(values: number[]): number[] {
   return [...values].sort((a, b) => a - b)
 }
 
+/** Validate the optional circuit-breaker threshold (fail-loud, like `thresholds`); 0/undefined = disabled. */
+function validateVetoAt(value: number | undefined): number | undefined {
+  if (value === undefined || value === 0) return undefined
+  if (!Number.isInteger(value) || value < 2) {
+    throw new Error(`repeat-tool-reminder: invalid vetoAt ${value} — must be an integer >= 2`)
+  }
+  return value
+}
+
 /**
  * Prepend the guard's reminder while preserving every downstream context's
- * source and metadata.
+ * source and metadata. A missing reminder (the circuit breaker can trip on the
+ * failure dimension at a count below the reminder thresholds) contributes
+ * nothing — an `undefined` entry would not survive the tool-result snapshot.
  */
-function prependContext(ours: UserMessage, theirs: UserMessage[] | undefined): UserMessage[] {
-  return [ours, ...theirs ?? []]
+function prependContext(ours: UserMessage | undefined, theirs: UserMessage[] | undefined): UserMessage[] {
+  return [ours, ...theirs ?? []].filter((message): message is UserMessage => message !== undefined)
 }
 
 /** One agent's consecutive-repeat chain: the last tracked call's identity key and its run length. */
@@ -162,6 +218,7 @@ interface Chain {
 export function apply(ctx: Context, config: Config): void {
   // schemastery's .default() guarantees the fields are set after validation.
   const thresholds = validateThresholds(config.thresholds as number[])
+  const vetoAt = validateVetoAt(config.vetoAt)
   const thresholdSet = new Set(thresholds)
   const includePatterns = (config.include as string[]).map(wildcardToRegExp)
   const excludePatterns = (config.exclude as string[]).map(wildcardToRegExp)
@@ -171,6 +228,7 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   const chains = new WeakMap<Agent, Chain>()
+  const failureChains = new WeakMap<Agent, Chain>()
 
   /** Whether a tool participates in the chain (untracked calls are transparent: they neither count nor reset). */
   function tracked(toolName: string): boolean {
@@ -178,42 +236,91 @@ export function apply(ctx: Context, config: Config): void {
     return !excludePatterns.some(pattern => pattern.test(toolName))
   }
 
+  /** Advance one chain for one call; returns the run length after this call. */
+  function advance(store: WeakMap<Agent, Chain>, agent: Agent, key: string): number {
+    const chain = store.get(agent)
+    const count = chain !== undefined && chain.key === key ? chain.count + 1 : 1
+    store.set(agent, { key, count })
+    return count
+  }
+
   /**
-   * Advance the calling agent's chain for one attempt and return the reminder
-   * to deliver, if this attempt's run length hits a configured threshold.
-   * Counting happens here — in post-execute — because denied calls also flow
-   * through this waterfall (`ToolRuntime.execute` routes a deny through the
-   * same pipeline), and a model hammering a denied call is exactly the loop
-   * worth breaking.
+   * Advance the calling agent's chains for one attempt and return the reminder
+   * to deliver, if this attempt's run length hits a configured threshold, plus
+   * the veto decision for the circuit breaker. Counting happens here — in
+   * post-execute — because denied calls also flow through this waterfall
+   * (`ToolRuntime.execute` routes a deny through the same pipeline), and a
+   * model hammering a denied call is exactly the loop worth breaking.
    */
-  function observe(exec: ToolExecution): UserMessage | undefined {
+  function observe(exec: ToolExecution, result: ToolExecutionResult): {
+    reminder: UserMessage | undefined
+    shouldVeto: boolean
+  } {
     // A direct `ctx.tools.execute()` caller has no model to remind and no id
     // to key on; only agent-loop calls participate.
-    if (!exec.agent) return undefined
-    if (!tracked(exec.name)) return undefined
+    if (!exec.agent || !tracked(exec.name)) return { reminder: undefined, shouldVeto: false }
     const canonical = canonicalize(exec.arguments)
-    const key = JSON.stringify([exec.name, canonical])
-    const chain = chains.get(exec.agent)
-    const count = chain !== undefined && chain.key === key ? chain.count + 1 : 1
-    chains.set(exec.agent, { key, count })
-    if (!thresholdSet.has(count)) return undefined
-    const text = count === thresholds[0]
-      ? GENTLE_REMINDER
-      : detailedReminder(exec.name, count, previewArguments(canonical, argumentsPreviewChars))
-    return createUserMessage({
-      content: [{ type: 'text', text }],
-      source: { ...PLUGIN_SOURCE, form: 'notice', summary: `${exec.name} × ${count}` },
+    const argsKey = JSON.stringify([exec.name, canonical])
+    const argsCount = advance(chains, exec.agent, argsKey)
+    const fingerprint = failureFingerprint(result)
+    const failureCount = fingerprint === undefined
+      ? 0
+      : advance(failureChains, exec.agent, JSON.stringify([exec.name, fingerprint]))
+    let reminder: UserMessage | undefined
+    if (thresholdSet.has(argsCount)) {
+      const text = argsCount === thresholds[0]
+        ? GENTLE_REMINDER
+        : detailedReminder(exec.name, argsCount, previewArguments(canonical, argumentsPreviewChars))
+      reminder = createUserMessage({
+        content: [{ type: 'text', text }],
+        source: { ...PLUGIN_SOURCE, form: 'notice', summary: `${exec.name} × ${argsCount}` },
+      })
+    }
+    const peak = Math.max(argsCount, failureCount)
+    const shouldVeto = vetoAt !== undefined && peak >= vetoAt
+    return { reminder, shouldVeto }
+  }
+
+  // Circuit breaker, identical-arguments dimension: deny the Nth identical call
+  // BEFORE dispatch so the repeated work (and its failure) never happens.
+  if (vetoAt !== undefined) {
+    ctx.on('tools/pre-execute', async (exec, next) => {
+      if (!exec.agent || !tracked(exec.name)) return next()
+      const canonical = canonicalize(exec.arguments)
+      const key = JSON.stringify([exec.name, canonical])
+      const chain = chains.get(exec.agent)
+      const count = chain !== undefined && chain.key === key ? chain.count + 1 : 1
+      if (count < vetoAt) return next()
+      return {
+        kind: 'deny',
+        reason: vetoFeedback(exec.name, count, 'identical'),
+      }
     })
   }
 
-  // Observe-and-enrich, never veto: count first (state advances regardless of
-  // the downstream outcome), DELEGATE so a later listener can still block or
-  // replace, then fold the reminder onto whatever came back — additionalContexts
-  // rides both decision variants, so a blocked call still gets the nudge.
-  ctx.on('tools/post-execute', async (exec, _result, next): Promise<PostToolDecision> => {
-    const reminder = observe(exec)
+  // Observe-and-enrich, veto only when the breaker tripped: count first (state
+  // advances regardless of the downstream outcome), DELEGATE so a later
+  // listener can still block or replace, then fold the reminder onto whatever
+  // came back — additionalContexts rides both decision variants, so a blocked
+  // call still gets the nudge. The failure dimension cannot be denied in
+  // pre-execute (the outcome is unknowable), so a tripped failure chain blocks
+  // the completed call's result with breaker feedback instead.
+  ctx.on('tools/post-execute', async (exec, result, next): Promise<PostToolDecision> => {
+    const { reminder, shouldVeto } = observe(exec, result)
     const downstream = await next()
-    if (!reminder) return downstream
+    if (!reminder && !shouldVeto) return downstream
+    if (shouldVeto) {
+      const agent = exec.agent
+      const feedback = vetoFeedback(exec.name, Math.max(
+        agent !== undefined ? (chains.get(agent)?.count ?? 1) : 1,
+        agent !== undefined ? (failureChains.get(agent)?.count ?? 1) : 1,
+      ), 'failure')
+      return {
+        kind: 'block',
+        feedback: [{ type: 'text', text: feedback }],
+        additionalContexts: prependContext(reminder, downstream.additionalContexts),
+      }
+    }
     if (downstream.kind === 'block') {
       return { kind: 'block', feedback: downstream.feedback, additionalContexts: prependContext(reminder, downstream.additionalContexts) }
     }

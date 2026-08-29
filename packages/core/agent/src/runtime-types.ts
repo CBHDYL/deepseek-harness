@@ -7,7 +7,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Scoped } from '@deepseek-ai/dsh-scope'
-import type { LlmCallConfig, LlmFailure, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
+import type { LlmCallConfig, LlmFailure, ResolvedRetryPolicy, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { AgentCancelCause, Session, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
 export type { AgentCancelCause } from '@deepseek-ai/dsh-session'
 import type { Inbox } from './inbox.ts'
@@ -176,6 +176,19 @@ declare module '@deepseek-ai/cordis' {
      * @mode emit
      */
     'agent/status'(this: Scoped<Agent>, payload: { agent: Agent; status: AgentStatus }): void
+    /**
+     * One raw assistant stream chunk was appended to the session inside an
+     * open step. Emitted for every chunk the agent loop commits — the
+     * streaming window guards (output repetition, first-token timing) observe
+     * here without touching the durable log.
+     * @param payload.agent - the agent streaming the chunk.
+     * @param payload.turn - the open turn.
+     * @param payload.step - the open step.
+     * @param payload.chunk - the raw chunk, exactly as appended.
+     * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+     * @mode emit
+     */
+    'agent/stream-chunk'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; chunk: StreamChunk }): void
     /**
      * One message entered the live inbox.
      * @param payload.agent - the agent whose inbox changed.
