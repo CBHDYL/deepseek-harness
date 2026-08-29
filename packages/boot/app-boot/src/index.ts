@@ -438,7 +438,55 @@ export function renderConfigDump(
     previous = composed
     previousWarnings = warnings
   }
+  assertPatchContracts(
+    binName,
+    layers,
+    composed.map(entry => (entry as { id?: unknown })),
+  )
   return groupedDump(composed, provenance)
+}
+
+/**
+ * Enforce patch contracts after composition: a patch entry may carry a
+ * `require` field — `true` (its own `id` must land) or an explicit array of
+ * row ids — and any required id missing from the effective composition is a
+ * boot/config failure, not a warning. Without this, a renamed or removed row
+ * silently stops applying a critical override while the surface still boots.
+ * @param binName - the diagnostic prefix on thrown errors.
+ * @param layers - the applied overlay layers, in application order.
+ * @param effectiveEntries - the composed entry list after all layers applied.
+ * @throws when a required row is absent, or a `require` value is malformed.
+ */
+export function assertPatchContracts(
+  binName: string,
+  layers: readonly ConfigDumpLayer[],
+  effectiveEntries: readonly { id?: unknown }[],
+): void {
+  const present = new Set(effectiveEntries.map(entry => entry.id))
+  for (const layer of layers) {
+    for (const patch of layer.patches) {
+      const require = (patch as { require?: unknown }).require
+      if (require === undefined || require === false) continue
+      let required: unknown[]
+      if (require === true) {
+        required = [patch.id]
+      } else if (Array.isArray(require)) {
+        required = require
+      } else {
+        throw new Error(`${binName}: [${layer.label}] patch 'require' must be true or an array of row ids`)
+      }
+      for (const id of required) {
+        if (typeof id !== 'string') {
+          throw new Error(`${binName}: [${layer.label}] patch 'require' entries must be row id strings`)
+        }
+        if (!present.has(id)) {
+          throw new Error(
+            `${binName}: [${layer.label}] patch requires row "${id}" which is absent after composition — a required override would silently stop applying`,
+          )
+        }
+      }
+    }
+  }
 }
 
 /** Render the composed rows grouped under one source-and-patches comment per contiguous run. */

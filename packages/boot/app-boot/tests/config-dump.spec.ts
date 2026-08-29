@@ -184,4 +184,71 @@ describe('renderConfigDump', () => {
     expect(() => renderConfigDump(NAME, scalar, [], () => {}))
       .toThrow('must be a top-level YAML array of entries')
   })
+
+describe('patch contracts (require)', () => {
+  it('passes when a require:true target lands in the composition', () => {
+    const dir = tmp()
+    const base = writeBase(dir)
+    const overlay = join(dir, 'contract-ok.yml')
+    writeFileSync(overlay, [
+      '- id: shared',
+      '  require: true',
+      '  config:',
+      '    value: patched',
+      '',
+    ].join('\n'))
+    expect(() => renderConfigDump(NAME, base, [
+      { label: 'contract-ok.yml', patches: loadOverlayPatches(NAME, overlay) },
+    ], () => {})).not.toThrow()
+  })
+
+  it('fails loudly when require:true targets an absent row (a stale override would silently stop applying)', () => {
+    const dir = tmp()
+    const base = writeBase(dir)
+    const overlay = join(dir, 'contract-missing.yml')
+    writeFileSync(overlay, [
+      '- id: removed-row',
+      '  require: true',
+      '  config:',
+      '    value: patched',
+      '',
+    ].join('\n'))
+    expect(() => renderConfigDump(NAME, base, [
+      { label: 'contract-missing.yml', patches: loadOverlayPatches(NAME, overlay) },
+    ], () => {})).toThrow(/removed-row/)
+  })
+
+  it('enforces an explicit require list', () => {
+    const dir = tmp()
+    const base = writeBase(dir)
+    const overlay = join(dir, 'contract-list.yml')
+    writeFileSync(overlay, [
+      '- id: shared',
+      '  require: [shared, gone-row]',
+      '  config:',
+      '    value: patched',
+      '',
+    ].join('\n'))
+    expect(() => renderConfigDump(NAME, base, [
+      { label: 'contract-list.yml', patches: loadOverlayPatches(NAME, overlay) },
+    ], () => {})).toThrow(/gone-row/)
+  })
+
+  it('rejects a malformed require value', () => {
+    const dir = tmp()
+    const base = writeBase(dir)
+    const overlay = join(dir, 'contract-bad.yml')
+    writeFileSync(overlay, [
+      '- id: shared',
+      '  require: 42',
+      '  config:',
+      '    value: patched',
+      '',
+    ].join('\n'))
+    expect(() => renderConfigDump(NAME, base, [
+      { label: 'contract-bad.yml', patches: loadOverlayPatches(NAME, overlay) },
+    ], () => {})).toThrow(/require/)
+  })
+})
+
 })
