@@ -573,6 +573,34 @@ Types: [ScopeKey](scope.md)
 
 Source: [`packages/core/tools/src/index.ts`](../../packages/core/tools/src/index.ts)
 
+<a id="output-repetition-events"></a>
+
+### `output-repetition/*` events
+
+<a id="output-repetitiondetected--emit"></a>
+
+#### `output-repetition/detected` — emit
+
+Emitted once per agent step when the streamed text contains an adjacent repeated section of at least `minSectionChars` characters. Payload carries the detected section length and the occurrence count. This is a telemetry signal only — the guard neither rewrites history nor aborts the stream.
+
+```ts cordis-catalog
+/**
+ * Emitted once per agent step when the streamed text contains an adjacent
+ * repeated section of at least `minSectionChars` characters. Payload
+ * carries the detected section length and the occurrence count. This is a
+ * telemetry signal only — the guard neither rewrites history nor aborts
+ * the stream.
+ * @param payload - the detection: agent, turn, step, section length, and
+ *   occurrence count.
+ * @mode emit
+ */
+'output-repetition/detected'(payload: { agent: Agent turn: number step: number sectionChars: number repeatCount: number }): void
+```
+
+Types: [Agent](core.md)
+
+Source: [`packages/guard/output-repetition-guard/src/index.ts`](../../packages/guard/output-repetition-guard/src/index.ts)
+
 <a id="tools-events"></a>
 
 ### `tools/*` events

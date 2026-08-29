@@ -189,6 +189,7 @@ export const EVENT_SCOPE_PAGE: Record<string, string> = {
   'subagent': 'subagent.md',
   'system-prompt': 'system-prompt.md',
   'session-telemetry': 'session-telemetry.md',
+  'output-repetition': 'tools.md',
   'tools': 'tools.md',
   'webserver': 'web-server.md',
   'workflow': 'workflow.md',

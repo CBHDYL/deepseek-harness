@@ -309,6 +309,12 @@ export class SessionProjectionCache extends Service {
    * operators and tests — a nonzero `failures` with `pending > 0` means a
    * checkpoint is stale and being retried.
    */
+  /**
+   * Write-behind health for one live session: pending count (0 = clean),
+   * consecutive failures, and remaining automatic retries.
+   * @param session - the live session to inspect.
+   * @returns the write-behind health for that session.
+   */
   dirtyStats(session: Session): { pending: number; failures: number; retriesLeft: number } {
     const state = this.dirty.get(session)
     if (state === undefined) return { pending: 0, failures: 0, retriesLeft: MAX_WRITE_RETRIES }

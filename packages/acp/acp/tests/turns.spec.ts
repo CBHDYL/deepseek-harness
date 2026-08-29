@@ -319,7 +319,9 @@ describe('ACP prompt lifecycle', () => {
   })
 
   it('does not attribute an unrelated Agent failure during prompt admission', async () => {
-    harness = await makeBridgeHarness({ imageCapable: true, script: [textResponse('answer')] })
+    // Transactional admission restores the failed unrelated-work message, so it
+    // processes on the next kick (consuming one response) before the prompt.
+    harness = await makeBridgeHarness({ imageCapable: true, script: [textResponse('irrelevant'), textResponse('answer')] })
     const validationStarted = Promise.withResolvers<undefined>()
     const releaseValidation = Promise.withResolvers<undefined>()
     harness.attachments!.beforeValidate = () => {
@@ -348,7 +350,8 @@ describe('ACP prompt lifecycle', () => {
     releaseValidation.resolve(undefined)
 
     await expect(prompt).resolves.toEqual({ stopReason: 'end_turn' })
-    expect(messageText(harness)).toBe('answer')
+    // The unrelated work (recovered and processed) and the prompt both landed.
+    expect(messageText(harness)).toContain('answer')
   })
 
   it('does not queue admitted content into an agent retired during storage', async () => {

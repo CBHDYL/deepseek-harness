@@ -152,6 +152,14 @@ async write(session: Session): Promise<void>
  * @returns the snapshot cut at the stored log end.
  */
 async coldSnapshot(id: SessionId, signal?: AbortSignal): Promise<ProjectionSnapshot>
+
+/**
+ * Write-behind health for one live session: pending count (0 = clean),
+ * consecutive failures, and remaining automatic retries.
+ * @param session - the live session to inspect.
+ * @returns the write-behind health for that session.
+ */
+dirtyStats(session: Session): { pending: number; failures: number; retriesLeft: number }
 ```
 
 Types: [Session](session.zh.md) · [SessionHeader](persistence.zh.md) · [SessionId](core.zh.md)

@@ -1270,6 +1270,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'id', description: 'the persisted session to read.' }, { name: 'signal', description: 'optional cancellation for the persistence reads.' }],
         returns: 'the snapshot cut at the stored log end.',
       },
+      {
+        signature: 'dirtyStats(session: Session): { pending: number; failures: number; retriesLeft: number }',
+        description: 'Write-behind health for one live session: pending count (0 = clean), consecutive failures, and remaining automatic retries.',
+        parameters: [{ name: 'session', description: 'the live session to inspect.' }],
+        returns: 'the write-behind health for that session.',
+      },
     ],
   },
   {
@@ -2470,6 +2476,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [{ name: 'payload', description: '.status - the status just entered (the transition\'s destination). Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
   },
   {
+    name: 'agent/stream-chunk',
+    mode: 'emit',
+    signature: '\'agent/stream-chunk\'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; chunk: StreamChunk }): void',
+    summary: 'One raw assistant stream chunk was appended to the session inside an open step.',
+    description: 'One raw assistant stream chunk was appended to the session inside an open step. Emitted for every chunk the agent loop commits — the streaming window guards (output repetition, first-token timing) observe here without touching the durable log.',
+    parameters: [{ name: 'payload', description: '.chunk - the raw chunk, exactly as appended. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
+  },
+  {
     name: 'agent/turn-stopping',
     mode: 'serial',
     signature: '\'agent/turn-stopping\'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; signal: AbortSignal }): Promise<void> | void',
@@ -2620,6 +2634,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     summary: 'Waterfall around every streaming model call (retry, replay, routing).',
     description: 'Waterfall around every streaming model call (retry, replay, routing). Bound to the LlmRuntime; call `next()` to reach the resolved adapter\'s stream, or yield your own chunks to short-circuit.',
     parameters: [{ name: 'options', description: 'the full request. A LOOP-built request carries the process-local {@link markAgentLoopRequest} identity and arrives deep-frozen (mutation throws): its content is a pure function of the session log (the reconstructability Agent Note), so listeners read it, never rewrite it. Hand-built calls do not carry that marker; their messages already obey the immutable creation contract.' }],
+  },
+  {
+    name: 'output-repetition/detected',
+    mode: 'emit',
+    signature: '\'output-repetition/detected\'(payload: { agent: Agent turn: number step: number sectionChars: number repeatCount: number }): void',
+    summary: 'Emitted once per agent step when the streamed text contains an adjacent repeated section of at least `minSectionChars` characters.',
+    description: 'Emitted once per agent step when the streamed text contains an adjacent repeated section of at least `minSectionChars` characters. Payload carries the detected section length and the occurrence count. This is a telemetry signal only — the guard neither rewrites history nor aborts the stream.',
+    parameters: [{ name: 'payload', description: 'the detection: agent, turn, step, section length, and occurrence count.' }],
   },
   {
     name: 'session-telemetry/record',
@@ -4083,7 +4105,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionEventMap',
-    declaration: 'export interface SessionEventMap {\n    \'turn/start\': {\n        turn: number;\n    };\n    \'turn/end\': {\n        turn: number;\n        reason: TurnEndReason;\n    };\n    \'step/start\': {\n        turn: number;\n        step: number;\n    };\n    \'step/end\': {\n        turn: number;\n        step: number;\n    };\n    \'user/message\': UserMessage;\n    \'assistant/chunk\': {\n        turn: number;\n        step: number;\n        chunk: StreamChunk;\n    };\n    \'assistant/message\': {\n        turn: number;\n        step: number;\n        message: AssistantMessage;\n        usage?: TokenUsage;\n        interrupted?: true;\n    };\n    \'tool/call\': {\n        turn: number;\n        step: number;\n        callId: CallId;\n        name: string;\n        arguments: string;\n    };\n    \'tool/result\': {\n        turn: number;\n        step: number;\n        message: ToolResultMessage;\n        error?: {\n            name: string;\n            code: string;\n        };\n        meta?: JsonValue;\n    };\n    \'todo/write\': {\n        todos: TodoItem[];\n    };\n    \'request/header\': {\n        header: EpochHeader;\n        reason: RequestHeaderReason;\n    };\n    \'request/context\': RequestContext;\n    \'session/end-seed\': Record<string, never>;\n}',
+    declaration: 'export interface SessionEventMap {\n    \'turn/start\': {\n        turn: number;\n    };\n    \'turn/end\': {\n        turn: number;\n        reason: TurnEndReason;\n    };\n    \'step/start\': {\n        turn: number;\n        step: number;\n    };\n    \'step/end\': {\n        turn: number;\n        step: number;\n    };\n    \'user/message\': UserMessage;\n    \'assistant/chunk\': {\n        turn: number;\n        step: number;\n        chunk: StreamChunk;\n    };\n    \'assistant/message\': {\n        turn: number;\n        step: number;\n        message: AssistantMessage;\n        usage?: TokenUsage;\n        interrupted?: true;\n    };\n    \'tool/call\': {\n        turn: number;\n        step: number;\n        callId: CallId;\n        name: string;\n        arguments: string;\n    };\n    \'tool/result\': {\n        turn: number;\n        step: number;\n        message: ToolResultMessage;\n        error?: {\n            name: string;\n            code: string;\n        };\n        meta?: JsonValue;\n    };\n    \'todo/write\': {\n        todos: TodoItem[];\n    };\n    \'request/header\': {\n        header: EpochHeader;\n        reason: RequestHeaderReason;\n    };\n    \'request/context\': RequestContext;\n    \'request/attempt-start\': {\n        turn: number;\n        step: number;\n        attempt: number;\n        provider: string;\n        model: string;\n    };\n    \'request/attempt-end\': {\n        turn: number;\n        step: number;\n        attempt: number;\n        outcome: \'ok\' | \'throw\' | \'retry\' | \'retry-exhausted\';\n        failure?: LlmFailur /* …truncated — full shape in source */',
   },
   {
     name: 'SessionEventMetadataFilter',
@@ -4755,11 +4777,15 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolDefinition',
-    declaration: 'export interface ToolDefinition extends ToolSchema {\n    readonly output: ToolOutputDefinition;\n    execute(args: unknown, exec: ToolRunContext): Promise<unknown>;\n    finalizeContent?(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): ContentBlock[] | undefined;\n    timeoutMs?: number;\n    isConcurrencySafe?(args: unknown): boolean;\n    presentCall?(args: unknown): ToolCallView | undefined;\n    presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined;\n}',
+    declaration: 'export interface ToolDefinition extends ToolSchema {\n    readonly effects?: ToolEffects;\n    readonly output: ToolOutputDefinition;\n    execute(args: unknown, exec: ToolRunContext): Promise<unknown>;\n    finalizeContent?(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): ContentBlock[] | undefined;\n    timeoutMs?: number;\n    isConcurrencySafe?(args: unknown): boolean;\n    presentCall?(args: unknown): ToolCallView | undefined;\n    presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined;\n}',
   },
   {
     name: 'ToolDispatchExecution',
     declaration: 'export interface ToolDispatchExecution extends Omit<ToolExecution, \'signal\'> {\n    signal: AbortSignal;\n}',
+  },
+  {
+    name: 'ToolEffects',
+    declaration: 'export type ToolEffects = \'read-only\' | \'side-effectful\';',
   },
   {
     name: 'ToolErrorInfo',

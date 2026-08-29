@@ -999,6 +999,32 @@ Types: [Scoped](scope.zh.md)
 
 Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
+<a id="agentstream-chunk--emit"></a>
+
+#### `agent/stream-chunk` — emit
+
+One raw assistant stream chunk was appended to the session inside an open step. Emitted for every chunk the agent loop commits — the streaming window guards (output repetition, first-token timing) observe here without touching the durable log.
+
+```ts cordis-catalog
+/**
+ * One raw assistant stream chunk was appended to the session inside an
+ * open step. Emitted for every chunk the agent loop commits — the
+ * streaming window guards (output repetition, first-token timing) observe
+ * here without touching the durable log.
+ * @param payload.agent - the agent streaming the chunk.
+ * @param payload.turn - the open turn.
+ * @param payload.step - the open step.
+ * @param payload.chunk - the raw chunk, exactly as appended.
+ * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+ * @mode emit
+ */
+'agent/stream-chunk'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; chunk: StreamChunk }): void
+```
+
+Types: [Scoped](scope.zh.md) · [StreamChunk](llm-streaming.zh.md)
+
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
+
 <a id="agentturn-stopping--serial"></a>
 
 #### `agent/turn-stopping` — serial

@@ -26,6 +26,8 @@ declare module '@deepseek-ai/cordis' {
      * carries the detected section length and the occurrence count. This is a
      * telemetry signal only — the guard neither rewrites history nor aborts
      * the stream.
+     * @param payload - the detection: agent, turn, step, section length, and
+     *   occurrence count.
      * @mode emit
      */
     'output-repetition/detected'(payload: {
