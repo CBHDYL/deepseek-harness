@@ -351,14 +351,30 @@ function presetFailure(request: RpcRequest<unknown>, error: unknown): RpcRespons
   return undefined
 }
 
+/**
+ * Default maximum frames retained per downlink queue before the oldest are
+ * dropped. A stalled or slow client must not grow host memory without bound;
+ * clients resync from durable history, so dropping the OLDEST frames (and
+ * counting them) is the safe degradation.
+ */
+export const DEFAULT_MAX_QUEUED_FRAMES = 10_000
+
 /** Simple async queue: core callbacks push, the AsyncIterable pulls; abort/return cleans up. */
-class FrameQueue<F> {
+export class FrameQueue<F> {
   private buffer: F[] = []
   private waiter: (() => void) | undefined
   private done = false
+  /** Frames dropped at the head because the queue hit {@link maxFrames}. */
+  dropped = 0
+
+  constructor(private readonly maxFrames: number = DEFAULT_MAX_QUEUED_FRAMES) {}
 
   push(item: F): void {
     if (this.done) return
+    if (this.buffer.length >= this.maxFrames) {
+      this.buffer.shift()
+      this.dropped += 1
+    }
     this.buffer.push(item)
     this.waiter?.()
   }
