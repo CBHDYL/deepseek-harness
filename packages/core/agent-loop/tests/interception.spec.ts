@@ -548,8 +548,10 @@ describe('agent/pre-step', () => {
     }])
     expect(statuses).toEqual(['running', 'idle'])
     expect(adapter.requests).toHaveLength(0)
+    // Transactional admission: the claimed 'first' is restored to the queue,
+    // so BOTH inputs survive the failed proposal (nothing is lost).
     expect(agent.inbox.nextTurn.map(message => message.content[0]))
-      .toEqual([{ type: 'text', text: 'second' }])
+      .toEqual([{ type: 'text', text: 'first' }, { type: 'text', text: 'second' }])
   })
 })
 

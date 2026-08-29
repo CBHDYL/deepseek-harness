@@ -226,20 +226,55 @@ export class ReactLoopAgent implements Agent {
     /* v8 ignore next -- private callers establish the running phase before proposing a step */
     if (this.phase.kind !== 'running') throw new Error(`agent "${this.id}": pre-step outside running phase`)
     const signal = this.phase.abort.signal
+    // Capture the next-turn head BEFORE the claim: `claim('next-turn')` pulls
+    // all next-step messages plus (when present) the next-turn head, and the
+    // restore path needs to know which claimed message came from which queue.
+    const claimedNextTurn = target === 'next-turn' ? this.inbox.nextTurn[0] : undefined
     const claimed = this.inbox.claim(target, position.turn)
-    const assembly = await this.loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))
-    signal.throwIfAborted()
-    const sections = renderContextSections(assembly)
-    const context = this.runtimeContext.project(joinContextSections(sections), sections)
-    const decision = await this.dispatch.waterfall(
-      'agent/pre-step', { messages: claimed, ...position, signal },
-      (): Promise<PreStepDecision> => Promise.resolve<PreStepDecision>({
-        kind: 'enter',
-        messages: context === undefined ? claimed : [...claimed, context],
-      }),
-    )
-    signal.throwIfAborted()
-    return decision.kind === 'reject' ? decision : { ...decision, assembly }
+    try {
+      const assembly = await this.loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))
+      signal.throwIfAborted()
+      const sections = renderContextSections(assembly)
+      const context = this.runtimeContext.project(joinContextSections(sections), sections)
+      const decision = await this.dispatch.waterfall(
+        'agent/pre-step', { messages: claimed, ...position, signal },
+        (): Promise<PreStepDecision> => Promise.resolve<PreStepDecision>({
+          kind: 'enter',
+          messages: context === undefined ? claimed : [...claimed, context],
+        }),
+      )
+      signal.throwIfAborted()
+      return decision.kind === 'reject' ? decision : { ...decision, assembly }
+    } catch (error: unknown) {
+      // Transactional admission: the claim is durable but the input must not
+      // vanish when preparation (assembly, runtime context, interception)
+      // FAILS. Re-queue every claimed message so the work survives to a later
+      // attempt; nothing was entered as a user message, so nothing duplicates.
+      // Cancellation is not a preparation failure: `cancel()` owns that
+      // outcome (its keepInbox flag decides whether pending work survives).
+      if (!signal.aborted) this.restoreClaimed(claimed, claimedNextTurn)
+      throw error
+    }
+  }
+
+  /**
+   * Re-queue claimed messages durably, preserving queue membership and order.
+   * The captured `nextTurnMessage` (when one was claimed) returns to
+   * `next-turn`; every other claimed message returns to `next-step`. Restoring
+   * in reverse keeps the original order. Nothing was entered as a user
+   * message, so a later attempt cannot duplicate it.
+   */
+  private restoreClaimed(claimed: UserMessage[], nextTurnMessage: UserMessage | undefined): void {
+    if (claimed.length === 0) return
+    let last = claimed.length - 1
+    if (nextTurnMessage !== undefined) {
+      this.inbox.prepend('next-turn', nextTurnMessage)
+      last = claimed.length - 2
+    }
+    for (let i = last; i >= 0; i--) {
+      const message = claimed[i]
+      if (message !== undefined) this.inbox.prepend('next-step', message)
+    }
   }
 
   /** Open one turn before claiming its first proposed step. */
