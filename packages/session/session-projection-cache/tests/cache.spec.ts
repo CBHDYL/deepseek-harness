@@ -162,6 +162,31 @@ describe('SessionProjectionCache write policy', () => {
     expect(storedRows(pool, session.id)?.['cache-test/marks']?.val).toEqual({ marks: ['3'] })
   })
 
+  it('retains dirty state and retries after a failed mandatory write (no silent stale checkpoint)', async () => {
+    vi.useFakeTimers()
+    const { ctx, pool } = await harness({ config: { writeEveryEvents: 100, writeIntervalMs: 1000 } })
+    const session = ctx.sessions.create(SessionId('retry'))
+    mark(session, ['a'])
+    // Force the mandatory write to fail once: flush rejects before the put.
+    const flush = vi.spyOn(ctx.sessions, 'flush').mockRejectedValueOnce(new Error('storage hiccup'))
+    endTurn(session)
+    await vi.advanceTimersByTimeAsync(0)
+
+    // Dirty state is retained (pending > 0) and the failure is counted.
+    const afterFailure = ctx.sessionProjectionCache.dirtyStats(session)
+    expect(afterFailure.pending).toBeGreaterThan(0)
+    expect(afterFailure.failures).toBeGreaterThanOrEqual(1)
+    expect(storedRows(pool, session.id)).toBeUndefined() // nothing durable yet
+
+    // The bounded retry re-arms the interval and succeeds on the next tick.
+    await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(flush).toHaveBeenCalledTimes(2) // attempt 1 rejected, retry succeeded
+    expect(storedRows(pool, session.id)?.['cache-test/marks']?.val).toEqual({ marks: ['a'] })
+    expect(ctx.sessionProjectionCache.dirtyStats(session).pending).toBe(0)
+    vi.useRealTimers()
+  })
+
   it('flushes on the configured interval when the count threshold is not reached', async () => {
     vi.useFakeTimers()
     const { ctx, pool } = await harness({ config: { writeEveryEvents: 100, writeIntervalMs: 250 } })

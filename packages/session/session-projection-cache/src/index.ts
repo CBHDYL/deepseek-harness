@@ -57,7 +57,14 @@ interface DirtyState {
   pending: number
   /** Interval trigger armed at the first dirty event after a clean write. */
   timer: ReturnType<typeof setTimeout> | undefined
+  /** Consecutive failed durable writes since the last success. */
+  failures: number
+  /** Automatic retries remaining for a failed mandatory checkpoint. */
+  retries: number
 }
+
+/** Automatic retries per failed mandatory checkpoint before it goes silent. */
+const MAX_WRITE_RETRIES = 3
 
 /**
  * The persisted projection cache service. Opens the `session_projcache`
@@ -139,7 +146,6 @@ export class SessionProjectionCache extends Service {
    */
   async write(session: Session): Promise<void> {
     const rows = this.ctx.sessionProjections.checkpoint(session)
-    this.markClean(session)
     // Durability barrier: the checkpoint cut was taken above, so flushing
     // AFTER it guarantees every event inside the cut is durably logged
     // before the cache row lands — a crash can leave the cache behind the
@@ -149,6 +155,10 @@ export class SessionProjectionCache extends Service {
     // any residual overreach is caught by the cold read's anchored floor.
     if (this.ctx.sessions.get(session.id) === session) await this.ctx.sessions.flush(session)
     await this.put(session.id, identityOf(session.header), rows)
+    // Only a SUCCESSFUL durability barrier may clear the dirty bookkeeping:
+    // clearing it before the flush/put would leave a failed mandatory
+    // checkpoint permanently stale (no retry trigger, no later event).
+    this.markClean(session)
   }
 
   /**
@@ -206,7 +216,7 @@ export class SessionProjectionCache extends Service {
         void this.flushSoft(session, 'turn/end')
         return
       }
-      const state = this.dirty.get(session) ?? { pending: 0, timer: undefined }
+      const state = this.dirty.get(session) ?? { pending: 0, timer: undefined, failures: 0, retries: MAX_WRITE_RETRIES }
       this.dirty.set(session, state)
       state.pending += 1
       if (state.pending >= this.config.writeEveryEvents) {
@@ -246,7 +256,21 @@ export class SessionProjectionCache extends Service {
     try {
       await this.write(session)
     } catch (error) {
+      const state = this.dirty.get(session)
       this.ctx.logger.warn(`session projection cache: ${trigger} write for "${session.id}" failed (cache stays stale): ${String(error)}`)
+      if (state === undefined) return
+      state.failures += 1
+      // Bounded retry: the dirty counter is still pending (markClean only runs
+      // on success), so re-arm the interval a limited number of times. Without
+      // this a failed mandatory checkpoint would stay stale until another
+      // event happened to arrive.
+      if (state.retries > 0) {
+        state.retries -= 1
+        state.timer = setTimeout(() => {
+          state.timer = undefined
+          void this.flushSoft(session, 'retry')
+        }, this.config.writeIntervalMs)
+      }
     }
   }
 
@@ -277,6 +301,18 @@ export class SessionProjectionCache extends Service {
     } catch (error) {
       this.ctx.logger.warn(`session projection cache: ${what} for "${id}" failed (cache stays stale): ${String(error)}`)
     }
+  }
+
+  /**
+   * Observable write-behind health for one live session: pending count (0 =
+   * clean), consecutive failures, and remaining automatic retries. Exposed for
+   * operators and tests — a nonzero `failures` with `pending > 0` means a
+   * checkpoint is stale and being retried.
+   */
+  dirtyStats(session: Session): { pending: number; failures: number; retriesLeft: number } {
+    const state = this.dirty.get(session)
+    if (state === undefined) return { pending: 0, failures: 0, retriesLeft: MAX_WRITE_RETRIES }
+    return { pending: state.pending, failures: state.failures, retriesLeft: state.retries }
   }
 
   private requireTable(): KvTable<SessionId, CheckpointRecord> {
