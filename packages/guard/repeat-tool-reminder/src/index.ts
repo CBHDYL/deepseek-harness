@@ -263,9 +263,14 @@ export function apply(ctx: Context, config: Config): void {
     const argsKey = JSON.stringify([exec.name, canonical])
     const argsCount = advance(chains, exec.agent, argsKey)
     const fingerprint = failureFingerprint(result)
-    const failureCount = fingerprint === undefined
-      ? 0
-      : advance(failureChains, exec.agent, JSON.stringify([exec.name, fingerprint]))
+    let failureCount = 0
+    if (fingerprint === undefined) {
+      // A successful call is proof of progress: it breaks any same-failure run,
+      // so the stored failure chain must not survive to the next failure.
+      failureChains.delete(exec.agent)
+    } else {
+      failureCount = advance(failureChains, exec.agent, JSON.stringify([exec.name, fingerprint]))
+    }
     let reminder: UserMessage | undefined
     if (thresholdSet.has(argsCount)) {
       const text = argsCount === thresholds[0]
@@ -331,10 +336,13 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   // A user interjection changes the context; repetition across it is not a
-  // loop. Pure reset hook: always delegates (attaching nothing, vetoing
-  // nothing).
+  // loop. Pure reset hook for BOTH chains: always delegates (attaching nothing,
+  // vetoing nothing).
   ctx.on('agent/pre-step', ({ agent, messages }, next): Promise<PreStepDecision> => {
-    if (messages.some(message => message.source.kind === 'user')) chains.delete(agent)
+    if (messages.some(message => message.source.kind === 'user')) {
+      chains.delete(agent)
+      failureChains.delete(agent)
+    }
     return next()
   })
 }

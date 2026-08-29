@@ -483,6 +483,78 @@ describe('circuit-breaker veto', () => {
   })
 })
 
+describe('circuit-breaker chain continuity', () => {
+  async function boomHarness(vetoAt: number, thresholds = [7]): Promise<{ ctx: Context; boomCount: () => number }> {
+    const ctx = await harness({ thresholds, vetoAt })
+    let executions = 0
+    ctx.tools.register(defineContentToolFixture({
+      name: 'boom',
+      description: 'b',
+      parameters: {},
+      async execute() {
+        executions += 1
+        throw new Error('sealed')
+      },
+    }))
+    return { ctx, boomCount: () => executions }
+  }
+
+  it('a success between identical failures resets the failure chain', async () => {
+    const { ctx } = await boomHarness(3)
+    const adapter = new MockAdapter([
+      toolCallResponse('c1', 'boom', { q: 1 }), // failure 1
+      toolCallResponse('c2', 'probe', { q: 1 }), // success — must reset the failure chain
+      toolCallResponse('c3', 'boom', { q: 2 }), // failure 2
+      toolCallResponse('c4', 'boom', { q: 3 }), // failure 3 — WITHOUT reset this would veto
+      toolCallResponse('c5', 'boom', { q: 4 }), // failure 4 — trips the breaker
+      textResponse('done'),
+    ])
+    ctx.llm.registerAdapter(['mock'], adapter)
+    const agent = ctx.agentLoop.create(SessionId('b1'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    const results = [...agent.session.events].filter((e): e is SessionEvent<'tool/result'> => e.type === 'tool/result')
+    const breaker = (i: number) => {
+      const text = (results[i]!.data.message.content[0] as { content: { text?: string }[] }).content.map(b => b.text ?? '').join('')
+      return text.includes('Circuit breaker')
+    }
+    // c3 is failure #2 after the reset (not #2 of an unbroken run of 3), so it must NOT be vetoed.
+    expect(breaker(2)).toBe(false)
+    // c4 is failure #3, c5 failure #4 → c5 is vetoed.
+    expect(breaker(3)).toBe(false)
+    expect(breaker(4)).toBe(true)
+  })
+
+  it('a user interjection resets the failure chain as well as the argument chain', async () => {
+    const { ctx } = await boomHarness(3)
+    const adapter = new MockAdapter([
+      toolCallResponse('c1', 'boom', { q: 1 }), // failure 1
+      textResponse('turn one done'),
+      toolCallResponse('c2', 'boom', { q: 2 }), // failure 2 — user message between turns resets
+      textResponse('turn two done'),
+      toolCallResponse('c3', 'boom', { q: 3 }), // failure 3
+      textResponse('turn three done'),
+    ])
+    ctx.llm.registerAdapter(['mock'], adapter)
+    const agent = ctx.agentLoop.create(SessionId('b2'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'again' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'third' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    const results = [...agent.session.events].filter((e): e is SessionEvent<'tool/result'> => e.type === 'tool/result')
+    const breaker = (i: number) => {
+      const text = (results[i]!.data.message.content[0] as { content: { text?: string }[] }).content.map(b => b.text ?? '').join('')
+      return text.includes('Circuit breaker')
+    }
+    // Each failure is #1 of its own turn (user messages reset both chains): nothing is vetoed.
+    expect(results.map((_, i) => breaker(i))).toEqual([false, false, false])
+  })
+})
+
 describe('config validation fails loud', () => {
   async function spine(): Promise<Context> {
     const ctx = new Context()
