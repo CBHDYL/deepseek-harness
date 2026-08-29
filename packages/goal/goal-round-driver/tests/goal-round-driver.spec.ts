@@ -590,7 +590,9 @@ describe('same-session goal driving', () => {
     const goal = await waitForGoal(test.ctx, test.agent, current => current?.activation === 'disarmed')
     expect(goal).toMatchObject({ phase: 'active', roundsStarted: 0 })
     expect(test.adapter.requests).toHaveLength(0)
-    expect(test.agent.inbox.nextTurn).toHaveLength(0)
+    // Transactional admission: the claimed goal continuation was restored to
+    // the queue, so the goal survives the throwing hook instead of vanishing.
+    expect(test.agent.inbox.nextTurn.length).toBe(1)
   })
 
   it('a retry turn on a non-goal failure leaves the goal reservation untouched', async () => {
