@@ -19,6 +19,7 @@ import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import { LocalBashExecutor } from '@deepseek-ai/dsh-bash-local'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
+import { SANDBOX_ESCALATION_NOT_WIDER } from '@deepseek-ai/dsh-sandbox'
 import * as ToolBash from '@deepseek-ai/dsh-tool-bash'
 import * as BashEnvPlugin from '@deepseek-ai/dsh-shell-env'
 import { processOutcome } from '../src/background.ts'
@@ -601,15 +602,26 @@ describe('sandbox escalation through the generic task producer', () => {
     }
   })
 
-  it('rejects injected escalation without a sandbox and non-widening escalation without prompting', async () => {
+  it('rejects injected escalation without a sandbox; same-mode requests run; non-wider fails with a structured code', async () => {
     const plain = await setup()
     expect(text(await call(plain, 'bash', escalate))).toContain('not available in this composition')
 
-    const { ctx } = await setupSandboxed(true)
+    const { ctx, bash } = await setupSandboxed(true)
     const prompted = vi.fn()
     ctx.on('approval/request', () => { prompted(); return Promise.resolve<ApprovalOutcome>('allowed-once') })
-    const result = await call(ctx, 'bash', { ...escalate, sandbox_permissions: 'workspace-write' }, sandboxAgent('workspace-write'))
-    expect(text(result)).toContain('not strictly wider')
+
+    // Repeating the effective mode is idempotent: it executes under the
+    // standing policy and never prompts.
+    const same = await call(ctx, 'bash', { ...escalate, sandbox_permissions: 'workspace-write' }, sandboxAgent('workspace-write'))
+    expect(same.isError).toBe(false)
+    expect(bash.modes).toEqual(['workspace-write'])
+    expect(prompted).not.toHaveBeenCalled()
+
+    // A genuinely non-wider request fails closed with the structured code.
+    const narrowed = await call(ctx, 'bash', escalate, sandboxAgent('danger-full-access'))
+    expect(narrowed.isError).toBe(true)
+    expect(narrowed.error?.info?.code).toBe(SANDBOX_ESCALATION_NOT_WIDER)
+    expect(text(narrowed)).toContain('not strictly wider')
     expect(prompted).not.toHaveBeenCalled()
 
     const malformed = sandboxAgent()

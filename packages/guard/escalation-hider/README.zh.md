@@ -20,8 +20,9 @@ call's current "danger-full-access" mode`。
 在 `system-prompt/assemble` 时，当调用会话的有效模式达到或超过
 `hideAtOrAboveMode`（默认 `danger-full-access`），或其审批策略为 `never`
 （默认隐藏），该插件从所有名称匹配 `tools` 通配符模式（默认
-`['bash', 'pwsh']`）的工具上剥离 `sandbox_permissions`/`justification`。
-模式外的工具、以及没有这些参数的工具原样保留。
+`['bash', 'pwsh', 'edit', 'write']`）的工具上剥离
+`sandbox_permissions`/`justification`。模式外的工具、以及没有这些参数的
+工具原样保留。
 
 ## 配置
 
@@ -31,7 +32,7 @@ call's current "danger-full-access" mode`。
   config:
     hideAtOrAboveMode: danger-full-access
     hideWhenApprovalNever: true
-    tools: [bash, pwsh]
+    tools: [bash, pwsh, edit, write]
 ```
 
 配置错误在插件加载时立即失败。

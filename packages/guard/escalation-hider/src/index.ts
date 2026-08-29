@@ -64,7 +64,7 @@ export interface Config {
 export const Config: z<Config> = z.object({
   hideAtOrAboveMode: z.string().default('danger-full-access'),
   hideWhenApprovalNever: z.boolean().default(true),
-  tools: z.array(z.string()).default(['bash', 'pwsh']),
+  tools: z.array(z.string()).default(['bash', 'pwsh', 'edit', 'write']),
 })
 
 /** Compile one `*`-wildcard pattern to an anchored RegExp (other regex metacharacters are literal). */
@@ -73,7 +73,13 @@ function wildcardToRegExp(pattern: string): RegExp {
   return new RegExp(`^${escaped.replaceAll('*', '.*')}$`)
 }
 
-/** Whether escalation can never succeed for this session, per the resolved policies. */
+/**
+ * Whether escalation can never succeed for this session, per the resolved policies.
+ * @param mode - the session's effective sandbox mode, when known.
+ * @param approval - the session's effective approval policy, when known.
+ * @param config - the plugin's hiding thresholds.
+ * @returns true when the session must not be offered the escalation fields.
+ */
 export function shouldHideEscalation(
   mode: SandboxMode | undefined,
   approval: ApprovalPolicy | undefined,
@@ -89,6 +95,9 @@ export function shouldHideEscalation(
 /**
  * Strip escalation parameters from every tool whose name matches the patterns.
  * Tools without the parameters (or outside the patterns) pass through untouched.
+ * @param tools - the assembled tool schemas to transform.
+ * @param patterns - `*`-wildcard tool-name patterns whose escalation fields are removed.
+ * @returns the transformed schemas; untouched tools keep their object identity.
  */
 export function stripEscalationParameters(
   tools: ToolSchema[],
@@ -117,7 +126,7 @@ export function apply(ctx: Context, config: Config): void {
     throw new Error(`escalation-hider: invalid hideAtOrAboveMode ${hideAtOrAboveMode}`)
   }
   const hideWhenApprovalNever = config.hideWhenApprovalNever ?? true
-  const toolPatterns = config.tools ?? ['bash', 'pwsh']
+  const toolPatterns = config.tools ?? ['bash', 'pwsh', 'edit', 'write']
 
   ctx.on('system-prompt/assemble', async (_assembly: PromptAssembly, context: AssembleContext, next) => {
     const agent = context.agent

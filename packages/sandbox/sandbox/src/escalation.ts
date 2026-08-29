@@ -16,7 +16,7 @@
  * @module dsh-sandbox/escalation
  */
 
-import { assertNever } from '@deepseek-ai/dsh-llm'
+import { assertNever, HarnessError } from '@deepseek-ai/dsh-llm'
 import type { SandboxMode } from './index.ts'
 
 /**
@@ -39,6 +39,9 @@ export const WIDER_MODES: Record<string, readonly SandboxMode[]> = {
  * while a narrower-switched session stays confined with no lever).
  */
 export const ESCALATION_TARGETS: readonly SandboxMode[] = ['workspace-write', 'danger-full-access']
+
+/** Stable failure code for a requested mode that is neither equal to nor wider than the effective mode. */
+export const SANDBOX_ESCALATION_NOT_WIDER = 'SANDBOX_ESCALATION_NOT_WIDER'
 
 /**
  * Validate the escalation argument pairing a tool schema cannot express:
@@ -156,11 +159,19 @@ export interface EscalationRequest {
  */
 export async function approveEscalation<A, C>(request: EscalationRequest, approval: EscalationApproval<A, C>): Promise<SandboxMode> {
   const { requestedMode: mode, effectiveMode, justification, subject } = request
+  // Repeating the effective mode grants nothing and is safe to normalize before
+  // approval. Unknown modes still fail closed instead of becoming idempotent.
+  if (mode === effectiveMode && ['read-only', 'workspace-write', 'danger-full-access'].includes(effectiveMode)) {
+    return effectiveMode
+  }
   // Strict widening is an EXECUTION check against the call's effective mode —
   // deliberately not a schema constraint (the enum is the closed target
   // vocabulary; the effective mode is per-call truth).
   if (!(WIDER_MODES[effectiveMode] ?? []).includes(mode as SandboxMode)) {
-    throw new Error(`sandbox escalation to "${mode}" is not strictly wider than this call's current "${effectiveMode}" mode`)
+    throw new HarnessError(
+      `sandbox escalation to "${mode}" is not strictly wider than this call's current "${effectiveMode}" mode`,
+      SANDBOX_ESCALATION_NOT_WIDER,
+    )
   }
   if (approval.approver === undefined) {
     throw new Error(`sandbox escalation to "${mode}" requires approval, but no approval service is composed`)

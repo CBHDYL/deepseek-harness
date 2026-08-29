@@ -32,7 +32,35 @@ function sampleTools(): ToolSchema[] {
       description: 'read a file',
       parameters: { path: { type: 'string', required: true, description: 'p' } },
     },
+    {
+      name: 'edit',
+      description: 'edit a file',
+      parameters: {
+        file_path: { type: 'string', required: true, description: 'p' },
+        sandbox_permissions: { type: 'string', description: 'escalate' },
+        justification: { type: 'string', description: 'why' },
+      },
+    },
+    {
+      name: 'write',
+      description: 'write a file',
+      parameters: {
+        file_path: { type: 'string', required: true, description: 'p' },
+        sandbox_permissions: { type: 'string', description: 'escalate' },
+        justification: { type: 'string', description: 'why' },
+      },
+    },
   ]
+}
+
+/** A fallback assembly equal to the empty `ctx.waterfall` base the hider would otherwise leave untouched. */
+function sampleAssembly() {
+  return Promise.resolve({
+    sections: [],
+    contexts: [],
+    tools: sampleTools(),
+    variables: {},
+  })
 }
 
 describe('shouldHideEscalation', () => {
@@ -61,13 +89,24 @@ describe('shouldHideEscalation', () => {
 describe('stripEscalationParameters', () => {
   it('strips escalation params from matching tools only, deeply preserving the rest', () => {
     const tools = sampleTools()
-    const stripped = stripEscalationParameters(tools, ['bash', 'pwsh'])
-    expect(stripped).toHaveLength(3)
+    const stripped = stripEscalationParameters(tools, ['bash', 'pwsh', 'edit', 'write'])
+    expect(stripped).toHaveLength(5)
     expect(stripped[0]!.parameters).toEqual({ command: { type: 'string', required: true, description: 'cmd' } })
     expect(stripped[1]!.parameters).toEqual({ command: { type: 'string', required: true, description: 'cmd' } })
     expect(stripped[2]!.parameters).toEqual({ path: { type: 'string', required: true, description: 'p' } })
+    expect(stripped[3]!.parameters).toEqual({ file_path: { type: 'string', required: true, description: 'p' } })
+    expect(stripped[4]!.parameters).toEqual({ file_path: { type: 'string', required: true, description: 'p' } })
     // Identical tool objects are not reconstructed unless a param was removed.
     expect(stripped[2]).toBe(tools[2])
+  })
+
+  it('hides the escalation fields on edit and write by default', () => {
+    const stripped = stripEscalationParameters(sampleTools(), ['bash', 'pwsh', 'edit', 'write'])
+    for (const tool of stripped) {
+      if (tool.name === 'read') continue
+      expect(tool.parameters).not.toHaveProperty('sandbox_permissions')
+      expect(tool.parameters).not.toHaveProperty('justification')
+    }
   })
 
   it('honors wildcard patterns', () => {
@@ -99,14 +138,9 @@ describe('assembly wiring', () => {
     } as unknown as Agent
     ctx.systemPrompt.tools(() => ({
       schemas: sampleTools(),
-      knownNames: ['bash', 'pwsh', 'read'],
+      knownNames: ['bash', 'pwsh', 'read', 'edit', 'write'],
     }))
-    const fallback = () => Promise.resolve({
-      sections: [],
-      contexts: [],
-      tools: sampleTools(),
-      variables: {},
-    })
+    const fallback = sampleAssembly
     const assembly = await ctx.waterfall(
       scopeTarget(ctx.systemPrompt, undefined),
       'system-prompt/assemble',
@@ -117,6 +151,8 @@ describe('assembly wiring', () => {
     expect(assembly.tools[0]!.parameters).not.toHaveProperty('sandbox_permissions')
     expect(assembly.tools[1]!.parameters).not.toHaveProperty('sandbox_permissions')
     expect(assembly.tools[2]!.parameters).toEqual({ path: { type: 'string', required: true, description: 'p' } })
+    expect(assembly.tools[3]!.parameters).not.toHaveProperty('sandbox_permissions')
+    expect(assembly.tools[4]!.parameters).not.toHaveProperty('sandbox_permissions')
   })
 
   it('leaves the schema untouched for an ask-mode workspace session', async () => {
@@ -135,12 +171,7 @@ describe('assembly wiring', () => {
       schemas: sampleTools(),
       knownNames: ['bash', 'pwsh', 'read'],
     }))
-    const fallback = () => Promise.resolve({
-      sections: [],
-      contexts: [],
-      tools: sampleTools(),
-      variables: {},
-    })
+    const fallback = sampleAssembly
     const assembly = await ctx.waterfall(
       scopeTarget(ctx.systemPrompt, undefined),
       'system-prompt/assemble',
@@ -160,12 +191,7 @@ describe('assembly wiring', () => {
       schemas: sampleTools(),
       knownNames: ['bash', 'pwsh', 'read'],
     }))
-    const fallback = () => Promise.resolve({
-      sections: [],
-      contexts: [],
-      tools: sampleTools(),
-      variables: {},
-    })
+    const fallback = sampleAssembly
     const assembly = await ctx.waterfall(
       scopeTarget(ctx.systemPrompt, undefined),
       'system-prompt/assemble',

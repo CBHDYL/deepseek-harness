@@ -24,8 +24,9 @@ At `system-prompt/assemble` time, when the calling session's effective mode is
 at or above `hideAtOrAboveMode` (default `danger-full-access`), or its
 approval policy is `never` (default hidden), the guard strips
 `sandbox_permissions`/`justification` from every tool whose name matches the
-`tools` wildcard patterns (default `['bash', 'pwsh']`). Tools outside the
-patterns, and tools without the parameters, pass through untouched.
+`tools` wildcard patterns (default `['bash', 'pwsh', 'edit', 'write']`). Tools
+outside the patterns, and tools without the parameters, pass through
+untouched.
 
 ## Config
 
@@ -35,7 +36,7 @@ patterns, and tools without the parameters, pass through untouched.
   config:
     hideAtOrAboveMode: danger-full-access
     hideWhenApprovalNever: true
-    tools: [bash, pwsh]
+    tools: [bash, pwsh, edit, write]
 ```
 
 Misconfiguration fails loud at plugin load.

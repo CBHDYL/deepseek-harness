@@ -30,6 +30,7 @@ import type { FileReadOutcome } from '../src/read-render.ts'
 import { sessionCwd } from '../src/session-cwd.ts'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
+import { SANDBOX_ESCALATION_NOT_WIDER } from '@deepseek-ai/dsh-sandbox'
 import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
 
 const testToolSignal = new AbortController().signal
@@ -911,6 +912,57 @@ describe('sandbox escalation API (write/edit)', () => {
     const result = await call(ctx, 'write', { file_path: 'a.txt', content: 'x', sandbox_permissions: 'danger-full-access', justification: 'why' })
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('no agent to route it through')
+  })
+
+  it('a same-mode escalation request executes under the standing policy and never asks', async () => {
+    const { ctx, fs } = await setupConfining({ approval: true })
+    const asked = vi.fn()
+    ctx.on('approval/request', () => { asked(); return Promise.resolve('allowed-once' as const) })
+    const result = await call(ctx, 'write', {
+      file_path: 'a.txt',
+      content: 'x',
+      sandbox_permissions: 'workspace-write',
+      justification: 'repeat the standing mode',
+    }, escalationAgent([{ type: 'sandbox/mode', data: { mode: 'workspace-write' } }]))
+    expect(result.isError).toBe(false)
+    expect(fs.stamped).toEqual([{ mode: 'workspace-write', workspaceRoot: resolve('/session-project') }])
+    expect(asked).not.toHaveBeenCalled()
+  })
+
+  it('a same-mode edit executes under the standing policy and never asks', async () => {
+    const { ctx, fs } = await setupConfining({ approval: true })
+    fs.files.set('key:a.txt', 'x')
+    const agent = escalationAgent([{ type: 'sandbox/mode', data: { mode: 'workspace-write' } }])
+    await call(ctx, 'read', { file_path: 'a.txt' }, agent)
+    const asked = vi.fn()
+    ctx.on('approval/request', () => { asked(); return Promise.resolve('allowed-once' as const) })
+    const result = await call(ctx, 'edit', {
+      file_path: 'a.txt',
+      old_string: 'x',
+      new_string: 'y',
+      sandbox_permissions: 'workspace-write',
+      justification: 'repeat the standing mode',
+    }, agent)
+    expect(result.isError).toBe(false)
+    expect(fs.stamped).toEqual([{ mode: 'workspace-write', workspaceRoot: resolve('/session-project') }])
+    expect(asked).not.toHaveBeenCalled()
+  })
+
+  it('a genuinely non-wider request fails closed with the structured code', async () => {
+    const { ctx, fs } = await setupConfining({ approval: true })
+    const asked = vi.fn()
+    ctx.on('approval/request', () => { asked(); return Promise.resolve('allowed-once' as const) })
+    const result = await call(ctx, 'write', {
+      file_path: 'a.txt',
+      content: 'x',
+      sandbox_permissions: 'workspace-write',
+      justification: 'the test needs it',
+    }, escalationAgent([{ type: 'sandbox/mode', data: { mode: 'danger-full-access' } }]))
+    expect(result.isError).toBe(true)
+    expect(result.error?.info?.code).toBe(SANDBOX_ESCALATION_NOT_WIDER)
+    expect(text(result)).toContain('not strictly wider')
+    expect(fs.stamped).toEqual([])
+    expect(asked).not.toHaveBeenCalled()
   })
 
   it('rejects the escalation argument pairing (one field without the other)', async () => {

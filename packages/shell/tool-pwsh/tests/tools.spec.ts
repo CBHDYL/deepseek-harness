@@ -28,6 +28,7 @@ import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import { ShellExecutor } from '@deepseek-ai/dsh-shell'
 import type { ShellExecRequest, ShellExecSpec, ShellProcess, ShellRunResult } from '@deepseek-ai/dsh-shell'
 import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
+import { SANDBOX_ESCALATION_NOT_WIDER } from '@deepseek-ai/dsh-sandbox'
 import * as ToolPwsh from '@deepseek-ai/dsh-tool-pwsh'
 import * as BashEnvPlugin from '@deepseek-ai/dsh-shell-env'
 import type { ShellProcessRead } from '@deepseek-ai/dsh-shell'
@@ -581,15 +582,26 @@ describe('sandbox escalation through ctx.approval', () => {
     expect(schema.parameters.properties).not.toHaveProperty('sandbox_permissions')
   })
 
-  it('rejects injected escalation without a sandbox and non-widening escalation without prompting', async () => {
+  it('rejects injected escalation without a sandbox; same-mode requests run; non-wider fails with a structured code', async () => {
     const plain = await setup()
     expect(text(await call(plain.ctx, 'pwsh', escalate))).toContain('not available in this composition')
 
-    const { ctx } = await setupSandboxed(true)
+    const { ctx, bash } = await setupSandboxed(true)
     const prompted = vi.fn()
     ctx.on('approval/request', () => { prompted(); return Promise.resolve<ApprovalOutcome>('allowed-once') })
-    const result = await call(ctx, 'pwsh', { ...escalate, sandbox_permissions: 'workspace-write' }, sandboxAgent('workspace-write'))
-    expect(text(result)).toContain('not strictly wider')
+
+    // Repeating the effective mode is idempotent: it executes under the
+    // standing policy and never prompts.
+    const same = await call(ctx, 'pwsh', { ...escalate, sandbox_permissions: 'workspace-write' }, sandboxAgent('workspace-write'))
+    expect(same.isError).toBe(false)
+    expect(bash.modes).toEqual(['workspace-write'])
+    expect(prompted).not.toHaveBeenCalled()
+
+    // A genuinely non-wider request fails closed with the structured code.
+    const narrowed = await call(ctx, 'pwsh', escalate, sandboxAgent('danger-full-access'))
+    expect(narrowed.isError).toBe(true)
+    expect(narrowed.error?.info?.code).toBe(SANDBOX_ESCALATION_NOT_WIDER)
+    expect(text(narrowed)).toContain('not strictly wider')
     expect(prompted).not.toHaveBeenCalled()
 
     const malformed = sandboxAgent()

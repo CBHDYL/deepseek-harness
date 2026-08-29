@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/guard/escalation-hider/README.md
-README.md: 630a68d2f950d4ebb01e20b473dba4bb2b81004e
-README.zh.md: b4be5b3b45ec60151517c3495db2da1b1930a113
+README.md: d37e16585e481dc526ab734ea9efce059751e256
+README.zh.md: 6df05768e6ba8110b28c45d3cddf36945352f718
