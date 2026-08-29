@@ -39,14 +39,14 @@ function writeHooks(dir: string, hooks: unknown): void {
   writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks }))
 }
 
-async function harness(dir: string, adapter: MockAdapter, beforeHooks?: (ctx: Context) => void): Promise<Context> {
+async function harness(dir: string, adapter: MockAdapter, beforeHooks?: (ctx: Context) => void, extraConfig: Record<string, unknown> = {}): Promise<Context> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(LocalSubprocessRuntime)
   await ctx.plugin(LocalBashExecutor, { timeoutMs: 10_000 })
   beforeHooks?.(ctx)
-  await ctx.plugin(HooksCodex, { configPath: join(dir, 'hooks.json'), model: 'test-model' })
+  await ctx.plugin(HooksCodex, { configPath: join(dir, 'hooks.json'), model: 'test-model', ...extraConfig })
   ctx.llm.registerAdapter(['mock'], adapter)
   return ctx
 }
@@ -104,6 +104,25 @@ describe('hooks-codex bridge', () => {
     expect(adapter.requests).toHaveLength(2)
     expect(JSON.stringify(adapter.requests[1]!.messages)).toContain('keep going: address the goal')
   }, 15_000) // Two real hook subprocesses and agent steps need startup and teardown headroom under load.
+
+  it('caps Stop-hook forced continuations per turn (stopContinuationLimit)', async () => {
+    const dir = configDir()
+    // An ALWAYS-blocking Stop hook: without the loop guard this never finishes.
+    const alwaysBlock = script(dir, 'always-block.sh', '#!/usr/bin/env bash\necho "keep going" >&2\nexit 2\n')
+    writeHooks(dir, { Stop: [{ matcher: '[', hooks: [{ type: 'command', command: alwaysBlock }] }] })
+    const adapter = new MockAdapter(Array.from({ length: 8 }, (_, i) => textResponse(`answer ${i}`)))
+    const ctx = await harness(dir, adapter, undefined, { stopContinuationLimit: 3 })
+    const agent = ctx.agentLoop.create(SessionId('stop-cap'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    // 1 initial request + at most stopContinuationLimit steers; the turn must
+    // stop after the cap instead of consuming the whole 8-response script.
+    expect(adapter.requests.length).toBeLessThanOrEqual(4)
+    expect(adapter.requests.length).toBeGreaterThan(1)
+    const turns = events(agent).filter(e => e.type === 'turn/end')
+    expect(turns.at(-1)!.data.reason.kind).toBe('completed')
+  }, 15_000)
 
   it('turn cancellation aborts and reaps a running UserPromptSubmit hook before idle', async () => {
     const dir = configDir()

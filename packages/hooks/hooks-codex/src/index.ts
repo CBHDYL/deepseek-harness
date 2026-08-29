@@ -55,6 +55,15 @@ export interface Config {
   defaultTimeoutMs?: number
   /** Character cap for the `hook/result` event's persisted stderr summary. */
   stderrSummaryMaxChars?: number
+  /**
+   * Hard budget of Stop-hook forced continuations within ONE turn. A blocking
+   * Stop hook steers another step each time it denies; without a cap an
+   * unconditional hook force-continues every step until it self-limits (or
+   * the budget/cost dies first). Once the budget is exhausted the turn is
+   * allowed to stop, and `stop_hook_active` is reported `true` so a
+   * cooperative hook can see the ceiling. Default 8.
+   */
+  stopContinuationLimit?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -62,12 +71,16 @@ export const Config: z<Config> = z.object({
   model: z.string().default(''),
   defaultTimeoutMs: z.number().default(DEFAULT_HOOK_TIMEOUT_MS),
   stderrSummaryMaxChars: z.number().default(DEFAULT_STDERR_SUMMARY_MAX_CHARS),
+  stopContinuationLimit: z.number().default(DEFAULT_STOP_CONTINUATION_LIMIT),
 })
 
 let handlerCounter = 0
 function nextHandlerId(point: string): string {
   return `codex:${point}:${++handlerCounter}`
 }
+
+/** Default Stop-hook continuation budget per turn (see {@link Config.stopContinuationLimit}). */
+const DEFAULT_STOP_CONTINUATION_LIMIT = 8
 
 const PLUGIN_SOURCE: MessageSource = { kind: 'plugin', plugin: 'hooks-codex' }
 
@@ -83,6 +96,8 @@ export function apply(ctx: Context, config: Config): void {
   const stderrSummaryMaxChars = config.stderrSummaryMaxChars ?? DEFAULT_STDERR_SUMMARY_MAX_CHARS
   assertPositiveInteger('stderrSummaryMaxChars', stderrSummaryMaxChars)
   const defaultTimeoutMs = config.defaultTimeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS
+  const stopContinuationLimit = config.stopContinuationLimit ?? DEFAULT_STOP_CONTINUATION_LIMIT
+  assertPositiveInteger('stopContinuationLimit', stopContinuationLimit)
   let parsed: CodexHookConfig = {}
   try {
     const raw: unknown = JSON.parse(readFileSync(config.configPath, 'utf8'))
@@ -253,20 +268,31 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   // A blocking Stop hook steers at the stopping boundary, which makes the
-  // machine observe pending input and run another step.
-  // TODO(stop-loop-guard): Codex supplies `stop_hook_active` so a Stop hook can
-  // avoid continuing the same turn indefinitely. It is always false here, so an
-  // unconditionally blocking hook force-continues every step until it self-limits.
+  // machine observe pending input and run another step. Codex supplies
+  // `stop_hook_active` so a Stop hook can avoid continuing the same turn
+  // indefinitely; the bridge reports it truthfully from the per-turn
+  // continuation budget so an unconditionally blocking hook cannot
+  // force-continue forever.
+  const stopChains = new WeakMap<Agent, { turn: number; count: number }>()
   ctx.on('agent/turn-stopping', async ({ agent, turn, signal }): Promise<void> => {
-    const merged = await runPoint('Stop', '', { ...turnBase(ctx, agent, 'Stop', model), stop_hook_active: false, last_assistant_message: null }, { agent, turn, signal })
+    const chain = stopChains.get(agent)
+    const count = chain !== undefined && chain.turn === turn ? chain.count + 1 : 1
+    stopChains.set(agent, { turn, count })
+    const exhausted = count > stopContinuationLimit
+    const merged = await runPoint('Stop', '', { ...turnBase(ctx, agent, 'Stop', model), stop_hook_active: exhausted, last_assistant_message: null }, { agent, turn, signal })
     /* jscpd:ignore-end */
-    if (merged.decision === 'deny') {
-      // A blocking Stop hook forces continuation; a block with no reason (exit 2,
-      // empty stderr) still forces it — fall back to a generic steering line
-      // rather than letting the turn stop.
-      const text = merged.reason ?? 'continue: blocked by Stop hook'
-      agent.steer(createUserMessage({ content: [{ type: 'text', text }], source: PLUGIN_SOURCE }))
+    if (merged.decision !== 'deny') return
+    if (exhausted) {
+      // Budget spent: allow the turn to stop. The hook already saw
+      // stop_hook_active=true, so a cooperative hook has its own signal too.
+      ctx.logger.warn(`hooks-codex: Stop hook blocked beyond stopContinuationLimit (${stopContinuationLimit}); allowing the turn to stop`)
+      return
     }
+    // A blocking Stop hook forces continuation; a block with no reason (exit 2,
+    // empty stderr) still forces it — fall back to a generic steering line
+    // rather than letting the turn stop.
+    const text = merged.reason ?? 'continue: blocked by Stop hook'
+    agent.steer(createUserMessage({ content: [{ type: 'text', text }], source: PLUGIN_SOURCE }))
   })
 }
 

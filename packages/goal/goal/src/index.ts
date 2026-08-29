@@ -116,12 +116,21 @@ export function applyGoalProjection(state: GoalProjection | null, event: Session
 export interface Config {
   /** Total rounds used when a create request omits its own cap. */
   defaultMaxGoalRounds?: number
+  /**
+   * Deployment-wide hard ceiling for `maxGoalRounds`: any requested cap above
+   * it (create or edit) is clamped to the ceiling. A goal objective may be
+   * inferred from an ordinary user message, so a model-authorized huge
+   * autonomous run must not exceed a deployment budget. Default 512.
+   */
+  maxGoalRoundsCeiling?: number
 }
 
 /** Resolved defaults. */
 export interface ResolvedConfig {
   /** Validated positive safe-integer default round cap. */
   defaultMaxGoalRounds: number
+  /** Validated positive safe-integer hard ceiling for requested caps. */
+  maxGoalRoundsCeiling: number
 }
 
 /** Process-local cache plus activation intent crossing the synchronous append boundary. */
@@ -154,13 +163,28 @@ function resolveObjective(value: string): string {
   return value.trim()
 }
 
-/** Materialize deployment defaults and validate one create request. */
-function resolveCreateGoal(request: CreateGoalRequest, defaultMaxGoalRounds: number): ResolvedCreateGoal {
+/** Materialize deployment defaults and validate one create request, clamped to the deployment ceiling. */
+function resolveCreateGoal(
+  request: CreateGoalRequest,
+  defaultMaxGoalRounds: number,
+  maxGoalRoundsCeiling: number,
+): ResolvedCreateGoal {
   return {
     objective: resolveObjective(request.objective),
-    maxGoalRounds: resolveMaxGoalRounds(request.maxGoalRounds ?? defaultMaxGoalRounds),
+    maxGoalRounds: clampGoalRounds(
+      resolveMaxGoalRounds(request.maxGoalRounds ?? defaultMaxGoalRounds),
+      maxGoalRoundsCeiling,
+    ),
   }
 }
+
+/** Clamp a validated requested round cap to the deployment ceiling (never exceeds it). */
+function clampGoalRounds(requested: number, ceiling: number): number {
+  return Math.min(requested, ceiling)
+}
+
+/** Default deployment ceiling for requested goal round caps. */
+const DEFAULT_MAX_GOAL_ROUNDS_CEILING = 512
 
 /** Validate and detach one policy-owned blocker explanation. */
 function resolveBlockReason(reason: unknown): GoalBlockReason {
@@ -185,6 +209,7 @@ export class GoalService extends TypertRemoteService {
 
   static Config: z<Config> = z.object({
     defaultMaxGoalRounds: z.number().default(256),
+    maxGoalRoundsCeiling: z.number().default(DEFAULT_MAX_GOAL_ROUNDS_CEILING),
   })
 
   private readonly resolved: ResolvedConfig
@@ -194,6 +219,7 @@ export class GoalService extends TypertRemoteService {
     super(ctx, 'goals')
     this.resolved = {
       defaultMaxGoalRounds: resolveMaxGoalRounds(config.defaultMaxGoalRounds ?? 256),
+      maxGoalRoundsCeiling: resolveMaxGoalRounds(config.maxGoalRoundsCeiling ?? DEFAULT_MAX_GOAL_ROUNDS_CEILING),
     }
     ctx.on('agent/session-start', ({ agent }) => {
       this.cache(agent.session).activation = 'disarmed'
@@ -249,7 +275,7 @@ export class GoalService extends TypertRemoteService {
    * @returns the created live view.
    */
   create(agent: Agent, request: CreateGoalRequest): GoalView {
-    const spec = resolveCreateGoal(request, this.resolved.defaultMaxGoalRounds)
+    const spec = resolveCreateGoal(request, this.resolved.defaultMaxGoalRounds, this.resolved.maxGoalRoundsCeiling)
     const cache = this.prepareMutation(agent)
     const current = cache.state.goal
     if (current !== undefined && current.phase !== 'complete') {
@@ -284,7 +310,9 @@ export class GoalService extends TypertRemoteService {
       ...current,
       revision: current.revision + 1,
       ...request.objective === undefined ? {} : { objective: resolveObjective(request.objective) },
-      ...request.maxGoalRounds === undefined ? {} : { maxGoalRounds: resolveMaxGoalRounds(request.maxGoalRounds) },
+      ...request.maxGoalRounds === undefined
+        ? {}
+        : { maxGoalRounds: clampGoalRounds(resolveMaxGoalRounds(request.maxGoalRounds), this.resolved.maxGoalRoundsCeiling) },
     }
     return this.commitCurrent(agent, cache, 'edit', goal, cache.activation)
   }
