@@ -132,3 +132,68 @@ describe('agent stream wiring', () => {
     expect(fired).toBe(0)
   })
 })
+
+describe('abort mode', () => {
+  /** Stream one full text block per-char so cancellation can land mid-stream. */
+  function perCharResponse(text: string): StreamChunk[] {
+    return [
+      { type: 'block-start', index: 0, blockType: 'text' },
+      ...Array.from(text, (char): StreamChunk => ({ type: 'text-delta', index: 0, text: char })),
+      { type: 'block-end', index: 0, block: { type: 'text', text } },
+      { type: 'usage', usage: { inputTokens: 10, outputTokens: text.length } },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ]
+  }
+
+  async function abortHarness(config: object): Promise<{ ctx: Context; agent: Agent }> {
+    const ctx = new Context()
+    await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    await ctx.plugin(OutputRepetitionGuard, config)
+    return { ctx, agent: ctx.agentLoop.create(SessionId('a9'), { provider: 'mock', model: 'mock' }) }
+  }
+
+  function waitForIdle(ctx: Context, agent: Agent): Promise<void> {
+    return new Promise((resolve) => {
+      const d = ctx.on('agent/status', ({ agent: s, status }) => {
+        if (s === agent && status === 'idle') {
+          d()
+          resolve()
+        }
+      })
+    })
+  }
+
+  it('cancels the streaming turn on detection and preserves one interrupted copy', async () => {
+    const { ctx, agent } = await abortHarness({ minSectionChars: 64, abortStream: true })
+    const section = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz0123' // 64 non-periodic chars
+    ctx.llm.registerAdapter(['mock'], new MockAdapter([
+      () => perCharResponse(section + section + section),
+    ]))
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    const turns = [...agent.session.events].filter((e): e is SessionEvent<'turn/end'> => e.type === 'turn/end')
+    expect(turns.at(-1)!.data.reason.kind).toBe('aborted')
+    // The streamed prefix was preserved as an interrupted assistant message —
+    // not the full triple repetition.
+    const messages = [...agent.session.events].filter((e): e is SessionEvent<'assistant/message'> => e.type === 'assistant/message')
+    expect(messages).toHaveLength(1)
+    expect(messages[0]!.data.interrupted).toBe(true)
+    const text = messages[0]!.data.message.content.map(b => b.type === 'text' ? b.text : '').join('')
+    expect(text.length).toBeLessThan(section.length * 3)
+    expect(text.length).toBeGreaterThanOrEqual(section.length * 2)
+  })
+
+  it('stays telemetry-only when abortStream is false (default)', async () => {
+    const { ctx, agent } = await abortHarness({ minSectionChars: 64 })
+    ctx.llm.registerAdapter(['mock'], new MockAdapter([
+      () => perCharResponse('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyz0123'.repeat(2)),
+    ]))
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+
+    const turns = [...agent.session.events].filter((e): e is SessionEvent<'turn/end'> => e.type === 'turn/end')
+    expect(turns.at(-1)!.data.reason.kind).toBe('completed')
+  })
+})

@@ -46,12 +46,21 @@ export interface Config {
   minRepeat?: number
   /** Maximum detections emitted per agent step (default 1). */
   emitLimit?: number
+  /**
+   * When a repeat is detected, cancel the streaming agent turn (cause
+   * `{kind:'hook'}`) so the degenerate output stops being generated live; the
+   * already-streamed prefix is preserved as an interrupted assistant message.
+   * Default false — telemetry only, so the safe order (observe first) is the
+   * default.
+   */
+  abortStream?: boolean
 }
 
 export const Config: z<Config> = z.object({
   minSectionChars: z.number().default(400),
   minRepeat: z.number().default(2),
   emitLimit: z.number().default(1),
+  abortStream: z.boolean().default(false),
 })
 
 export interface Detection {
@@ -144,6 +153,7 @@ export function apply(ctx: Context, config: Config): void {
   const minSectionChars = config.minSectionChars ?? 400
   const minRepeat = config.minRepeat ?? 2
   const emitLimit = config.emitLimit ?? 1
+  const abortStream = config.abortStream ?? false
   if (!Number.isInteger(emitLimit) || emitLimit < 1) {
     throw new Error(`output-repetition-guard: invalid emitLimit ${emitLimit} — must be an integer >= 1`)
   }
@@ -172,5 +182,15 @@ export function apply(ctx: Context, config: Config): void {
       sectionChars: hit.sectionChars,
       repeatCount: hit.repeatCount,
     })
+    if (abortStream) {
+      // Live interception: cancel the streaming turn so the degenerate output
+      // stops at the next chunk boundary. The loop preserves the streamed
+      // prefix as an interrupted assistant message (one canonical copy), and
+      // the abort is recorded durably with the hook cause.
+      agent.cancel({
+        kind: 'hook',
+        reason: `output repetition detected: section of ${hit.sectionChars} chars repeated ${hit.repeatCount} times`,
+      })
+    }
   })
 }
