@@ -5,12 +5,16 @@
 # 全局安装 /Users/bohongchen/.nvm/.../node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai。
 # v1 替换了 profile .pnpm 的附属包（不影响核心，反而造成版本混合污染）。
 #
-# v2 做三件事：
+# v2.2 做四件事（v2.1 + 补齐阶段1-6/第二波遗漏包）：
 #   1. 恢复 profile 到备份（撤掉 v1 的污染）
 #   2. 备份全局 dsh 安装
-#   3. 替换全局：源码 build:lib 产物覆盖改过的包 lib/ + 复制新增 guard 包 +
+#   3. 替换全局：源码 build:lib 产物覆盖改过的包 lib/（含 boot/app-boot——
+#      $merge/$unset 补丁支持的 app-boot 侧）+ 复制新增包（guard×3 + web-fetch-http
+#      SSRF 防护——全局发布包不含此包，需整体复制 package.json + lib）+
 #      覆盖 dsh-base/cordis.patch.yml（启用新 guard + vetoAt）
 #   4. 重启 dsh web + 冒烟 + 失败回滚
+# 2026-08-29 部署验证（DSH-AH-PLAN-EVALUATION.md）补漏：app-boot 与 web-fetch-http
+#   此前不在映射里，运行时 index.js 与源码不一致/整包缺失。
 #
 # 仍需你在宿主外执行（重启会中断当前会话）：
 #   bash /Users/bohongchen/Projects/deepseek-harness/scripts/deploy-dsh-web.sh
@@ -61,22 +65,31 @@ host/apiproxy dsh-host-apiproxy
 goal/goal dsh-goal
 session/session-projection-cache dsh-session-projection-cache
 sandbox/sandbox-policy dsh-sandbox-policy
+boot/app-boot dsh-app-boot
 MAP
 echo "  替换 $replaced 个包 lib"
 cp "$SRC/vendor/include/lib/index.js" "$G/cordis-plugin-include/lib/index.js" || true
 echo "  vendor include 已替换"
 
-echo "== 4/6 复制新增 guard 包 + 覆盖 base patch =="
-for pkg in escalation-hider output-repetition-guard action-policy-guard; do
-  srcdir="$SRC/packages/guard/$pkg"
-  if [ -d "$srcdir/lib" ]; then
-    rm -rf "$G/dsh-$pkg"
-    mkdir -p "$G/dsh-$pkg"
-    cp "$srcdir/package.json" "$G/dsh-$pkg/"
-    cp -R "$srcdir/lib" "$G/dsh-$pkg/lib"
-    echo "  新增包 dsh-$pkg"
+echo "== 4/6 复制新增包（guard×3 + web-fetch-http SSRF）+ 覆盖 base patch =="
+# (srcDir pkgName) 对：全局不存在或需整体替换的包，整体复制 package.json + lib
+while read -r srcdir pkg; do
+  [ -z "$srcdir" ] && continue
+  if [ -d "$SRC/packages/$srcdir/lib" ]; then
+    rm -rf "$G/$pkg"
+    mkdir -p "$G/$pkg"
+    cp "$SRC/packages/$srcdir/package.json" "$G/$pkg/"
+    cp -R "$SRC/packages/$srcdir/lib" "$G/$pkg/lib"
+    echo "  新增/整体替换包 $pkg"
+  else
+    echo "  ⚠️ $srcdir 无 lib，跳过 $pkg" >&2
   fi
-done
+done <<'NEWPKG'
+guard/escalation-hider dsh-escalation-hider
+guard/output-repetition-guard dsh-output-repetition-guard
+guard/action-policy-guard dsh-action-policy-guard
+web/web-fetch-http dsh-web-fetch-http
+NEWPKG
 cp "$SRC/packages/bundle/base/cordis.patch.yml" "$G/dsh-base/cordis.patch.yml"
 echo "  base patch 已覆盖（启用 escalation-hider/output-repetition-guard/action-policy-guard + vetoAt:6）"
 
