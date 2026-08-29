@@ -90,7 +90,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }[T]
 ```
 
-Sources: [`packages/core/session/src/types.ts:340`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:347`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:376`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:408`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:360`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:367`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:396`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:428`](../packages/core/session/src/types.ts)
 
 ## Events
 
@@ -535,6 +535,44 @@ Source: [`packages/plan/plan-mode/src/index.ts:53`](../packages/plan/plan-mode/s
 
 ### `request/*`
 
+<a id="requestattempt-end--log-only"></a>
+
+#### `request/attempt-end` — log-only
+
+```ts persistence-catalog
+/**
+ * The terminal outcome of one attempt: `ok` after a usable stream, or a
+ * failure + decision (`throw` when the step gives up, `retry` when the
+ * policy asked for another attempt, `retry-exhausted` when the core attempt
+ * budget ran out).
+ */
+'request/attempt-end': {
+  turn: number
+  step: number
+  attempt: number
+  outcome: 'ok' | 'throw' | 'retry' | 'retry-exhausted'
+  failure?: LlmFailure
+}
+```
+
+Source: [`packages/core/session/src/types.ts:327`](../packages/core/session/src/types.ts)
+
+<a id="requestattempt-start--log-only"></a>
+
+#### `request/attempt-start` — log-only
+
+```ts persistence-catalog
+/**
+ * One model-request attempt inside a step, opened before the provider stream
+ * begins. `attempt` is 1-based and counts every request the step makes,
+ * including retries — the durable identity replay, telemetry, and recovery
+ * use to separate attempts that share the same turn/step coordinates.
+ */
+'request/attempt-start': { turn: number; step: number; attempt: number; provider: string; model: string }
+```
+
+Source: [`packages/core/session/src/types.ts:320`](../packages/core/session/src/types.ts)
+
 <a id="requestcontext--log-only"></a>
 
 #### `request/context` — log-only
@@ -636,7 +674,7 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 'session/end-seed': Record<string, never>
 ```
 
-Source: [`packages/core/session/src/types.ts:336`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:356`](../packages/core/session/src/types.ts)
 
 <a id="sessiontitle--log-only"></a>
 

@@ -70,7 +70,7 @@ describe('agent-loop settings section', () => {
 
     const descriptor = bench.ctx.settings.describe().find(row => String(row.ns) === 'agent-loop')
 
-    expect(Object.keys(descriptor?.value as object)).toEqual(['maxParallelToolCalls'])
+    expect(Object.keys(descriptor?.value as object)).toEqual(['maxParallelToolCalls', 'maxRequestAttempts'])
     await bench.ctx.fiber.dispose()
   })
 

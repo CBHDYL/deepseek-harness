@@ -312,6 +312,26 @@ export interface SessionEventMap {
    */
   'request/context': RequestContext
   /**
+   * One model-request attempt inside a step, opened before the provider stream
+   * begins. `attempt` is 1-based and counts every request the step makes,
+   * including retries — the durable identity replay, telemetry, and recovery
+   * use to separate attempts that share the same turn/step coordinates.
+   */
+  'request/attempt-start': { turn: number; step: number; attempt: number; provider: string; model: string }
+  /**
+   * The terminal outcome of one attempt: `ok` after a usable stream, or a
+   * failure + decision (`throw` when the step gives up, `retry` when the
+   * policy asked for another attempt, `retry-exhausted` when the core attempt
+   * budget ran out).
+   */
+  'request/attempt-end': {
+    turn: number
+    step: number
+    attempt: number
+    outcome: 'ok' | 'throw' | 'retry' | 'retry-exhausted'
+    failure?: LlmFailure
+  }
+  /**
    * Marks the end of a constructor seed. Events before it have smaller seq
    * values and came from the seed (resume, fork, or replay); this lifecycle
    * produced none of them. This log-only event is the durable projection of

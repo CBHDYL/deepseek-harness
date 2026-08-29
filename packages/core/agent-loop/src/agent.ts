@@ -370,11 +370,19 @@ export class ReactLoopAgent implements Agent {
     const { turn, step, abort: { signal } } = this.phase
     signal.throwIfAborted()
     const system = renderPrompt(assembly)
+    const maxRequestAttempts = this.loopCtx.agentLoop.config.maxRequestAttempts
+    let attempt = 0
 
     while (true) {
       const { request, preparedCall } = await this.buildRequest(
         turn, step, assembly.tools, system, this.session.deriveMessages(), signal,
       )
+      attempt += 1
+      console.error('DBG attempt-start', attempt, request.provider)
+      this.session.append('request/attempt-start', {
+        turn, step, attempt, provider: request.provider, model: request.model,
+      })
+      console.error('DBG attempt-start appended ok')
       const assembler = new BlockAssembler()
       const chunkSeqs: number[] = []
       try {
@@ -388,6 +396,10 @@ export class ReactLoopAgent implements Agent {
         }
         signal.throwIfAborted()
       } catch (error: unknown) {
+        this.session.append('request/attempt-end', {
+          turn, step, attempt, outcome: 'throw',
+          failure: error instanceof LlmError ? error.failure : { message: errorChain(error), code: 'UNKNOWN' },
+        })
         if (signal.aborted) {
           const content = assembler.interruptedBlocks()
           if (content.length > 0) {
@@ -420,10 +432,32 @@ export class ReactLoopAgent implements Agent {
         )
         signal.throwIfAborted()
         if (action?.kind !== 'retry') {
+          this.session.append('request/attempt-end', {
+            turn, step, attempt, outcome: 'throw', failure: finish.failure,
+          })
           throw new LlmError(finish.failure.message, finish.failure.code, finish.failure)
         }
+        if (attempt >= maxRequestAttempts) {
+          // Core retry budget: a faulty request-error listener cannot retry
+          // forever within one step. The policy asked for another attempt but
+          // the step gives up at the hard cap.
+          this.session.append('request/attempt-end', {
+            turn, step, attempt, outcome: 'retry-exhausted', failure: finish.failure,
+          })
+          throw new LlmError(
+            `request exceeded ${maxRequestAttempts} attempts in step ${step}`,
+            'REQUEST_ATTEMPTS_EXCEEDED', finish.failure,
+          )
+        }
+        this.session.append('request/attempt-end', {
+          turn, step, attempt, outcome: 'retry', failure: finish.failure,
+        })
         continue
       }
+
+      console.error('DBG attempt-end ok append')
+      this.session.append('request/attempt-end', { turn, step, attempt, outcome: 'ok' })
+      console.error('DBG attempt-end ok appended')
 
       const message = createAssistantMessage({
         content: assembler.blocks(),

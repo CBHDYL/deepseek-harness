@@ -138,6 +138,15 @@ function resolveMaxParallelToolCalls(value: number | undefined): number {
   return maxParallelToolCalls
 }
 
+/** Validate the per-step request-attempt cap (retry budget). */
+function resolveMaxRequestAttempts(value: number | undefined): number {
+  const maxRequestAttempts = value ?? DEFAULT_MAX_REQUEST_ATTEMPTS
+  if (!Number.isInteger(maxRequestAttempts) || maxRequestAttempts < 1) {
+    throw new Error('maxRequestAttempts must be a positive integer')
+  }
+  return maxRequestAttempts
+}
+
 /** Reject an output-token cap that cannot be represented exactly on the request wire. */
 function assertAgentOptions(options: AgentOptions): void {
   if (options.maxTokens !== undefined
@@ -183,6 +192,9 @@ declare module '@deepseek-ai/cordis' {
     'agent-loop/config-start-failed'(payload: { sessionId: SessionId; error: unknown }): void
   }
 }
+
+/** Default hard cap on model-request attempts per step (see {@link Config.maxRequestAttempts}). */
+export const DEFAULT_MAX_REQUEST_ATTEMPTS = 16
 
 export { DEFAULT_MAX_PARALLEL_TOOL_CALLS }
 
@@ -244,11 +256,14 @@ export const AGENT_LOOP_SETTINGS_NAMESPACE = settingsNamespace('agent-loop')
 export interface AgentLoopSettings {
   /** Maximum parallel-safe calls in flight per agent step. */
   maxParallelToolCalls: number
+  /** Hard cap on model-request attempts per step, including retries. */
+  maxRequestAttempts: number
 }
 
 /** Schema of the agent-loop settings section. */
 export const AGENT_LOOP_SETTINGS_SCHEMA: z<AgentLoopSettings> = z.object({
   maxParallelToolCalls: z.number().step(1).min(1).default(DEFAULT_MAX_PARALLEL_TOOL_CALLS),
+  maxRequestAttempts: z.number().step(1).min(1).default(DEFAULT_MAX_REQUEST_ATTEMPTS),
 })
 
 /** Agent-loop plugin configuration. */
@@ -258,6 +273,12 @@ export interface Config {
    * omission defaults to {@link DEFAULT_MAX_PARALLEL_TOOL_CALLS}.
    */
   maxParallelToolCalls?: number
+  /**
+   * Hard cap on model-request attempts per step, including retries. A faulty
+   * or hostile `agent/request-error` listener cannot retry forever; the step
+   * fails with `REQUEST_ATTEMPTS_EXCEEDED` at the cap. Default 16.
+   */
+  maxRequestAttempts?: number
   /** Agents created or resumed at plugin startup. */
   agents: (AgentOptions & {
     /** Stable config label used in logs and as the fresh combined-id prefix. */
@@ -272,7 +293,7 @@ export interface Config {
 }
 
 /** Agent-loop configuration after defaults and load-time validation. */
-type ResolvedConfig = Config & { maxParallelToolCalls: number }
+type ResolvedConfig = Config & { maxParallelToolCalls: number; maxRequestAttempts: number }
 
 /** Reject self-contained identity conflicts before any configured agent starts. */
 function validateConfiguredAgents(agents: Config['agents']): void {
@@ -320,6 +341,7 @@ export class AgentLoop extends Service implements AgentFactory {
     super(ctx, 'agentLoop')
     const entry: AgentLoopSettings = {
       maxParallelToolCalls: resolveMaxParallelToolCalls(config.maxParallelToolCalls),
+      maxRequestAttempts: resolveMaxRequestAttempts(config.maxRequestAttempts),
     }
     let source: () => AgentLoopSettings = () => entry
     this.config = {
@@ -330,6 +352,9 @@ export class AgentLoop extends Service implements AgentFactory {
       // group without disturbing the one in flight.
       get maxParallelToolCalls() {
         return source().maxParallelToolCalls
+      },
+      get maxRequestAttempts() {
+        return source().maxRequestAttempts
       },
     }
     installSettingsSection(ctx, AGENT_LOOP_SETTINGS_NAMESPACE, AGENT_LOOP_SETTINGS_SCHEMA, entry, {
