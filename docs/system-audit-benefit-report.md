@@ -33,6 +33,32 @@ bundles-boot）+ 会话日志取证（含 packed-rows 修正版）。
 - 附带发现：packed rows 使基于日志的诊断工具（grep/session-query/未展开读取）
   看不见真实事件——首次取证因此得出错误结论。这是诊断工具链的实质弱点。
 
+## 二·五、实施状态（截至 2026-08，分支 dsh-core-stopgap）
+
+以下 P0 已实施并验证（每项红测→绿、build:lib 通过、oxlint 0 错误）：
+
+| P0 项 | 提交 |
+|---|---|
+| 重复调用熔断 + 失败链（repeat-tool-reminder vetoAt/失败指纹） | dbfb10b88, eb7486e5f |
+| 无效升级参数隐藏（escalation-hider） | dbfb10b88 |
+| 输出重复检测 + 活体中止（output-repetition-guard） | dbfb10b88, 82e686e96 |
+| 流终止语法强制（EOF 无 finish 即结构化错误） | 82e686e96 |
+| packed-rows 日志取证工具（scripts/expand-session-log.mjs） | 82e686e96 |
+| Stop-hook 续跑预算（stopContinuationLimit） | 4f78e37f2 |
+| 部署级 goal 轮次 ceiling（maxGoalRoundsCeiling） | 4f78e37f2 |
+| SSRF 防护（web-fetch-http 私网封锁） | 6392a4cb8 |
+| 事务化 step 准入（准备失败恢复已认领输入） | 2b8dc1ce4 |
+| 补丁契约断言（patch require） | 018097fd7 |
+| 工具调用/结果闭合契约（TOOL_OUTCOME_UNKNOWN） | 71a046b3e |
+| 请求尝试台账 + 核心 retry 预算 | 4ff49dfc7 |
+| MCP 发现有界化（游标/页数/工具数/超时） | ed90413e6 |
+| 有界 FrameQueue（丢旧 + 计数） | 581c24ec8 |
+| 投影缓存重试事务化（dirtyStats 观测） | 6d8ba8fca |
+| 类型化补丁操作（\$merge/\$unset） | 06135d51e |
+| 持久编排日志（job/start + job/end 入会话） | dd9b78740 |
+| 中央动作策略拦截器（action-policy-guard） | 51dfa5808 |
+| 游标续传（mux since 增量重放，host 端） | fb768e955 |
+
 ## 三、收益排序行动清单
 
 ### P0（收益最高，建议先做）
