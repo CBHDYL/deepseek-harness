@@ -631,6 +631,36 @@ describe('tool-call scheduler: abort handling', () => {
 })
 
 describe('tool-call scheduler: failure quiescence', () => {
+  it('closes the durable log: a scheduler failure yields an explicit outcome-unknown result for every started call', async () => {
+    const adapter = new MockAdapter([
+      multiCall([
+        { id: 'c1', name: 'p', args: { id: '1' } },
+        { id: 'c2', name: 'p', args: { id: '2' } },
+      ]),
+    ])
+    const ctx = await harness(adapter, 2)
+    ctx.tools.register(gatedParallelTool('p').tool)
+    const scheduler = ctx.tools[TOOL_RUNTIME_SCHEDULER]
+    const dispatch = scheduler.dispatch.bind(scheduler)
+    const schedulerError = new Error('scheduler exploded')
+    scheduler.dispatch = exec => exec.callId === CallId('c1')
+      ? new Promise((_resolve, reject) => { reject(schedulerError) })
+      : dispatch(exec).then(() => { throw new Error('sibling failed while draining') })
+    const agent = ctx.agentLoop.create(SessionId('closure-1'), { provider: 'mock', model: 'mock' })
+    const idle = waitForIdle(ctx, agent)
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await idle
+
+    const log = events(agent)
+    const calls = log.filter(e => e.type === 'tool/call')
+    const results = log.filter(e => e.type === 'tool/result')
+    // Every started call has a matching result: no orphan tool/call remains.
+    expect(calls.length).toBe(results.length)
+    // The interrupted call is marked outcome-unknown, not silently missing.
+    const interrupted = results.find(r => r.data.message.source.callId === CallId('c1'))
+    expect(interrupted?.data.error?.code).toBe('TOOL_OUTCOME_UNKNOWN')
+  })
+
   it('stops new dispatches and drains started bodies before surfacing the first failure', async () => {
     const adapter = new MockAdapter([
       multiCall([

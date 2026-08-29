@@ -231,6 +231,29 @@ async function runGroup(
   } catch (error: unknown) {
     schedulerFailure ??= { error }
     await Promise.allSettled(inFlight.values())
+    // Close the durable log: every started call must carry a result. Settled
+    // results commit their real outcome; calls whose dispatch failed (or that
+    // never reached a slot) receive an explicit outcome-unknown marker — an
+    // orphan `tool/call` with no `tool/result` would poison continuation,
+    // replay, and the session invariant.
+    for (let index = committed; index < started; index += 1) {
+      const call = group[index]
+      const callSeq = callSeqs[index]
+      const slot = slots[index]
+      if (call === undefined || callSeq === undefined || callSeq < 0) continue
+      if (slot !== undefined) {
+        try {
+          const result = slot.needsPost
+            ? await ctx.tools[TOOL_RUNTIME_SCHEDULER].finalize(slot.exec, slot.result)
+            : ctx.tools[TOOL_RUNTIME_SCHEDULER].finish(slot.exec, slot.result)
+          appendToolResult(session, turn, step, call.block, result, callSeq)
+          continue
+        } catch {
+          // Fall through to the explicit unknown marker.
+        }
+      }
+      appendOutcomeUnknown(session, turn, step, call.block, callSeq)
+    }
     throw schedulerFailure.error
   }
 
@@ -254,6 +277,23 @@ function appendSkippedToolCall(session: Session, turn: number, step: number, blo
     error: {
       message: 'tool call aborted before dispatch',
       info: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH },
+    },
+  }, callSeq)
+}
+
+/**
+ * Append the explicit outcome-unknown marker for a started call whose
+ * scheduler dispatch failed: the call ran (or may have run) but its outcome
+ * is not recoverable from the broken scheduler. Keeping a result — even an
+ * unknown one — preserves the durable call/result pairing contract.
+ */
+function appendOutcomeUnknown(session: Session, turn: number, step: number, block: ToolCallBlock, callSeq: number): void {
+  appendToolResult(session, turn, step, block, {
+    content: [{ type: 'text', text: 'Error: tool call outcome unknown (scheduler failure interrupted execution)' }],
+    isError: true,
+    error: {
+      message: 'tool call outcome unknown (scheduler failure interrupted execution)',
+      info: { name: 'ToolOutcomeUnknown', code: 'TOOL_OUTCOME_UNKNOWN' },
     },
   }, callSeq)
 }
