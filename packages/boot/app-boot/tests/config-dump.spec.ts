@@ -234,6 +234,46 @@ describe('patch contracts (require)', () => {
     ], () => {})).toThrow(/gone-row/)
   })
 
+  it('merges config with $merge instead of replacing wholesale', () => {
+    const dir = tmp()
+    const base = writeBase(dir)
+    const overlay = join(dir, 'merge.yml')
+    writeFileSync(overlay, [
+      '- id: shared',
+      '  config:',
+      '    $merge:',
+      '      value: patched',
+      '      added: new-key',
+      '',
+    ].join('\n'))
+    const dump = renderConfigDump(NAME, base, [
+      { label: 'merge.yml', patches: loadOverlayPatches(NAME, overlay) },
+    ], () => {})
+    const parsed = yaml.load(dump, { schema: entryListSchema }) as { id: string; config?: Record<string, unknown> }[]
+    const row = parsed.find(entry => entry.id === 'shared')
+    // `key` (from the base) survives; `value` is overridden; `added` appears.
+    expect(row?.config).toMatchObject({ key: expect.anything(), value: 'patched', added: 'new-key' })
+  })
+
+  it('removes config keys with $unset', () => {
+    const dir = tmp()
+    const base = writeBase(dir)
+    const overlay = join(dir, 'unset.yml')
+    writeFileSync(overlay, [
+      '- id: shared',
+      '  config:',
+      '    $unset: [value]',
+      '',
+    ].join('\n'))
+    const dump = renderConfigDump(NAME, base, [
+      { label: 'unset.yml', patches: loadOverlayPatches(NAME, overlay) },
+    ], () => {})
+    const parsed = yaml.load(dump, { schema: entryListSchema }) as { id: string; config?: Record<string, unknown> }[]
+    const row = parsed.find(entry => entry.id === 'shared')
+    expect(row?.config?.value).toBeUndefined()
+    expect(row?.config?.key).toBeDefined() // untouched keys survive
+  })
+
   it('rejects a malformed require value', () => {
     const dir = tmp()
     const base = writeBase(dir)

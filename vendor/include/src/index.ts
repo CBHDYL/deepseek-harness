@@ -55,6 +55,26 @@ function retryableWriteError(error: unknown): boolean {
  * @param warn - sink for skipped-patch diagnostics (printf-style, `%C` = code).
  * @returns a detached entry list with every applicable patch applied.
  */
+/** Whether a value is a plain object (not an array or null). */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Deep-merge `patch` into `target` in place: plain objects recurse, arrays and
+ * scalars replace. Used by the typed `$merge` patch form.
+ */
+function deepMergeInto(target: Record<string, unknown>, patch: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(patch)) {
+    const current = target[key]
+    if (isPlainObject(current) && isPlainObject(value)) {
+      deepMergeInto(current, value)
+    } else {
+      target[key] = value
+    }
+  }
+}
+
 export function applyEntryPatches(
   data: EntryOptions[],
   patches: PatchOptions[] | undefined,
@@ -118,7 +138,31 @@ export function applyEntryPatches(
       continue
     }
 
-    for (const [key, value] of Object.entries(overrides)) {
+    // Typed structural patch: `config: { $merge: {...}, $unset: [...] }` merges
+    // into the target's EXISTING config instead of replacing it wholesale — a
+    // base upgrade adding a required or security-relevant field is no longer
+    // erased by an older overlay that restates only the keys it knows. Without
+    // $merge/$unset the behavior is unchanged (whole-value replacement).
+    let effectiveOverrides = overrides
+    const configOverride = overrides.config
+    if (isPlainObject(configOverride)
+      && (configOverride.$merge !== undefined || configOverride.$unset !== undefined)) {
+      const { $merge, $unset, ...rest } = configOverride
+      if (Object.keys(rest).length > 0) {
+        warn('patch: config $merge/$unset may not carry sibling keys for %C; skipping the merge', id)
+      } else {
+        const base = isPlainObject(target.config)
+          ? { ...target.config as Record<string, unknown> }
+          : {}
+        deepMergeInto(base, ($merge ?? {}) as Record<string, unknown>)
+        for (const key of ($unset ?? []) as string[]) delete base[key]
+        target.config = base
+        effectiveOverrides = { ...overrides }
+        delete effectiveOverrides.config
+      }
+    }
+
+    for (const [key, value] of Object.entries(effectiveOverrides)) {
       if (key === 'id') continue
       target[key] = value
     }
