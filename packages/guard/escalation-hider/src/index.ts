@@ -92,6 +92,53 @@ export function shouldHideEscalation(
   return left !== undefined && right !== undefined && left >= right
 }
 
+/** Whether a parameter key is one of the escalation fields. */
+function isEscalationParameter(key: string): boolean {
+  return (ESCALATION_PARAMETERS as readonly string[]).includes(key)
+}
+
+/**
+ * Strip escalation fields from one `parameters` object, handling both shapes a
+ * registered tool's parameters take. `defineTool` compiles the parameter spec
+ * into a JSON Schema whose fields live under `properties` (with stripped names
+ * also dropped from `required`); hand-built schemas keep a flat field map.
+ * Returns the same reference when nothing matched.
+ * @param parameters - the tool's parameters object, in either shape.
+ * @returns the stripped object, or the input reference when untouched.
+ */
+function stripEscalationFields(parameters: Record<string, unknown>): Record<string, unknown> {
+  const properties = parameters['properties']
+  if (typeof properties === 'object' && properties !== null && !Array.isArray(properties)) {
+    const keptProperties: Record<string, unknown> = {}
+    let removed = 0
+    for (const [key, value] of Object.entries(properties)) {
+      if (isEscalationParameter(key)) {
+        removed += 1
+        continue
+      }
+      keptProperties[key] = value
+    }
+    if (removed === 0) return parameters
+    const next: Record<string, unknown> = { ...parameters, properties: keptProperties }
+    const required = parameters['required']
+    if (Array.isArray(required)) {
+      const keptRequired = required.filter((key): key is string => typeof key === 'string' && !isEscalationParameter(key))
+      if (keptRequired.length !== required.length) next['required'] = keptRequired
+    }
+    return next
+  }
+  const kept: Record<string, unknown> = {}
+  let removed = 0
+  for (const [key, value] of Object.entries(parameters)) {
+    if (isEscalationParameter(key)) {
+      removed += 1
+      continue
+    }
+    kept[key] = value
+  }
+  return removed === 0 ? parameters : kept
+}
+
 /**
  * Strip escalation parameters from every tool whose name matches the patterns.
  * Tools without the parameters (or outside the patterns) pass through untouched.
@@ -108,10 +155,9 @@ export function stripEscalationParameters(
   return tools.map((tool) => {
     const matches = matchers.some(pattern => pattern.test(tool.name))
     if (!matches) return tool
-    const entries = Object.entries(tool.parameters)
-    const kept = entries.filter(([key]) => !ESCALATION_PARAMETERS.includes(key as (typeof ESCALATION_PARAMETERS)[number]))
-    if (kept.length === entries.length) return tool
-    return { ...tool, parameters: Object.fromEntries(kept) }
+    const stripped = stripEscalationFields(tool.parameters)
+    if (stripped === tool.parameters) return tool
+    return { ...tool, parameters: stripped }
   })
 }
 

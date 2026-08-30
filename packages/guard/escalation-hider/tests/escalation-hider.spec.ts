@@ -4,6 +4,7 @@ import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
 import * as EscalationHider from '@deepseek-ai/dsh-escalation-hider'
 import { shouldHideEscalation, stripEscalationParameters } from '@deepseek-ai/dsh-escalation-hider'
 
@@ -121,6 +122,62 @@ describe('stripEscalationParameters', () => {
     const tools = sampleTools()
     expect(stripEscalationParameters(tools, [])).toBe(tools)
   })
+
+  it('strips escalation params nested under compiled-schema properties and from required', () => {
+    const tools: ToolSchema[] = [{
+      name: 'bash',
+      description: 'run a command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+          sandbox_permissions: { type: 'string' },
+          justification: { type: 'string' },
+        },
+        required: ['command', 'sandbox_permissions'],
+      },
+    }]
+    const [stripped] = stripEscalationParameters(tools, ['bash'])
+    expect(stripped!.parameters).toEqual({
+      type: 'object',
+      properties: { command: { type: 'string' } },
+      required: ['command'],
+    })
+  })
+
+  it('keeps identity when a compiled schema carries no escalation fields', () => {
+    const tool: ToolSchema = {
+      name: 'bash',
+      description: 'run a command',
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string' } },
+        required: ['command'],
+      },
+    }
+    expect(stripEscalationParameters([tool], ['bash'])[0]).toBe(tool)
+  })
+
+  it('keeps required untouched when it does not name escalation fields', () => {
+    const tools: ToolSchema[] = [{
+      name: 'bash',
+      description: 'run a command',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string' },
+          sandbox_permissions: { type: 'string' },
+        },
+        required: ['command'],
+      },
+    }]
+    const [stripped] = stripEscalationParameters(tools, ['bash'])
+    expect(stripped!.parameters).toEqual({
+      type: 'object',
+      properties: { command: { type: 'string' } },
+      required: ['command'],
+    })
+  })
 })
 
 describe('assembly wiring', () => {
@@ -200,5 +257,44 @@ describe('assembly wiring', () => {
       fallback,
     )
     expect(assembly.tools[0]!.parameters).toHaveProperty('sandbox_permissions')
+  })
+
+  it('strips escalation params from a defineTool-compiled schema in the real assembly path', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt, {})
+    await ctx.plugin(ToolRuntime, {})
+    await ctx.plugin(EscalationHider, {})
+    ctx.tools.register(defineTool({
+      name: 'bash',
+      description: 'run a command',
+      parameters: {
+        command: { type: 'string', required: true, description: 'cmd' },
+        sandbox_permissions: { type: 'string', description: 'escalate' },
+        justification: { type: 'string', description: 'why' },
+      },
+      async execute() { return { ok: true } },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { ok: { type: 'boolean', required: true } },
+        },
+        render: () => [{ type: 'text', text: 'ok' }],
+      },
+    }))
+    const fakeAgent = {
+      session: {
+        events: [
+          { seq: 0, type: 'sandbox/mode', data: { mode: 'danger-full-access' } },
+        ] as unknown[],
+      },
+    } as unknown as Agent
+    const assembly = await ctx.systemPrompt.assemble({ agent: fakeAgent, scope: fakeAgent })
+    const bash = assembly.tools.find(tool => tool.name === 'bash')
+    expect(bash).toBeDefined()
+    const properties = bash!.parameters['properties'] as Record<string, unknown>
+    expect(properties).not.toHaveProperty('sandbox_permissions')
+    expect(properties).not.toHaveProperty('justification')
+    expect(properties).toHaveProperty('command')
   })
 })
