@@ -18,6 +18,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { PreToolDecision } from '@deepseek-ai/dsh-tools'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
+import type { ActionPolicyCandidateEventData, ActionPolicyEffectSource } from './types.ts'
+
+export type { ActionPolicyCandidateEventData, ActionPolicyEffectSource } from './types.ts'
 
 export const name = 'action-policy-guard'
 
@@ -61,11 +64,20 @@ export function apply(ctx: Context, config: Config): void {
     toolCtx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
       const tool = exec.agent === undefined ? undefined : toolCtx.tools.get(exec.name, scopeOf(exec.agent.ctx))
       const effects = tool?.effects
-      const effectful = effects === 'side-effectful'
-        || (effects === undefined && treatUndeclared)
-      if (!effectful) return next()
+      const effectSource: ActionPolicyEffectSource | undefined = effects === 'side-effectful'
+        ? 'declared'
+        : effects === undefined && treatUndeclared ? 'undeclared' : undefined
+      if (effectSource === undefined) return next()
 
       if (mode === 'observe') {
+        if (exec.agent !== undefined) {
+          const candidate: ActionPolicyCandidateEventData = {
+            toolName: exec.name,
+            callId: exec.callId,
+            effectSource,
+          }
+          exec.agent.session.append('action-policy/candidate', candidate, { ignorable: true })
+        }
         toolCtx.logger.warn(
           `action-policy: side-effectful tool "${exec.name}" invoked without an approval gate (observe mode; declare effects: read-only to exempt)`,
         )

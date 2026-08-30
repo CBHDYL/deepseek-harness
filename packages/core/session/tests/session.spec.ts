@@ -807,6 +807,14 @@ describe('Session', () => {
     expect(session.events).toEqual([])
   })
 
+  it('accepts ignorable:true on a log-only append and freezes it into the event', () => {
+    const session = Session.create(SessionId('append-ignorable'))
+    const event = session.append('todo/write', { todos: [] }, { ignorable: true })
+    expect(event).toMatchObject({ type: 'todo/write', ignorable: true })
+    expect(Object.isFrozen(event)).toBe(true)
+    expect(Object.isFrozen(event.data)).toBe(true)
+  })
+
   it('rejects exotic surface metadata before cloning can erase its prototype', () => {
     class ReplaceOp {
       readonly op = 'replace' as const

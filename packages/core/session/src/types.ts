@@ -408,6 +408,12 @@ export type SurfaceOp =
   | 'append'
   | { op: 'replace'; start: number; end: number }
 
+/** Envelope metadata for a log-only event appended through {@link Session.append}. */
+export interface LogEventIntent {
+  /** Mark a purely informational event as safe for readers to skip when its type is unknown. */
+  ignorable?: true
+}
+
 /**
  * Surface placement and cited source-event seqs for {@link Session.append}. Required on
  * message-producing events and forbidden on log-only events.

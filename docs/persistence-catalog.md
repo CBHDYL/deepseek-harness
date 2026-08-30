@@ -90,9 +90,26 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }[T]
 ```
 
-Sources: [`packages/core/session/src/types.ts:371`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:378`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:407`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:439`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:371`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:378`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:407`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:445`](../packages/core/session/src/types.ts)
 
 ## Events
+
+### `action-policy/*`
+
+<a id="action-policycandidate--log-only"></a>
+
+#### `action-policy/candidate` — log-only
+
+```ts persistence-catalog
+/**
+ * One side-effectful tool candidate seen in action-policy observe mode.
+ * The payload intentionally excludes arguments, commands, paths,
+ * justifications, and credentials. Log-only and safe to skip when unknown.
+ */
+'action-policy/candidate': ActionPolicyCandidateEventData
+```
+
+Source: [`packages/guard/action-policy-guard/src/types.ts:25`](../packages/guard/action-policy-guard/src/types.ts)
 
 ### `agent/*`
 

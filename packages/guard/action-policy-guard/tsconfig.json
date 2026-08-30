@@ -21,7 +21,16 @@
       "path": "../../core/agent"
     },
     {
+      "path": "../../core/session"
+    },
+    {
+      "path": "../../core/scope"
+    },
+    {
       "path": "../../core/tools"
+    },
+    {
+      "path": "../../llm/llm"
     },
     {
       "path": "../../runtime-diagnostics/invariants"

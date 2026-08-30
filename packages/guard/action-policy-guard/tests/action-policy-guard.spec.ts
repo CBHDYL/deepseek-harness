@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { CallId } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
@@ -20,6 +21,13 @@ async function harness(mode: 'observe' | 'enforce'): Promise<{ ctx: Context; age
     description: 'u',
     parameters: {},
     async execute() { ran.push('undeclared'); return [{ type: 'text', text: 'ok' }] },
+  }))
+  ctx.tools.register(defineContentToolFixture({
+    name: 'declared',
+    description: 'd',
+    parameters: { token: { type: 'string' } },
+    effects: 'side-effectful',
+    async execute() { ran.push('declared'); return [{ type: 'text', text: 'ok' }] },
   }))
   ctx.tools.register(defineContentToolFixture({
     name: 'readonly',
@@ -41,15 +49,26 @@ function waitForIdle(ctx: Context, agent: Agent): Promise<void> {
 }
 
 describe('action-policy guard', () => {
-  it('observe mode logs undeclared side-effectful calls and lets them run', async () => {
+  it.each([
+    ['undeclared', 'undeclared', {}],
+    ['declared', 'declared', { token: 'do-not-copy-this-secret' }],
+  ] as const)('observe mode records the minimal %s candidate and lets it run', async (toolName, effectSource, args) => {
     const { ctx, agent, ran } = await harness('observe')
     ctx.llm.registerAdapter(['mock'], new MockAdapter([
-      toolCallResponse('c1', 'undeclared', {}),
+      toolCallResponse('c1', toolName, args),
       textResponse('done'),
     ]))
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
-    expect(ran()).toEqual(['undeclared'])
+    expect(ran()).toEqual([toolName])
+    const candidates = agent.session.events.filter(event => event.type === 'action-policy/candidate')
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0]).toMatchObject({
+      data: { toolName, callId: 'c1', effectSource },
+      ignorable: true,
+    })
+    expect(Object.keys(candidates[0]!.data)).toEqual(['toolName', 'callId', 'effectSource'])
+    expect(JSON.stringify(candidates[0])).not.toContain('do-not-copy-this-secret')
   })
 
   it('enforce mode denies an undeclared side-effectful call (no approval granted)', async () => {
@@ -61,6 +80,7 @@ describe('action-policy guard', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     expect(ran()).toEqual([]) // body never ran
+    expect(agent.session.events.some(event => event.type === 'action-policy/candidate')).toBe(false)
     const results = [...agent.session.events].filter((e): e is SessionEvent<'tool/result'> => e.type === 'tool/result')
     const text = (results[0]!.data.message.content[0] as { content: { text?: string }[] }).content.map(b => b.text ?? '').join('')
     expect(text).toContain('action-policy')
@@ -75,6 +95,19 @@ describe('action-policy guard', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     expect(ran()).toEqual(['readonly'])
+    expect(agent.session.events.some(event => event.type === 'action-policy/candidate')).toBe(false)
+  })
+
+  it('an agent-less execution neither crashes nor appends a candidate', async () => {
+    const { ctx } = await harness('observe')
+    const result = await ctx.tools.execute({
+      callId: CallId('agentless-1'),
+      name: 'undeclared',
+      arguments: {},
+      signal: new AbortController().signal,
+    })
+    expect(result.isError).toBe(false)
+    expect(ctx.sessions.get(SessionId('agentless-1'))).toBeUndefined()
   })
 
   it('rejects an invalid mode fail-loud', async () => {

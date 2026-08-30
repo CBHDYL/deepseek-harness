@@ -13,6 +13,19 @@ side-effectful by default) are gated through the approval seam for every call.
 `enforce` mode denies any side-effectful call whose approval is not granted
 once (fail-closed when no approval service is composed).
 
+## Durable observation
+
+In `observe` mode, each side-effectful candidate appends a log-only
+`action-policy/candidate` session event whose payload is exactly
+`{ toolName, callId, effectSource }` — no arguments, commands, paths,
+justifications, or credentials, so the census never duplicates tool input or
+secrets in the durable log. `effectSource` is `declared` when the tool
+declares `effects: 'side-effectful'`, or `undeclared` when the guard's
+`treatUndeclaredAsSideEffectful` classification caught it. Read-only tools
+append nothing, and `enforce` mode never appends this event. The event is
+marked `ignorable: true` so older readers can skip it when they do not know
+the type.
+
 ## Config
 
 ```yaml
