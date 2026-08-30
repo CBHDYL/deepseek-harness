@@ -112,7 +112,7 @@ done
 echo "== 6/6 冒烟 =="
 if [ "$ok" -eq 1 ]; then
   echo "  GUI 可达 ✓"
-  echo "完成。全局备份在 $BACKUP_G（确认无误后可删除）"
+  echo "完成。全局备份在 ${BACKUP_G}（确认无误后可删除）"
 else
   echo "  GUI 未恢复——回滚" >&2
   pkill -f "dsh web" || true
