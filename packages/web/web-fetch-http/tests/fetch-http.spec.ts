@@ -65,12 +65,18 @@ describe('policy helpers', () => {
     expect(isSameOrigin(new URL('http://a.com'), new URL('https://a.com'))).toBe(false)
   })
 
-  it('classifies blocked addresses (SSRF ranges) fail-closed', () => {
-    for (const address of ['127.0.0.1', '127.8.8.8', '10.0.0.1', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.169.254', '100.64.0.1', '100.127.1.1', '198.18.0.1', '224.0.0.1', '0.0.0.0', '::1', '::', 'fc00::1', 'fd12:3456::1', 'fe80::1', 'ff02::1', '::ffff:127.0.0.1', 'not-an-ip']) {
+  it('classifies blocked address ranges (SSRF) and does not fail-closed names', () => {
+    for (const address of ['127.0.0.1', '127.8.8.8', '10.0.0.1', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.169.254', '100.64.0.1', '100.127.1.1', '198.18.0.1', '224.0.0.1', '0.0.0.0', '::1', '::', 'fc00::1', 'fd12:3456::1', 'fe80::1', 'ff02::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '::7f00:1', '64:ff9b::a00:1']) {
       expect(isBlockedAddress(address), address).toBe(true)
     }
     for (const address of ['8.8.8.8', '1.1.1.1', '93.184.216.34', '172.32.0.1', '2001:4860:4860::8888', '2606:4700:4700::1111']) {
       expect(isBlockedAddress(address), address).toBe(false)
+    }
+    // A bare hostname is NOT an IP literal and must not be fail-closed here: the
+    // provider resolves names and classifies each resolved address. This guards
+    // against the regression where every public domain fetch was rejected.
+    for (const name of ['example.com', 'github.com', 'jsonplaceholder.typicode.com']) {
+      expect(isBlockedAddress(name), name).toBe(false)
     }
   })
 

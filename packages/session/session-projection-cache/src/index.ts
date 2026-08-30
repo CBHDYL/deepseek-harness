@@ -279,6 +279,10 @@ export class SessionProjectionCache extends Service {
     const state = this.dirty.get(session)
     if (state === undefined) return
     state.pending = 0
+    // A successful checkpoint restores the retry budget, so one transient
+    // failure does not leave a session without automatic retries forever.
+    state.failures = 0
+    state.retries = MAX_WRITE_RETRIES
     if (state.timer !== undefined) {
       clearTimeout(state.timer)
       state.timer = undefined

@@ -111,6 +111,8 @@ describe('minimal agent preset', () => {
         "prompt": "You are a helpful software engineer assistant.",
         "tools": [
           "bash",
+          "browser",
+          "service_manage",
           "str_replace_editor",
         ],
       }

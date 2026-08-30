@@ -61,6 +61,23 @@ export function apply(ctx: Context, config: Config): void {
   // The interceptor reads the tool registry, so it runs inside a tools-scoped
   // child context (the same injection the tool-facing plugins use).
   ctx.inject(['tools'], (toolCtx: Context) => {
+    // Call ids this guard's pre-execute granted (keyed by the branded call id).
+    const approved = new Map<string, true>()
+    // Monotonic deny: a `tools.guard()` denial cannot be overridden by a later
+    // pre-execute listener returning `allow`, so the enforce fence holds even
+    // if a user profile mounts an allow-bridging hooks listener after this
+    // guard. The async approval happens in pre-execute, which records the grant
+    // here; the guard denies any side-effectful call that is not granted.
+    toolCtx.tools.guard((exec) => {
+      if (mode !== 'enforce') return undefined
+      const tool = exec.agent === undefined ? undefined : toolCtx.tools.get(exec.name, scopeOf(exec.agent.ctx))
+      const effects = tool?.effects
+      const sideEffectful = effects === 'side-effectful' || (effects === undefined && treatUndeclared)
+      if (!sideEffectful) return undefined
+      if (approved.has(exec.callId)) return undefined
+      return `action-policy: side-effectful tool "${exec.name}" requires approval`
+    })
+
     toolCtx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
       const tool = exec.agent === undefined ? undefined : toolCtx.tools.get(exec.name, scopeOf(exec.agent.ctx))
       const effects = tool?.effects
@@ -94,13 +111,23 @@ export function apply(ctx: Context, config: Config): void {
       if (exec.agent === undefined) {
         return { kind: 'deny', reason: `action-policy: tool "${exec.name}" requires approval but the call has no agent` }
       }
-      const outcome = await approval.request({
-        agent: exec.agent,
-        toolName: exec.name,
-        callId: exec.callId,
-        reason: `action-policy: side-effectful tool "${exec.name}" requires approval`,
-      })
-      if (outcome === 'allowed-once') return next()
+      let outcome: 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+      try {
+        outcome = await approval.request({
+          agent: exec.agent,
+          toolName: exec.name,
+          callId: exec.callId,
+          reason: `action-policy: side-effectful tool "${exec.name}" requires approval`,
+        })
+      } catch (error: unknown) {
+        // Fail closed: a thrown approval request (e.g. no open turn on this
+        // call) must become a denial rather than an uncontrolled listener error.
+        return { kind: 'deny', reason: `action-policy: approval unavailable for tool "${exec.name}": ${error instanceof Error ? error.message : String(error)}` }
+      }
+      if (outcome === 'allowed-once') {
+        approved.set(exec.callId, true)
+        return next()
+      }
       return { kind: 'deny', reason: `action-policy: tool "${exec.name}" approval ${outcome}` }
     })
   })

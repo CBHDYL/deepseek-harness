@@ -172,6 +172,7 @@ export function applyReadImageTool(ctx: Context): void {
     description: 'Read a PNG/JPEG/WebP/GIF file and return the image itself. '
       + 'Harness validates and downscales large supported images before the next model request, so use this tool directly instead of installing image libraries or creating thumbnails merely to inspect an image. '
       + 'Independent files may be read concurrently in small batches. Requires the current model to accept image input.',
+    effects: 'read-only',
     parameters: {
       file_path: { type: 'string', required: true, description: 'Path to the image file, resolved by the filesystem backend.' },
     },

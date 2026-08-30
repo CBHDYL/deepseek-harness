@@ -22,8 +22,8 @@ const PATH_LAST_COMMANDS = new Set(['grep', 'sed', 'awk', 'rg', 'ag'])
 /** Flags that CONSUME the next token as their argument, per command. */
 const FLAG_ARGUMENTS: Record<string, ReadonlySet<string>> = {
   head: new Set(['-n', '-c']),
-  tail: new Set(['-n', '-c', '-s', '-f', '-F']),
-  grep: new Set(['-m', '-e', '-f', '-A', '-B', '-C', '-I']),
+  tail: new Set(['-n', '-c', '-s']),
+  grep: new Set(['-m', '-e', '-f', '-A', '-B', '-C']),
   sed: new Set(['-e', '-f']),
   awk: new Set(['-v', '-F']),
   rg: new Set(['-e', '-g', '-A', '-B', '-C', '-m']),
@@ -34,7 +34,7 @@ const FLAG_ARGUMENTS: Record<string, ReadonlySet<string>> = {
 const FLAG_ONLY: Record<string, ReadonlySet<string>> = {
   cat: new Set(['-n', '-b', '-s', '-A', '-E', '-T', '-v', '-e', '-t', '-u']),
   head: new Set(['-q', '-v']),
-  tail: new Set(['-q', '-v']),
+  tail: new Set(['-q', '-v', '-f', '-F', '--follow']),
   less: new Set(['-N', '-S', '-R', '-F', '-X']),
   more: new Set([]),
   wc: new Set(['-l', '-w', '-c', '-m', '-L']),

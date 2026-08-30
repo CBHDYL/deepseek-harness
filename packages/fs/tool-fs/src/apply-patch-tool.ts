@@ -96,6 +96,18 @@ export function applyPatchTool(ctx: Context, sandbox: FsSandboxController): void
       if (input.filePath.length === 0) {
         throw new Error('apply_patch: cannot determine the target file; pass file_path or include ---/+++ headers')
       }
+      if (args.file_path === undefined) {
+        // The target came from the diff header, i.e. from patch text that may
+        // itself originate in tool output or a prompt injection. Require a clean
+        // relative path rather than relying on the fs fence to catch a `..`/absolute
+        // target, and give the model an actionable error.
+        const escapes = /(^|[\\/])\.\.([\\/]|$)/u.test(input.filePath)
+          || input.filePath.startsWith('/')
+          || /^[A-Za-z]:[\\/]/u.test(input.filePath)
+        if (escapes) {
+          throw new Error(`apply_patch: inferred target ${JSON.stringify(input.filePath)} escapes the workspace; pass an explicit relative file_path`)
+        }
+      }
       // Resolve the per-call sandbox policy BEFORE anything executes, like edit.
       const sandboxPolicy = await sandbox.resolvePolicy('apply_patch', args, exec)
       const target = await ctx.fs.resolve(input.filePath, sessionResolveOptions(exec, input.filePath, sandboxPolicy?.workspaceRoot))

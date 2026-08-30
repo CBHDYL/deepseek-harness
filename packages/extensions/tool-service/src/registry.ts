@@ -9,7 +9,7 @@
 
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
-import { mkdirSync, openSync, readFileSync, closeSync, statSync } from 'node:fs'
+import { mkdirSync, openSync, closeSync, statSync, readSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -55,6 +55,37 @@ export function isAlive(pid: number): boolean {
 }
 
 /**
+ * Whether any process in the group led by `pid` is still alive. A detached
+ * child becomes its own process-group leader, so probing `-pid` (not just the
+ * leader) covers grandchildren that the shell may have left behind.
+ * @param pid - the group-leader (child) process id.
+ * @returns true when the group is alive.
+ */
+function isGroupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Send a signal to a whole detached process group, falling back to the leader
+ * pid alone when the group is already gone.
+ * @param pid - the group-leader (child) process id.
+ * @param sig - the signal to send.
+ */
+function signalGroup(pid: number, sig: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, sig)
+  } catch {
+    /* v8 ignore next 2 -- a process that is already gone is the expected fall-through; leader-only is best effort. */
+    try { process.kill(pid, sig) } catch { /* already gone */ }
+  }
+}
+
+/**
  * Whether a TCP port is currently bound on loopback.
  * @param port - the port to probe.
  * @param host - the bind address to probe.
@@ -94,28 +125,37 @@ export async function healthOk(url: string, timeoutMs = 2000): Promise<boolean> 
  * @param graceMs - how long to wait for SIGTERM before SIGKILL.
  */
 export async function killProcess(pid: number, graceMs = 1500): Promise<void> {
-  if (!isAlive(pid)) return
-  try { process.kill(pid, 'SIGTERM') } catch { return }
+  if (!isGroupAlive(pid)) return
+  signalGroup(pid, 'SIGTERM')
   const deadline = Date.now() + graceMs
-  while (Date.now() < deadline && isAlive(pid)) {
+  while (Date.now() < deadline && isGroupAlive(pid)) {
     await new Promise(resolveResult => setTimeout(resolveResult, 100))
   }
-  if (isAlive(pid)) {
-    try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
-  }
+  if (isGroupAlive(pid)) signalGroup(pid, 'SIGKILL')
 }
 
 /**
  * The last `lines` lines of a log file, or a message when it is unreadable.
+ * Only the trailing region is read, so a service that logs without bound cannot
+ * exhaust host memory or stall the tool on a huge file.
  * @param logPath - the absolute log file path.
  * @param lines - how many trailing lines to return.
+ * @param maxBytes - inclusive cap on the bytes read from the tail.
  * @returns the log tail.
  */
-export function tailLog(logPath: string, lines: number): string {
+export function tailLog(logPath: string, lines: number, maxBytes = 512 * 1024): string {
   try {
-    const text = readFileSync(logPath, 'utf8')
-    const parts = text.split('\n')
-    return parts.slice(-lines).join('\n')
+    const fd = openSync(logPath, 'r')
+    try {
+      const size = statSync(logPath).size
+      const readBytes = Math.min(size, maxBytes)
+      const buffer = Buffer.alloc(readBytes)
+      readSync(fd, buffer, 0, readBytes, size - readBytes)
+      const parts = buffer.toString('utf8').split('\n')
+      return parts.slice(-lines).join('\n')
+    } finally {
+      closeSync(fd)
+    }
   } catch (error: unknown) {
     return `cannot read log ${logPath}: ${error instanceof Error ? error.message : String(error)}`
   }
@@ -188,6 +228,9 @@ export class ServiceRegistry {
   }): Promise<ManagedService> {
     if (this.services.has(input.id)) {
       throw new Error(`service "${input.id}" is already managed; stop it first`)
+    }
+    if (!/^[A-Za-z0-9._-]+$/.test(input.id)) {
+      throw new Error(`service id ${JSON.stringify(input.id)} is invalid (use letters, digits, ".", "_", or "-" only)`)
     }
     if (input.port !== undefined && await isPortInUse(input.port)) {
       throw new Error(`port ${input.port} is already in use`)

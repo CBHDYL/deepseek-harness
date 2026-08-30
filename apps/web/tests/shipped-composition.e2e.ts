@@ -34,8 +34,10 @@ const FILE_REFERENCE_PROMPT = fileURLToPath(new URL(
  * rationale and its sources.
  */
 const EXPECTED_TOOLS = [
+  'apply_patch',
   'ask_user_question',
   'bash',
+  'browser',
   'create_goal',
   'edit',
   'exit_plan_mode',
@@ -49,6 +51,7 @@ const EXPECTED_TOOLS = [
   'read',
   'read_image',
   'send_message',
+  'service_manage',
   'skill',
   'subagent',
   'subagent_fork',
@@ -136,10 +139,11 @@ it('assembles the shipped Web catalog, file-reference guidance, retry policy, an
   `)
   // The catalog belongs to an AGENT, not to the process: every model-facing row
   // now lives in a preset mounted under one session's scope, so the global
-  // layer holds nothing and a caller must name the agent to see anything. This
-  // composes from the deployment default — what a session that names no preset
-  // gets — which is the shape this test has always been about.
-  expect(ctx.tools.schemas().map(schema => schema.name)).toEqual([])
+  // layer holds only the process-global base tools; a caller must name the agent
+  // to see the preset rows. This composes from the deployment default — what a
+  // session that names no preset gets — which is the shape this test has always
+  // been about.
+  expect(ctx.tools.schemas().map(schema => schema.name).sort()).toEqual(['browser', 'service_manage'])
   const handle = await ctx.agents.create({
     sessionId: SessionId('shipped-composition'),
     setup: agentCtx => ctx.agentPresets.mount(agentCtx).then(() => undefined),

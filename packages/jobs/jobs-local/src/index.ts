@@ -157,7 +157,7 @@ export class LocalJobRegistry extends JobRegistry {
     // though the registry itself is process-local.
     if (spec.owner !== undefined) {
       try {
-        spec.owner.session.append('job/start', { jobId: String(id), kind: spec.kind, label: spec.label })
+        spec.owner.session.append('job/start', { jobId: String(id), kind: spec.kind, label: spec.label }, { ignorable: true })
       } catch (error: unknown) {
         this.selfCtx.logger.warn(`jobs: could not journal job/start for ${String(id)}: ${String(error)}`)
       }
@@ -437,7 +437,7 @@ export class LocalJobRegistry extends JobRegistry {
           status: job.status as 'completed' | 'failed' | 'killed',
           ...job.detail === undefined ? {} : { detail: job.detail },
           finishedAt: job.finishedAt,
-        })
+        }, { ignorable: true })
       } catch (error: unknown) {
         this.selfCtx.logger.warn(`jobs: could not journal job/end for ${job.id}: ${String(error)}`)
       }

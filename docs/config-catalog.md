@@ -2672,14 +2672,18 @@ Source: [`packages/shell/tool-bash-persistent/src/index.ts:432`](../packages/she
 Requires: `tools` · `systemPrompt`
 
 ```ts config-catalog
-/** Plugin config; no tunables yet. */
+/** Plugin config. */
 export interface Config {
   /** Directory for screenshots (default: OS temp dir). */
   screenshotDir?: string
+  /** `goto` navigation timeout in ms (default 30000). */
+  gotoTimeoutMs?: number
+  /** CSS selector action (`click`/`fill`/`read_text`) timeout in ms (default 10000). */
+  actionTimeoutMs?: number
 }
 ```
 
-Source: [`packages/extensions/tool-browser/src/index.ts:25`](../packages/extensions/tool-browser/src/index.ts)
+Source: [`packages/extensions/tool-browser/src/index.ts:26`](../packages/extensions/tool-browser/src/index.ts)
 
 <a id="deepseek-aidsh-tool-fs"></a>
 

@@ -193,7 +193,7 @@ export function apply(ctx: Context, config: Config): void {
       agent.cancel({
         kind: 'hook',
         reason: `output repetition detected: section of ${hit.sectionChars} chars repeated ${hit.repeatCount} times`,
-      })
+      }, { keepInbox: true })
     }
   })
 }

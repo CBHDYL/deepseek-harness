@@ -64,7 +64,7 @@ export interface Config {
 export const Config: z<Config> = z.object({
   hideAtOrAboveMode: z.string().default('danger-full-access'),
   hideWhenApprovalNever: z.boolean().default(true),
-  tools: z.array(z.string()).default(['bash', 'pwsh', 'edit', 'write']),
+  tools: z.array(z.string()).default(['bash', 'pwsh', 'edit', 'write', 'apply_patch']),
 })
 
 /** Compile one `*`-wildcard pattern to an anchored RegExp (other regex metacharacters are literal). */
@@ -172,12 +172,12 @@ export function apply(ctx: Context, config: Config): void {
     throw new Error(`escalation-hider: invalid hideAtOrAboveMode ${hideAtOrAboveMode}`)
   }
   const hideWhenApprovalNever = config.hideWhenApprovalNever ?? true
-  const toolPatterns = config.tools ?? ['bash', 'pwsh', 'edit', 'write']
+  const toolPatterns = config.tools ?? ['bash', 'pwsh', 'edit', 'write', 'apply_patch']
 
   ctx.on('system-prompt/assemble', async (_assembly: PromptAssembly, context: AssembleContext, next) => {
     const agent = context.agent
     if (!agent) return next()
-    const mode = effectiveSandboxMode(agent.session.events)
+    const mode = effectiveSandboxMode(agent.session.events) ?? ctx.get('sandboxPolicy')?.defaultMode
     const approval = effectiveApprovalPolicy(agent.session.events)
     if (!shouldHideEscalation(mode, approval, { hideAtOrAboveMode, hideWhenApprovalNever })) return next()
     const transformed = await next()

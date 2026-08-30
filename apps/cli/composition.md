@@ -154,6 +154,10 @@ flowchart LR
   cfg --> plugin_dsh_base_output_repetition_guard
   plugin_dsh_base_action_policy_guard["action-policy-guard<br/>@deepseek-ai/dsh-action-policy-guard"]
   cfg --> plugin_dsh_base_action_policy_guard
+  plugin_dsh_base_tool_service["tool-service<br/>@deepseek-ai/dsh-tool-service"]
+  cfg --> plugin_dsh_base_tool_service
+  plugin_dsh_base_tool_browser["tool-browser<br/>@deepseek-ai/dsh-tool-browser"]
+  cfg --> plugin_dsh_base_tool_browser
   plugin_dsh_base_web["web<br/>@deepseek-ai/dsh-web"]
   cfg --> plugin_dsh_base_web
   plugin_dsh_base_web_search_deepseek["web-search-deepseek<br/>@deepseek-ai/dsh-web-search-deepseek"]
@@ -247,6 +251,8 @@ flowchart LR
 | `escalation-hider` | `@deepseek-ai/dsh-escalation-hider` |
 | `output-repetition-guard` | `@deepseek-ai/dsh-output-repetition-guard` |
 | `action-policy-guard` | `@deepseek-ai/dsh-action-policy-guard` |
+| `tool-service` | `@deepseek-ai/dsh-tool-service` |
+| `tool-browser` | `@deepseek-ai/dsh-tool-browser` |
 | `web` | `@deepseek-ai/dsh-web` |
 | `web-search-deepseek` | `@deepseek-ai/dsh-web-search-deepseek` |
 | `tool-web` | `@deepseek-ai/dsh-tool-web` |

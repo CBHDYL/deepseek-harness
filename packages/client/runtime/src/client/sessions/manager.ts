@@ -683,6 +683,15 @@ export class SessionManager {
   handleMuxEnvelope(envelope: RpcRequest<MuxFrame>): void {
     const frame = envelope.payload
     if (frame.type === 'stream/error') return // Controller already treats this as stream failure
+    if (frame.type === 'session/resync') {
+      // The host discarded undelivered frames for this connection and cannot
+      // say which sessions lost events, so every resident view is suspect.
+      // The connection is still live, so this rebuilds in place — the same
+      // work a reconnect does, without dropping the stream.
+      console.warn(`[web-runtime] host dropped ${frame.dropped} downlink frames; rebuilding from history`)
+      this.resyncAll()
+      return
+    }
     if (
       frame.type === 'session/event'
       && frame.event.type === 'user/message'
@@ -900,6 +909,17 @@ export class SessionManager {
 
   /** After each connection generation: refresh the session baseline and rebuild opened windows. */
   handleConnected(): void {
+    this.resyncAll()
+  }
+
+  /**
+   * Rebuild every resident view from the host: the list and catalog baselines,
+   * then each opened window's history window. Shared by the post-connection
+   * rebuild and the host's downlink-gap marker, which need the same recovery
+   * for the same reason — the stream can no longer be trusted to have carried
+   * every event.
+   */
+  private resyncAll(): void {
     void this.refreshList()
     const selectedAddress = this.selected === undefined ? undefined : this.addresses.get(this.selected)
     if (selectedAddress !== undefined) void this.refreshSubagents(selectedAddress.parentSessionId)

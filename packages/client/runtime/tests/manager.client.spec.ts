@@ -898,6 +898,32 @@ describe('connected generation', () => {
     })
   })
 
+  it('rebuilds opened windows when the host reports a downlink gap', async () => {
+    // Same recovery as a reconnect, but the connection never dropped: the
+    // frame is the only evidence the stream stopped being complete.
+    const api = new FakeApiClient()
+    api.onHistory = () => Promise.resolve(ok({
+      events: entries(plainTurn(0, 0, 'a', 'b')) as never[],
+      hasMore: false,
+      modelSelection: { provider: 'deepseek-official', model: 'deepseek-chat' },
+    }))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const manager = new SessionManager(api, fakeRemote())
+    const openedSession = manager.get(S1)
+    await openedSession.open()
+    manager.get(S2) // instantiated but never opened
+    const historyCallsBefore = api.callsOf('session.history').length
+
+    manager.handleMuxEnvelope({ rpcId: 'rs' as never, payload: { type: 'session/resync', dropped: 7 } })
+
+    await vi.waitFor(() => {
+      expect(api.callsOf('session.list').length).toBe(1)
+      expect(api.callsOf('session.history').length).toBe(historyCallsBefore + 1)
+    })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('dropped 7 downlink frames'))
+    warn.mockRestore()
+  })
+
   it('reloads the durable parent address for a restored child selection', async () => {
     const api = new FakeApiClient()
     const address = {

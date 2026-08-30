@@ -98,6 +98,18 @@ describe('action-policy guard', () => {
     expect(agent.session.events.some(event => event.type === 'action-policy/candidate')).toBe(false)
   })
 
+  it('observe mode does not record a candidate for a read-only tool', async () => {
+    const { ctx, agent, ran } = await harness('observe')
+    ctx.llm.registerAdapter(['mock'], new MockAdapter([
+      toolCallResponse('c1', 'readonly', {}),
+      textResponse('done'),
+    ]))
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+    expect(ran()).toEqual(['readonly'])
+    expect(agent.session.events.filter(event => event.type === 'action-policy/candidate')).toHaveLength(0)
+  })
+
   it('an agent-less execution neither crashes nor appends a candidate', async () => {
     const { ctx } = await harness('observe')
     const result = await ctx.tools.execute({

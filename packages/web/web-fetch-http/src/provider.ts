@@ -12,6 +12,7 @@ import { WebError } from '@deepseek-ai/dsh-web'
 import type { WebFetchBody, WebFetchProvider, WebFetchRequest, WebFetchResult } from '@deepseek-ai/dsh-web'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { lookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
 import { classifyContentType, decoderForCharset, isBlockedAddress, isSameOrigin, parseCharset, validateFetchUrl } from './policy.ts'
 
 /** Resolved provider limits (the plugin's schemastery Config supplies defaults). */
@@ -118,9 +119,16 @@ export class HttpFetchProvider implements WebFetchProvider {
    */
   private async checkTarget(url: URL): Promise<void> {
     if (!this.limits.blockPrivateAddresses) return
-    const hostname = url.hostname
-    if (isBlockedAddress(hostname)) {
-      throw new WebError(`blocked target "${hostname}" (loopback/private/link-local range)`, 'WEB_BLOCKED_URL')
+    // `url.hostname` is a bare IPv4, a DNS name, or an IPv6 literal wrapped in
+    // brackets ("[::1]"). Classify literal addresses directly; a *name* is
+    // resolved below and each resolved address classified, so a public name is
+    // never fail-closed by the literal classifier.
+    const hostname = url.hostname.replace(/^\[(.*)\]$/, '$1')
+    if (isIP(hostname) !== 0) {
+      if (isBlockedAddress(hostname)) {
+        throw new WebError(`blocked target "${url.hostname}" (loopback/private/link-local range)`, 'WEB_BLOCKED_URL')
+      }
+      return
     }
     let addresses: string[]
     try {

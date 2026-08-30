@@ -9,6 +9,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { assertNever } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-system-prompt'
@@ -21,15 +22,21 @@ import { BrowserManager } from './manager.ts'
 export const name = 'tool-browser'
 export const inject = ['tools', 'systemPrompt']
 
-/** Plugin config; no tunables yet. */
+/** Plugin config. */
 export interface Config {
   /** Directory for screenshots (default: OS temp dir). */
   screenshotDir?: string
+  /** `goto` navigation timeout in ms (default 30000). */
+  gotoTimeoutMs?: number
+  /** CSS selector action (`click`/`fill`/`read_text`) timeout in ms (default 10000). */
+  actionTimeoutMs?: number
 }
 
 /** Runtime schema for the plugin config. */
 export const Config: z<Config> = z.object({
   screenshotDir: z.string().default(''),
+  gotoTimeoutMs: z.number().min(1).default(30000),
+  actionTimeoutMs: z.number().min(1).default(10000),
 })
 
 /** The closed action vocabulary. */
@@ -42,6 +49,8 @@ export type BrowserAction = 'goto' | 'screenshot' | 'click' | 'fill' | 'read_tex
  */
 export function apply(ctx: Context, config: Config = {}): void {
   const screenshotDir = config.screenshotDir === undefined || config.screenshotDir === '' ? join(tmpdir(), 'dsh-browser') : config.screenshotDir
+  const gotoTimeoutMs = config.gotoTimeoutMs ?? 30000
+  const actionTimeoutMs = config.actionTimeoutMs ?? 10000
   const manager = new BrowserManager()
 
   ctx.effect(() => () => { void manager.closeAll() }, 'tool-browser teardown')
@@ -65,7 +74,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         enum: ['goto', 'screenshot', 'click', 'fill', 'read_text', 'close', 'list'] as const,
         description: 'What to do with the session page.',
       },
-      url: { type: 'string' as const, description: 'Target URL for goto.' },
+      url: { type: 'string' as const, description: 'Target URL for goto (http or https only).' },
       selector: { type: 'string' as const, description: 'CSS selector for click/fill/read_text.' },
       value: { type: 'string' as const, description: 'Text to fill (fill only).' },
       screenshot_name: { type: 'string' as const, description: 'Optional file name for the screenshot; defaults to a timestamp.' },
@@ -95,16 +104,17 @@ export function apply(ctx: Context, config: Config = {}): void {
       switch (args.action) {
         case 'goto': {
           if (args.url === undefined) throw new Error('browser: goto requires url')
+          const target = validateBrowserUrl(args.url)
           const page = await manager.pageFor(sessionId)
-          await page.goto(args.url, { waitUntil: 'load', timeout: 30_000 })
+          await page.goto(target.toString(), { waitUntil: 'load', timeout: gotoTimeoutMs })
           const [title, url] = await Promise.all([page.title(), page.url()])
           return { ok: true, title, url }
         }
         case 'screenshot': {
           const page = await manager.pageFor(sessionId)
-          mkdirSync(screenshotDir, { recursive: true, mode: 0o700 })
-          const name = args.screenshot_name ?? `page-${Date.now()}.png`
+          const name = sanitizeScreenshotName(args.screenshot_name ?? `page-${Date.now()}.png`)
           const path = join(screenshotDir, name)
+          mkdirSync(screenshotDir, { recursive: true, mode: 0o700 })
           const buffer = await page.screenshot({ fullPage: false })
           writeFileSync(path, buffer, { mode: 0o600 })
           return { ok: true, screenshot_path: path, message: `screenshot saved to ${path}` }
@@ -112,7 +122,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         case 'click': {
           if (args.selector === undefined) throw new Error('browser: click requires selector')
           const page = await manager.pageFor(sessionId)
-          await page.click(args.selector, { timeout: 10_000 })
+          await page.click(args.selector, { timeout: actionTimeoutMs })
           return { ok: true, message: `clicked ${args.selector}` }
         }
         case 'fill': {
@@ -136,6 +146,9 @@ export function apply(ctx: Context, config: Config = {}): void {
           return manager.has(sessionId)
             ? { ok: true, pages: [{ url: await manager.pageFor(sessionId).then(p => p.url()) }] }
             : { ok: true }
+        }
+        default: {
+          return assertNever(args.action, 'BrowserAction')
         }
       }
     },
@@ -171,6 +184,40 @@ export interface BrowserToolArgs {
 
 /** One page row in a `list` result. */
 interface PageRow { url?: string }
+
+/**
+ * Validate a `goto` target: only http(s), no embedded credentials. Rejects
+ * `file:`/`data:`/`about:` so the model cannot turn the browser into a
+ * local-file reader or a data-URL injection vector. Loopback and private
+ * targets remain reachable (a personal-UI-verification tool must be able to
+ * load a local dev server); the fetch provider still applies SSRF rules.
+ */
+function validateBrowserUrl(input: string): URL {
+  let url: URL
+  try {
+    url = new URL(input)
+  } catch {
+    throw new Error(`browser: invalid URL "${input}"`)
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`browser: unsupported URL scheme "${url.protocol}" (only http and https are allowed)`)
+  }
+  if (url.username !== '' || url.password !== '') {
+    throw new Error('browser: credentials in URLs are not allowed')
+  }
+  return url
+}
+
+/**
+ * Force a model-supplied screenshot name to a single file name so it cannot
+ * escape `screenshotDir` via path separators, `:`, or parent traversal.
+ */
+function sanitizeScreenshotName(name: string): string {
+  if (name === '' || name === '.' || name === '..' || name.includes('/') || name.includes('\\') || name.includes(':')) {
+    throw new Error('browser: screenshot_name must be a single file name (no path separators, ":", or "..")')
+  }
+  return name
+}
 
 /** Render the canonical result into the model-facing text. */
 function renderBrowserResult(

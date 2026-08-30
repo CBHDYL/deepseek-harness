@@ -359,15 +359,53 @@ function presetFailure(request: RpcRequest<unknown>, error: unknown): RpcRespons
  */
 export const DEFAULT_MAX_QUEUED_FRAMES = 10_000
 
-/** Simple async queue: core callbacks push, the AsyncIterable pulls; abort/return cleans up. */
+/** Simple bounded FIFO queue: core callbacks push, the AsyncIterable pulls; abort/return cleans up. */
 export class FrameQueue<F> {
+  // Consumed-prefix front index so push and drain are amortized O(1) rather than
+  // O(n) `shift()`; the consumed prefix is periodically compacted to bound memory.
   private buffer: F[] = []
+  private head = 0
   private waiter: (() => void) | undefined
   private done = false
   /** Frames dropped at the head because the queue hit {@link maxFrames}. */
   dropped = 0
+  /**
+   * Marker owed to the consumer for a gap it has not been told about yet. It
+   * is held outside {@link buffer} and occupies no slot, so the bound that
+   * causes a gap can never discard the frame reporting it; a further drop
+   * before delivery replaces it, keeping the count current.
+   */
+  private pendingOverflow: F | undefined
 
-  constructor(private readonly maxFrames: number = DEFAULT_MAX_QUEUED_FRAMES) {}
+  /**
+   * @param maxFrames - queue bound; every push at the bound drops the oldest frame.
+   * @param overflowFrame - mints the gap marker from the running {@link dropped}
+   * total. Streams with no such frame omit it and then drop silently.
+   */
+  constructor(
+    private readonly maxFrames: number = DEFAULT_MAX_QUEUED_FRAMES,
+    private readonly overflowFrame?: (dropped: number) => F,
+  ) {}
+
+  /** Number of queued (unconsumed) frames. */
+  private get size(): number {
+    return this.buffer.length - this.head
+  }
+
+  /** Remove and return the oldest queued frame, or undefined when empty. */
+  private dequeue(): F | undefined {
+    if (this.size === 0) return undefined
+    const item = this.buffer[this.head] as F
+    this.buffer[this.head] = undefined as unknown as F
+    this.head += 1
+    // Compact the consumed prefix once it dominates the (now mostly-gone) array,
+    // so the backing store does not grow without bound on a streaming consumer.
+    if (this.head > 64 && this.head * 2 > this.buffer.length) {
+      this.buffer = this.buffer.slice(this.head)
+      this.head = 0
+    }
+    return item
+  }
 
   /**
    * Enqueue one frame, dropping the oldest when at {@link maxFrames} (counted in {@link dropped}). No-op after {@link end}.
@@ -375,9 +413,10 @@ export class FrameQueue<F> {
    */
   push(item: F): void {
     if (this.done) return
-    if (this.buffer.length >= this.maxFrames) {
-      this.buffer.shift()
+    if (this.size >= this.maxFrames) {
+      this.dequeue()
       this.dropped += 1
+      this.pendingOverflow = this.overflowFrame?.(this.dropped)
     }
     this.buffer.push(item)
     this.waiter?.()
@@ -400,7 +439,18 @@ export class FrameQueue<F> {
     signal.addEventListener('abort', onAbort, { once: true })
     try {
       while (true) {
-        while (this.buffer.length > 0) yield this.buffer.shift() as F
+        while (this.size > 0) {
+          // Ahead of the frames that outlived the gap, so the consumer learns
+          // its view is incomplete before it applies anything built on the
+          // frames that are missing.
+          if (this.pendingOverflow !== undefined) {
+            const marker = this.pendingOverflow
+            this.pendingOverflow = undefined
+            yield marker
+          }
+          const item = this.dequeue()
+          if (item !== undefined) yield item
+        }
         if (this.done || signal.aborted) return
         await new Promise<void>((resolve) => { this.waiter = resolve })
         this.waiter = undefined
@@ -3353,7 +3403,14 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
     events: {
       mux(request, signal) {
-        const queue = new FrameQueue<RpcRequest<MuxFrame>>()
+        // A consumer slower than the host's event rate overflows this queue and
+        // silently loses its oldest frames. The marker converts that into a
+        // signal the client can act on: it rebuilds from history instead of
+        // rendering a view that stopped tracking the session.
+        const queue = new FrameQueue<RpcRequest<MuxFrame>>(
+          DEFAULT_MAX_QUEUED_FRAMES,
+          dropped => frame({ type: 'session/resync', dropped }),
+        )
         muxQueues.add(queue)
         // Cursor resume: the client may pass the last seq it has per session.
         // Events at/below the cursor are NOT replayed — the client already has

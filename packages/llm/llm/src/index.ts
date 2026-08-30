@@ -943,6 +943,12 @@ export class LlmRuntime extends Service {
 
     let completed = false
     let finished = false
+    // Safety bound: a misbehaving adapter that yields chunks forever (never
+    // done, never finish) must not spin the loop or grow memory unboundedly.
+    // Derived from the requested max tokens so a legitimate response never
+    // trips it (a normal stream is ~maxTokens chunks + one terminal finish).
+    const maxChunks = (options.maxTokens ?? 8192) * 8
+    let chunks = 0
     try {
       while (true) {
         let item: { done: true } | { done: false; value: StreamChunk }
@@ -983,6 +989,15 @@ export class LlmRuntime extends Service {
         } else if (finished) {
           this.ctx.logger.warn(`adapter stream for provider "${options.provider}" emitted a ${chunk.type} chunk after the terminal finish chunk; ignoring it`)
           continue
+        }
+        chunks += 1
+        if (chunks > maxChunks) {
+          completed = true
+          yield adapterFailureChunk(new LlmError(
+            `adapter stream for provider "${options.provider}" exceeded ${maxChunks} chunks without a terminal finish`,
+            'STREAM_UNTERMINATED',
+          ), options.signal)
+          return
         }
         // End the adapter-owned try before yielding: consumer/middleware
         // failures resumed into this generator must remain thrown.

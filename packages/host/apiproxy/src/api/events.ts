@@ -105,6 +105,18 @@ export type MuxFrame =
    * tail page's projections block.
    */
   | { type: 'session/projection'; sessionId: SessionId; key: string; value: unknown; seq: number }
+  /**
+   * This connection's downlink queue reached its bound and discarded the
+   * oldest undelivered frames, so the stream is no longer a complete event
+   * sequence. Connection-scoped, carrying no `sessionId`: the queue
+   * multiplexes every attached session and discards by age without reading
+   * what it discards, so which sessions lost events is not recoverable.
+   * `dropped` is the connection's running discard total and is diagnostic
+   * only — a client cannot reconcile from a count, and must rebuild every
+   * opened session from history. Delivered ahead of the frames that outlived
+   * the gap, and sent again after each later gap.
+   */
+  | { type: 'session/resync'; dropped: number }
   | { type: 'stream/error'; error: RpcError }
 
 /**

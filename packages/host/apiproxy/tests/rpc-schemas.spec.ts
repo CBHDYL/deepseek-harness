@@ -461,6 +461,7 @@ describe('events frame schemas', () => {
         { id: 'bash-1', kind: 'bash', label: 'pnpm run build', status: 'running', startedAt: 5 },
         { id: 'pty-send-2', kind: 'pty-send', label: 'send keys', status: 'failed', detail: 'exit code: 3', startedAt: 5, finishedAt: 9 },
       ] },
+      { type: 'session/resync', dropped: 1 },
       { type: 'stream/error', error: { code: 'internal', message: 'm', details: {} } },
     ]
     for (const frame of frames) expect(muxFrameSchema.parse(frame)).toMatchObject({ type: frame.type })
@@ -477,6 +478,10 @@ describe('events frame schemas', () => {
       { type: 'session/jobs', sessionId: 's', jobs: [{ id: 'bash-1', kind: 'bash', label: 'l', status: 'pending', startedAt: 0 }] },
       { type: 'session/jobs', sessionId: 's', jobs: [{ id: 'bash-1', kind: 'bash', label: 'l', status: 'running', startedAt: -1 }] },
       { type: 'session/jobs', sessionId: 's', jobs: [{ id: 'bash-1', kind: 'bash', label: 'l', status: 'completed', startedAt: 0, finishedAt: 0.5 }] },
+      // The frame exists only after a discard, so a count that reports none is host breakage.
+      { type: 'session/resync', dropped: 0 },
+      { type: 'session/resync', dropped: -1 },
+      { type: 'session/resync', dropped: 1.5 },
     ]) expect(() => muxFrameSchema.parse(invalid)).toThrow()
     expect(askUserQuestionItemSchema.parse({ id: 'q', question: 'Q?' }).id).toBe('q')
   })

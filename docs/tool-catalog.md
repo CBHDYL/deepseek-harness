@@ -1741,7 +1741,7 @@ The kind-agnostic background-job controller: background bash commands, PTY sends
 
 ### `service_manage`
 
-Manage a long-running service process owned by this session: start a detached process with optional port and healthcheck, stop it, check its status, read its log, or list managed services. Every started process is killed when this session ends or the plugin unloads — use this instead of orphaned background shell processes.
+Manage a long-running service process owned by this session: start a detached process with optional port and healthcheck, stop it, check its status, read its log, or list managed services. The command runs directly (outside the file sandbox); the whole process group is killed when this session ends or the plugin unloads — use this instead of orphaned background shell processes.
 
 ```json
 {
@@ -1820,7 +1820,7 @@ Drive one headless Chromium page per session for smoke-level UI checks: goto a U
     },
     "url": {
       "type": "string",
-      "description": "Target URL for goto."
+      "description": "Target URL for goto (http or https only)."
     },
     "selector": {
       "type": "string",

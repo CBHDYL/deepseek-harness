@@ -66,6 +66,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'session_search',
     description: 'Search prior sessions in the caller workspace and return the strongest matching event from each session.',
+    effects: 'read-only',
     parameters: toolInput.sessionSearchParameters,
     output: TEXT_OUTPUT,
     timeoutMs: resolved.searchTimeoutMs,
@@ -76,6 +77,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'session_event_search',
     description: 'Search prior events in one authorized session; the current session excludes the step performing this call.',
+    effects: 'read-only',
     parameters: toolInput.eventSearchParameters,
     output: TEXT_OUTPUT,
     timeoutMs: resolved.searchTimeoutMs,
@@ -86,6 +88,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'session_trace',
     description: 'Read the authorized session lineage around one session, including complete visible ancestor and descendant relationships.',
+    effects: 'read-only',
     parameters: toolInput.targetSessionParameter,
     output: TEXT_OUTPUT,
     isConcurrencySafe: () => true,
@@ -96,6 +99,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'session_event_trace',
     description: 'Read every direct replacement and relationship to a cited source event for one event in an authorized session.',
+    effects: 'read-only',
     parameters: {
       ...toolInput.targetSessionParameter,
       seq: { type: 'integer', required: true, description: 'Target event sequence number.' },
@@ -109,6 +113,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'session_event_read',
     description: 'Read one full unabridged event and optional neighboring raw-event summaries from an authorized session.',
+    effects: 'read-only',
     parameters: {
       ...toolInput.targetSessionParameter,
       seq: { type: 'integer', required: true, description: 'Target event sequence number.' },

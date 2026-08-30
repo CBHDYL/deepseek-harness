@@ -380,7 +380,7 @@ export class ReactLoopAgent implements Agent {
       attempt += 1
       this.session.append('request/attempt-start', {
         turn, step, attempt, provider: request.provider, model: request.model,
-      })
+      }, { ignorable: true })
       const assembler = new BlockAssembler()
       const chunkSeqs: number[] = []
       try {
@@ -397,7 +397,7 @@ export class ReactLoopAgent implements Agent {
         this.session.append('request/attempt-end', {
           turn, step, attempt, outcome: 'throw',
           failure: error instanceof LlmError ? error.failure : { message: errorChain(error), code: 'UNKNOWN' },
-        })
+        }, { ignorable: true })
         if (signal.aborted) {
           const content = assembler.interruptedBlocks()
           if (content.length > 0) {
@@ -432,7 +432,7 @@ export class ReactLoopAgent implements Agent {
         if (action?.kind !== 'retry') {
           this.session.append('request/attempt-end', {
             turn, step, attempt, outcome: 'throw', failure: finish.failure,
-          })
+          }, { ignorable: true })
           throw new LlmError(finish.failure.message, finish.failure.code, finish.failure)
         }
         if (attempt >= maxRequestAttempts) {
@@ -441,7 +441,7 @@ export class ReactLoopAgent implements Agent {
           // the step gives up at the hard cap.
           this.session.append('request/attempt-end', {
             turn, step, attempt, outcome: 'retry-exhausted', failure: finish.failure,
-          })
+          }, { ignorable: true })
           throw new LlmError(
             `request exceeded ${maxRequestAttempts} attempts in step ${step}`,
             'REQUEST_ATTEMPTS_EXCEEDED', finish.failure,
@@ -449,11 +449,11 @@ export class ReactLoopAgent implements Agent {
         }
         this.session.append('request/attempt-end', {
           turn, step, attempt, outcome: 'retry', failure: finish.failure,
-        })
+        }, { ignorable: true })
         continue
       }
 
-      this.session.append('request/attempt-end', { turn, step, attempt, outcome: 'ok' })
+      this.session.append('request/attempt-end', { turn, step, attempt, outcome: 'ok' }, { ignorable: true })
 
       const message = createAssistantMessage({
         content: assembler.blocks(),

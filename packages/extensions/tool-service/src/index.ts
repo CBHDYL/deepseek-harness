@@ -9,9 +9,9 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { assertNever } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericCallView, ToolResult } from '@deepseek-ai/dsh-tools'
-import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-session'
 import { ServiceRegistry } from './registry.ts'
@@ -52,12 +52,12 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.systemPrompt.section({
     name: 'tool:service_manage',
     order: 106,
-    text: 'Use service_manage for long-running processes the current session must keep alive (dev servers, watchers). The tool tracks every process it starts and kills them when the session ends; never fall back to bare nohup/background shell for services.',
+    text: 'Use service_manage for long-running processes the current session must keep alive (dev servers, watchers). It runs the command directly (outside the file sandbox) and kills the whole process group when the session ends; never fall back to bare nohup/background shell for services.',
   })
 
   ctx.tools.register(defineTool({
     name: 'service_manage',
-    description: 'Manage a long-running service process owned by this session: start a detached process with optional port and healthcheck, stop it, check its status, read its log, or list managed services. Every started process is killed when this session ends or the plugin unloads — use this instead of orphaned background shell processes.',
+    description: 'Manage a long-running service process owned by this session: start a detached process with optional port and healthcheck, stop it, check its status, read its log, or list managed services. The command runs directly (outside the file sandbox); the whole process group is killed when this session ends or the plugin unloads — use this instead of orphaned background shell processes.',
     parameters: {
       action: {
         type: 'string' as const,
@@ -130,13 +130,19 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (args.id === undefined || args.command === undefined) {
             throw new Error('service_manage: start requires id and command')
           }
+          if (exec.agent === undefined) {
+            throw new Error('service_manage: starting a service requires an agent session to own its lifecycle')
+          }
           const service = await registry.start({
             id: args.id,
             command: args.command,
-            ...args.workdir !== undefined ? { workdir: args.workdir } : {},
+            // Default to the session workspace (the immutable session cwd) so an
+            // omitted or relative workdir stays in the project rather than the
+            // harness launch directory.
+            workdir: args.workdir === undefined ? String(exec.agent.session.header.cwd ?? process.cwd()) : args.workdir,
             ...args.port !== undefined ? { port: args.port } : {},
             ...args.health_url !== undefined ? { healthUrl: args.health_url } : {},
-            ...exec.agent !== undefined ? { ownerSessionId: exec.agent.session.id } : {},
+            ownerSessionId: exec.agent.session.id,
           })
           return { ok: true, message: `service "${service.id}" started (pid ${service.pid}); logs at ${service.logPath}` }
         }
@@ -155,6 +161,9 @@ export function apply(ctx: Context, config: Config = {}): void {
         }
         case 'list': {
           return { ok: true, services: (await Promise.all(registry.list().map(s => registry.status(s.id)))).map(projectStatus) }
+        }
+        default: {
+          return assertNever(args.action, 'ServiceAction')
         }
       }
     },
@@ -229,6 +238,3 @@ function renderServiceResult(action: ServiceAction, value: { ok: boolean; messag
   }
   return value.message ?? 'ok'
 }
-
-/** The agent type used to own service lifecycles. */
-export type ServiceOwnerAgent = Agent
