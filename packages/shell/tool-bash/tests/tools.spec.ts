@@ -24,6 +24,11 @@ import * as ToolBash from '@deepseek-ai/dsh-tool-bash'
 import * as BashEnvPlugin from '@deepseek-ai/dsh-shell-env'
 import { processOutcome } from '../src/background.ts'
 import { renderProcessRead, renderResult } from '../src/render.ts'
+import { pureReadTargets } from '../src/observed-read.ts'
+import { FileSystem, FsTargetKey, FsVersion } from '@deepseek-ai/dsh-fs'
+import type { FsDirEntry, FsTarget, FsWriteOutcome } from '@deepseek-ai/dsh-fs'
+import * as FsPolicy from '@deepseek-ai/dsh-fs-observation-policy'
+import * as ToolFs from '@deepseek-ai/dsh-tool-fs'
 
 const testToolSignal = new AbortController().signal
 
@@ -1288,4 +1293,133 @@ describe('the model-facing bash tool builds its request from named args only (no
     expect('stdin' in request).toBe(false)
     expect('stdoutMaxBytes' in request).toBe(false)
   })
+})
+
+describe('pure-read observations (F-2)', () => {
+  it('parses only unambiguous single pure reads', () => {
+    expect(pureReadTargets('cat a.txt')).toEqual(['a.txt'])
+    expect(pureReadTargets('cat a.txt b.txt')).toEqual(['a.txt', 'b.txt'])
+    expect(pureReadTargets('head -n 5 a.txt')).toEqual(['a.txt'])
+    expect(pureReadTargets('tail -n 20 -- a.txt')).toEqual(['a.txt'])
+    expect(pureReadTargets('grep -n pattern a.txt')).toEqual(['a.txt'])
+    expect(pureReadTargets('sed -n 1,5p a.txt')).toEqual(['a.txt'])
+    expect(pureReadTargets('wc -l a.txt')).toEqual(['a.txt'])
+  })
+
+  it('refuses every compound, write, or ambiguous form', () => {
+    for (const command of [
+      'cat a.txt > other',
+      'cat a.txt >> other',
+      'cat a.txt | grep x',
+      'cat a.txt; echo hi',
+      'cat a.txt && echo hi',
+      'cat a.txt || echo hi',
+      'cat $(echo a.txt)',
+      'cat a.txt `echo b`',
+      'cat "a b.txt"',
+      'echo hi',
+      'rm a.txt',
+      'sed -i s/x/y/ a.txt',
+      'head -5 a.txt',
+      'grep pattern',
+      'cat',
+      '',
+      'ls a.txt',
+    ]) {
+      expect(pureReadTargets(command), command).toEqual([])
+    }
+  })
+})
+
+/** In-memory filesystem keyed by basename so bash workdir and fs-tool cwd resolve to one key. */
+class BashReadFakeFs extends FileSystem {
+  files = new Map<string, string>()
+
+  override async resolve(path: string): Promise<FsTarget> {
+    return { targetKey: FsTargetKey(`key:${path.split('/').pop()}`), displayPath: path }
+  }
+  override async stat(target: FsTarget): Promise<{ version: FsVersion; type: 'file'; size: number } | undefined> {
+    const content = this.files.get(target.targetKey)
+    return content === undefined ? undefined : { version: FsVersion('v1'), type: 'file', size: content.length }
+  }
+  override async readText(target: FsTarget): Promise<string> {
+    return this.files.get(target.targetKey) ?? ''
+  }
+  override async editText(target: FsTarget, edit: { oldString: string; newString: string }):
+  Promise<{ version: FsVersion; before: string; after: string }> {
+    const before = this.files.get(target.targetKey) ?? ''
+    const after = before.split(edit.oldString).join(edit.newString)
+    this.files.set(target.targetKey, after)
+    return { version: FsVersion('v2'), before, after }
+  }
+  override processPath(target: FsTarget): string { return String(target.targetKey) }
+  override fileUrl(target: FsTarget): string { return `file://${target.targetKey}` }
+  override contains(parent: FsTarget, child: FsTarget): boolean {
+    return child.targetKey === parent.targetKey || String(child.targetKey).startsWith(`${parent.targetKey}/`)
+  }
+  override async lstat(path: string): Promise<{ version: FsVersion; type: 'file'; size: number } | undefined> {
+    const content = this.files.get(`key:${path.split('/').pop()}`)
+    return content === undefined ? undefined : { version: FsVersion('v1'), type: 'file', size: content.length }
+  }
+  override async streamText(target: FsTarget): Promise<AsyncIterable<string>> {
+    const content = this.files.get(target.targetKey) ?? ''
+    return (async function* () { yield content })()
+  }
+  override async readBytes(target: FsTarget, _signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array> {
+    const bytes = new TextEncoder().encode(this.files.get(target.targetKey) ?? '')
+    if (bytes.length > maxBytes) throw new Error(`too large: ${target.displayPath}`)
+    return bytes
+  }
+  override async listDir(_target: FsTarget): Promise<FsDirEntry[]> {
+    return []
+  }
+  override async writeText(target: FsTarget, content: string): Promise<FsWriteOutcome> {
+    const before = this.files.get(target.targetKey) ?? null
+    this.files.set(target.targetKey, content)
+    return { operation: before !== null ? 'update' : 'create', version: FsVersion('v2'), before, after: content }
+  }
+}
+
+it('a pure-read bash command satisfies the read-before-edit gate', async () => {
+  const ctx = new Context()
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(AgentRegistry)
+  await ctx.plugin(LocalSubprocessRuntime)
+  await ctx.plugin(BashEnvPlugin)
+  await ctx.plugin(RecordingSandboxExecutor)
+  await ctx.plugin(SandboxPolicyService, {})
+  const fs = new BashReadFakeFs(ctx)
+  fs.files.set('key:a.txt', 'x')
+  await ctx.plugin(FsPolicy)
+  await ctx.plugin(ToolFs)
+  await ctx.plugin(ToolBash)
+  const agent = sandboxAgent('workspace-write', ctx)
+  const read = await call(ctx, 'bash', { command: 'cat a.txt', description: 'read file' }, agent)
+  expect(read.isError).toBe(false)
+  const edited = await call(ctx, 'edit', { file_path: 'a.txt', old_string: 'x', new_string: 'y' }, agent)
+  expect(edited.isError).toBe(false)
+  expect(fs.files.get('key:a.txt')).toBe('y')
+})
+
+it('a compound bash command does not satisfy the read-before-edit gate', async () => {
+  const ctx = new Context()
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(AgentRegistry)
+  await ctx.plugin(LocalSubprocessRuntime)
+  await ctx.plugin(BashEnvPlugin)
+  await ctx.plugin(RecordingSandboxExecutor)
+  await ctx.plugin(SandboxPolicyService, {})
+  const fs = new BashReadFakeFs(ctx)
+  fs.files.set('key:a.txt', 'x')
+  await ctx.plugin(FsPolicy)
+  await ctx.plugin(ToolFs)
+  await ctx.plugin(ToolBash)
+  const agent = sandboxAgent('workspace-write', ctx)
+  const read = await call(ctx, 'bash', { command: 'cat a.txt | grep x', description: 'read pipe' }, agent)
+  expect(read.isError).toBe(false)
+  const edited = await call(ctx, 'edit', { file_path: 'a.txt', old_string: 'x', new_string: 'y' }, agent)
+  expect(edited.isError).toBe(true)
+  expect(edited.error?.info?.code).toBe('FS_NOT_OBSERVED')
 })

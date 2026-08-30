@@ -635,6 +635,31 @@ pwsh 工具是 Windows 组合中 bash 执行器 seam 的 PowerShell 方言消费
 
 ## `@deepseek-ai/dsh-tool-fs`
 
+### `apply_patch`
+
+Apply a single-file unified diff to an existing file. The diff must start with `--- a/<path>` and `+++ b/<path>` headers followed by `@@ -l,c +l,c @@` hunks (space = context, `-` = removed, `+` = added). Every context and removed line is verified against the file; the first mismatch fails the call with the hunk and line number. Multi-file diffs are rejected.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "patch": {
+      "type": "string",
+      "description": "The unified diff to apply, with `--- a/<path>` and `+++ b/<path>` headers."
+    },
+    "file_path": {
+      "type": "string",
+      "description": "Optional explicit target path; defaults to the `+++ b/` header path."
+    }
+  },
+  "required": [
+    "patch"
+  ]
+}
+```
+
+Source: [`packages/fs/tool-fs/src/index.ts`](../packages/fs/tool-fs/src/index.ts)
+
 ### `edit`
 
 通过替换字面量文本来编辑现有 UTF-8 文本文件。

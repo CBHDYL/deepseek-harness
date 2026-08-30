@@ -25,6 +25,8 @@ import type {
 import * as FsPolicy from '@deepseek-ai/dsh-fs-observation-policy'
 import * as ToolFs from '@deepseek-ai/dsh-tool-fs'
 import { STREAM_MIN_SIZE } from '../src/read.ts'
+import { parseUnifiedPatch, applyHunks } from '../src/apply-patch.ts'
+
 import { formatReadOutput } from '../src/read-render.ts'
 import type { FileReadOutcome } from '../src/read-render.ts'
 import { sessionCwd } from '../src/session-cwd.ts'
@@ -152,9 +154,9 @@ describe('session cwd resolution', () => {
 })
 
 describe('registration', () => {
-  it('registers read, write, and edit', async () => {
+  it('registers read, write, edit, and apply_patch', async () => {
     const { ctx } = await setup()
-    expect(ctx.tools.schemas().map(s => s.name).sort()).toEqual(['edit', 'read', 'write'])
+    expect(ctx.tools.schemas().map(s => s.name).sort()).toEqual(['apply_patch', 'edit', 'read', 'write'])
   })
 
   it('declares read parallel-safe while write/edit remain exclusive', async () => {
@@ -192,9 +194,9 @@ describe('registration', () => {
     const fiber = await ctx.plugin(ToolFs)
     // Each tool contributes BOTH a schema and a prompt section; disposal must
     // withdraw both, not just the schemas.
-    expect(ctx.tools.schemas()).toHaveLength(3)
+    expect(ctx.tools.schemas()).toHaveLength(4)
     const sectionNames = (a: { sections: { name: string }[] }) => a.sections.map(s => s.name).sort()
-    expect(sectionNames(await ctx.systemPrompt.assemble())).toEqual(['deployment:persona', 'harness:identity', 'tool:edit', 'tool:read', 'tool:write'])
+    expect(sectionNames(await ctx.systemPrompt.assemble())).toEqual(['deployment:persona', 'harness:identity', 'tool:apply_patch', 'tool:edit', 'tool:read', 'tool:write'])
     await fiber.dispose()
     expect(ctx.tools.schemas()).toHaveLength(0)
     // Only the system-prompt plugin's own built-in sections remain.
@@ -977,5 +979,96 @@ describe('sandbox escalation API (write/edit)', () => {
     const result = await call(ctx, 'write', { file_path: 'a.txt', content: 'x', sandbox_permissions: 'workspace-write', justification: 'why' }, escalationAgent())
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('not available in this composition')
+  })
+})
+
+describe('apply_patch (F-3)', () => {
+  const patchAgent = () => ({
+    session: {
+      id: 'sess-patch',
+      header: { version: 0, id: 'sess-patch', createdAt: 0, cwd: '/session-project' },
+      events: [{ type: 'turn/start' }],
+      append: () => {},
+    },
+  })
+
+  it('parses and applies a single-file unified diff', () => {
+    const parsed = parseUnifiedPatch([
+      '--- a/a.txt',
+      '+++ b/a.txt',
+      '@@ -1,3 +1,3 @@',
+      ' line1',
+      '-line2',
+      '+line2-changed',
+      ' line3',
+    ].join('\n'))
+    if (!parsed.ok) throw new Error(parsed.error)
+    expect(parsed.patch.oldPath).toBe('a.txt')
+    expect(parsed.patch.hunks).toHaveLength(1)
+    const applied = applyHunks('line1\nline2\nline3\n', parsed.patch.hunks)
+    if (!applied.ok) throw new Error(JSON.stringify(applied.mismatch))
+    expect(applied.content).toBe('line1\nline2-changed\nline3\n')
+  })
+
+  it('fails loudly on a context mismatch with position', () => {
+    const parsed = parseUnifiedPatch([
+      '--- a/a.txt',
+      '+++ b/a.txt',
+      '@@ -1,2 +1,2 @@',
+      ' line1',
+      '-line2',
+      '+new',
+    ].join('\n'))
+    if (!parsed.ok) throw new Error(parsed.error)
+    const applied = applyHunks('line1\nDIFFERENT\n', parsed.patch.hunks)
+    expect(applied.ok).toBe(false)
+    if (applied.ok) throw new Error('expected mismatch')
+    expect(applied.mismatch.line).toBe(2)
+  })
+
+  it('rejects multi-file and malformed patches', () => {
+    expect(parseUnifiedPatch('--- a/a.txt\n+++ b/a.txt\n--- a/b.txt\n+++ b/b.txt\n').ok).toBe(false)
+    expect(parseUnifiedPatch('not a patch').ok).toBe(false)
+    expect(parseUnifiedPatch('--- a/a.txt\n+++ b/a.txt\n@@ -1,1 +1,1 @@\n').ok).toBe(false)
+  })
+
+  it('applies a patch through the real tool with read-before-edit', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(FakeFs)
+    await ctx.plugin(FsPolicy)
+    await ctx.plugin(ToolFs)
+    const fs = ctx.fs as FakeFs
+    fs.files.set('key:a.txt', 'alpha\nbeta\ngamma\n')
+    const agent = patchAgent()
+    await call(ctx, 'read', { file_path: 'a.txt' }, agent)
+    const patch = [
+      '--- a/a.txt',
+      '+++ b/a.txt',
+      '@@ -1,3 +1,3 @@',
+      ' alpha',
+      '-beta',
+      '+beta-prime',
+      ' gamma',
+    ].join('\n')
+    const result = await call(ctx, 'apply_patch', { patch }, agent)
+    expect(result.isError).toBe(false)
+    expect(fs.files.get('key:a.txt')).toBe('alpha\nbeta-prime\ngamma\n')
+  })
+
+  it('a patch without a prior read fails FS_NOT_OBSERVED', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(FakeFs)
+    await ctx.plugin(FsPolicy)
+    await ctx.plugin(ToolFs)
+    const fs = ctx.fs as FakeFs
+    fs.files.set('key:a.txt', 'alpha\n')
+    const patch = '--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-alpha\n+ALPHA\n'
+    const result = await call(ctx, 'apply_patch', { patch }, patchAgent())
+    expect(result.isError).toBe(true)
+    expect(result.error?.info?.code).toBe('FS_NOT_OBSERVED')
   })
 })
