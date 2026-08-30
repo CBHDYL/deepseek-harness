@@ -37,6 +37,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-subagent-control` | `interrupt_agent`, `list_agents`, `send_message` | `ctx.tools`, `ctx.subagents`, `ctx.agents and ctx.sessionProjections (list_agents only)` | `tool/call`, `tool/result`, `child session events through ctx.subagents` | - | The globally named control tools over continuable background subagents: provider-bound `tool-subagent` instances register distinct delegation tools, while this package registers `send_message` and `interrupt_agent` once, plus `list_agents` from its separately loaded `/list-agents` plugin (whose catalog rows use the sessionProjections and live Agent registries). |
 | `@deepseek-ai/dsh-tool-subagent-report` | `report` | `ctx.subagents`, `ctx.systemPrompt`, `a live continuable in-process child Agent` | `tool/call`, `tool/result`, `a user-role message in the direct parent session` | - | Registered per continuable in-process child rather than globally, so this schema is visible only inside such a child and survives its global `toolFilter`. The same contribution installs the child-scoped `tool:report` prompt section, which this catalog does not render. The parent-facing `send_message` tool is installed independently. |
 | `@deepseek-ai/dsh-tool-jobs` | `job_kill`, `job_list`, `job_output` | `ctx.tools`, `ctx.jobs`, `ctx.systemPrompt` | `tool/call`, `tool/result`, `user/message via agent.inject() for background completion notices` | - | The kind-agnostic background-job controller: background bash commands, PTY sends, and subagents are read, listed, and killed through the same three tools. Loading the plugin attaches the controller that arms producers' `ctx.jobs.start()`. |
+| `@deepseek-ai/dsh-tool-service` | `service_manage` | `ctx.tools`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | service_manage tracks long-running processes with guaranteed session cleanup; every started process is killed when its owning session disposes or the plugin unloads. |
 | `@deepseek-ai/dsh-experimental-tool-agent-team` | `followup_task`, `interrupt_agent`, `list_agents`, `send_message`, `spawn_teammate`, `team_task_create`, `team_task_get`, `team_task_list`, `team_task_update`, `wait_agent` | `ctx.tools`, `ctx.systemPrompt`, `ctx.agentTeams`, `an exact live Team member Agent` | `tool/call`, `team/member`, `team/message/queued`, `team/message/delivered`, `team/task`, `tool/result` | - | All ten tools are scoped to implicit Team Leads and durable teammates. The shipped dsh-base bundle keeps the package disabled; the documented Agent Teams profile patch enables it while disabling the legacy continuable-child control names. |
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
@@ -1732,6 +1733,64 @@ Read a background job. Stream jobs return only output since the previous read; f
 Source: [`packages/jobs/tool-jobs/src/index.ts`](../packages/jobs/tool-jobs/src/index.ts)
 
 The kind-agnostic background-job controller: background bash commands, PTY sends, and subagents are read, listed, and killed through the same three tools. Loading the plugin attaches the controller that arms producers' `ctx.jobs.start()`.
+
+<a id="deepseek-aidsh-tool-service"></a>
+
+## `@deepseek-ai/dsh-tool-service`
+
+### `service_manage`
+
+Manage a long-running service process owned by this session: start a detached process with optional port and healthcheck, stop it, check its status, read its log, or list managed services. Every started process is killed when this session ends or the plugin unloads — use this instead of orphaned background shell processes.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "What to do: start a new service, stop one, check status, read the log tail, or list managed services.",
+      "enum": [
+        "start",
+        "stop",
+        "status",
+        "logs",
+        "list"
+      ]
+    },
+    "id": {
+      "type": "string",
+      "description": "Stable service id (required for start/stop/status/logs; omitted for list)."
+    },
+    "command": {
+      "type": "string",
+      "description": "The shell command to run (required for start)."
+    },
+    "workdir": {
+      "type": "string",
+      "description": "Working directory for the started process; defaults to the session workspace."
+    },
+    "port": {
+      "type": "number",
+      "description": "Optional port the service is expected to bind; the tool refuses to start when it is already in use and reports its state in status."
+    },
+    "health_url": {
+      "type": "string",
+      "description": "Optional http(s) URL polled for status health checks."
+    },
+    "lines": {
+      "type": "number",
+      "description": "Log lines to return (logs action only; capped at 200)."
+    }
+  },
+  "required": [
+    "action"
+  ]
+}
+```
+
+Source: [`packages/extensions/tool-service/src/index.ts`](../packages/extensions/tool-service/src/index.ts)
+
+service_manage tracks long-running processes with guaranteed session cleanup; every started process is killed when its owning session disposes or the plugin unloads.
 
 <a id="deepseek-aidsh-experimental-tool-agent-team"></a>
 
