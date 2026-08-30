@@ -58,6 +58,7 @@ core/system-prompt dsh-system-prompt
 core/tools dsh-tools
 core/scope dsh-scope
 llm/llm dsh-llm
+sandbox/sandbox dsh-sandbox
 guard/repeat-tool-reminder dsh-repeat-tool-reminder
 jobs/jobs-local dsh-jobs-local
 mcp/mcp-client dsh-mcp-client
