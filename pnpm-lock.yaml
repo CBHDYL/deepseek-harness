@@ -996,6 +996,9 @@ importers:
       '@deepseek-ai/cordis-plugin-timer':
         specifier: workspace:^
         version: link:../../../vendor/timer
+      '@deepseek-ai/dsh-action-policy-guard':
+        specifier: workspace:^
+        version: link:../../guard/action-policy-guard
       '@deepseek-ai/dsh-agent':
         specifier: workspace:^
         version: link:../../core/agent
@@ -1038,6 +1041,9 @@ importers:
       '@deepseek-ai/dsh-credentials-local':
         specifier: workspace:^
         version: link:../../credentials/credentials-local
+      '@deepseek-ai/dsh-escalation-hider':
+        specifier: workspace:^
+        version: link:../../guard/escalation-hider
       '@deepseek-ai/dsh-fs-local':
         specifier: workspace:^
         version: link:../../fs/fs-local
@@ -1068,6 +1074,9 @@ importers:
       '@deepseek-ai/dsh-llm-retry':
         specifier: workspace:^
         version: link:../../llm/llm-retry
+      '@deepseek-ai/dsh-output-repetition-guard':
+        specifier: workspace:^
+        version: link:../../guard/output-repetition-guard
       '@deepseek-ai/dsh-permission-presets':
         specifier: workspace:^
         version: link:../../interaction/permission-presets
@@ -1152,6 +1161,9 @@ importers:
       '@deepseek-ai/dsh-tool-bash':
         specifier: workspace:^
         version: link:../../shell/tool-bash
+      '@deepseek-ai/dsh-tool-browser':
+        specifier: workspace:^
+        version: link:../../extensions/tool-browser
       '@deepseek-ai/dsh-tool-call-timeout-policy':
         specifier: workspace:^
         version: link:../../guard/timeout-policy
@@ -1173,6 +1185,9 @@ importers:
       '@deepseek-ai/dsh-tool-ralph':
         specifier: workspace:^
         version: link:../../workflow/tool-ralph
+      '@deepseek-ai/dsh-tool-service':
+        specifier: workspace:^
+        version: link:../../extensions/tool-service
       '@deepseek-ai/dsh-tool-skill':
         specifier: workspace:^
         version: link:../../skill/tool-skill

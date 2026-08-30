@@ -92,6 +92,8 @@ guard/escalation-hider dsh-escalation-hider
 guard/output-repetition-guard dsh-output-repetition-guard
 guard/action-policy-guard dsh-action-policy-guard
 web/web-fetch-http dsh-web-fetch-http
+extensions/tool-service dsh-tool-service
+extensions/tool-browser dsh-tool-browser
 NEWPKG
 cp "$SRC/packages/bundle/base/cordis.patch.yml" "$G/dsh-base/cordis.patch.yml"
 echo "  base patch 已覆盖（启用 escalation-hider/output-repetition-guard/action-policy-guard + vetoAt:6）"

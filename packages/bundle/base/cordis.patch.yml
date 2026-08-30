@@ -421,6 +421,17 @@
         mode: observe
         treatUndeclaredAsSideEffectful: true
 
+    # Managed long-running services: start/stop/status/logs/list with
+    # guaranteed cleanup when the owning session disposes or the plugin
+    # unloads — the anti-orphan-process tool.
+    - id: tool-service
+      name: '@deepseek-ai/dsh-tool-service'
+
+    # Smoke-level UI verification: one headless Chromium page per session
+    # (goto/screenshot/click/fill/read_text), closed on session disposal.
+    - id: tool-browser
+      name: '@deepseek-ai/dsh-tool-browser'
+
     # Every mode enables the stable model-facing web_search tool. DeepSeek search
     # resolves the same DEEPSEEK_API_KEY credential the Models page manages for
     # chat, at each search; its Messages endpoint is separate from the
