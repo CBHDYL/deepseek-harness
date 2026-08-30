@@ -12,8 +12,7 @@ Status: implemented
 
 在共享升级编排中做两处协同修改：
 
-- `approveEscalation` 将"请求模式等于调用有效模式"视为幂等：直接返回有效模式且不询问审批通道，调用按当前策略执行。相等性检查以封闭的 `SandboxMode` 词表为守卫，未知模式的相等对仍失败关闭。
-- 真正不加宽的请求抛出携带稳定代码 `SANDBOX_ESCALATION_NOT_WIDER` 的 `HarnessError`；工具注册表将其呈现为 `result.error.info.code`，失败指纹与可观测性据此做结构化分类，不再解析文本。
+- `approveEscalation` 将"请求模式等于调用有效模式"视为幂等：直接返回有效模式且不询问审批通道，调用按当前策略执行。相等性检查以封闭的 `SandboxMode` 词表为守卫，未知模式的相等对仍失败关闭。 - 真正不加宽的请求抛出携带稳定代码 `SANDBOX_ESCALATION_NOT_WIDER` 的 `HarnessError`；工具注册表将其呈现为 `result.error.info.code`，失败指纹与可观测性据此做结构化分类，不再解析文本。
 
 同模式路径适用于所有强制族（bash、pwsh、edit、write），因为它们都经由唯一的 `approveEscalation` 归宿解析。escalation-hider 守卫的默认 `tools` 列表也由 `['bash', 'pwsh']` 扩为 `['bash', 'pwsh', 'edit', 'write']`，使文件系统变更工具同样不再向模型展示"永远无法成功"的旋钮。隐藏仍是外观层：模型即使照旧发出这些字段，也会精确命中执行层定义的幂等或结构化失败。
 

@@ -103,6 +103,37 @@ interface SessionEventMap {
    */
   'request/context': RequestContext
   /**
+   * One model-request attempt inside a step, opened before the provider stream
+   * begins. `attempt` is 1-based and counts every request the step makes,
+   * including retries — the durable identity replay, telemetry, and recovery
+   * use to separate attempts that share the same turn/step coordinates.
+   */
+  'request/attempt-start': { turn: number; step: number; attempt: number; provider: string; model: string }
+  /**
+   * The terminal outcome of one attempt: `ok` after a usable stream, or a
+   * failure + decision (`throw` when the step gives up, `retry` when the
+   * policy asked for another attempt, `retry-exhausted` when the core attempt
+   * budget ran out).
+   */
+  'request/attempt-end': {
+    turn: number
+    step: number
+    attempt: number
+    outcome: 'ok' | 'throw' | 'retry' | 'retry-exhausted'
+    failure?: LlmFailure
+  }
+  /**
+   * One background job opened for this session's owner agent. Durable
+   * orchestration journal: a crash or restart can reconstruct which jobs were
+   * in flight and how they settled, even though the job registry itself is
+   * process-local.
+   */
+  'job/start': { jobId: string; kind: string; label: string }
+  /**
+   * The terminal settlement of a {@link SessionEventMap['job/start']} job.
+   */
+  'job/end': { jobId: string; status: 'completed' | 'failed' | 'killed'; detail?: string; finishedAt: number }
+  /**
    * Marks the end of a constructor seed. Events before it have smaller seq
    * values and came from the seed (resume, fork, or replay); this lifecycle
    * produced none of them. This log-only event is the durable projection of
@@ -450,14 +481,10 @@ declare class Session {
    *
    * @param type - The event type (key of {@link SessionEventMap}).
    * @param data - The event payload; must be JSON-serializable.
-   * @param opts - Surface metadata: `surfaceOp` controls how the event enters
-   *   the ordered surface; `sourceEventSeqs` lists the seq numbers of earlier
-   *   events this one derives from. REQUIRED for
-   *   {@link SurfaceEventType} events (every message-producing event must
-   *   declare how it joins the surface, the sole source of derived model
-   *   history) and
-   *   rejected by the compiler for non-surface types like `turn/start` or
-   *   `assistant/chunk`.
+   * @param opts - Event envelope metadata. Log-only events may set
+   *   `ignorable: true` when readers can safely skip an unknown type. Surface
+   *   events require `surfaceOp` and may list `sourceEventSeqs`; the compiler
+   *   keeps those fields off log-only events.
    * @returns the logged event — its assigned `seq`/`time` plus the SNAPSHOT of
    *   `data` that entered the log, so reading `event.data` back sees the logged
    *   value, never the caller's still-mutable input.
@@ -478,7 +505,7 @@ declare class Session {
   append<T extends SessionEventType>(
     type: T,
     data: SessionEventMap[T],
-    ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent] : []
+    ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent] : [opts?: LogEventIntent]
   ): SessionEvent<T>;
   /**
    * The {@link EpochHeader} in force after the log's last header event — the

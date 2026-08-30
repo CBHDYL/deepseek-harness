@@ -369,6 +369,10 @@ export class FrameQueue<F> {
 
   constructor(private readonly maxFrames: number = DEFAULT_MAX_QUEUED_FRAMES) {}
 
+  /**
+   * Enqueue one frame, dropping the oldest when at {@link maxFrames} (counted in {@link dropped}). No-op after {@link end}.
+   * @param item - the frame to enqueue.
+   */
   push(item: F): void {
     if (this.done) return
     if (this.buffer.length >= this.maxFrames) {
@@ -379,11 +383,18 @@ export class FrameQueue<F> {
     this.waiter?.()
   }
 
+  /** Stop the queue: future pushes are no-ops and {@link iterate} drains then returns. */
   end(): void {
     this.done = true
     this.waiter?.()
   }
 
+  /**
+   * Drain frames as an async generator until the queue ends or the signal aborts.
+   * @param signal - aborting the signal ends the queue and returns the iterator.
+   * @param cleanup - invoked once when the iterator returns, to release resources.
+   * @returns each queued frame in FIFO order.
+   */
   async *iterate(signal: AbortSignal, cleanup: () => void): AsyncGenerator<F> {
     const onAbort = (): void => { this.end() }
     signal.addEventListener('abort', onAbort, { once: true })

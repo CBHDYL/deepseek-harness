@@ -86,6 +86,31 @@ Depends on: [`agentCore`](../packages/examples/agent-spine-demo/src/index.ts) ·
 
 Source: [`packages/examples/acp-demo/src/index.ts:39`](../packages/examples/acp-demo/src/index.ts)
 
+<a id="deepseek-aidsh-action-policy-guard"></a>
+
+## `@deepseek-ai/dsh-action-policy-guard`
+
+```ts config-catalog
+/** Plugin config, validated fail-loud in `apply`. */
+export interface Config {
+  /**
+   * `observe` (default) logs ungoverned side-effectful calls and delegates;
+   * `enforce` requires an `allowed-once` approval for every side-effectful
+   * call before it runs (fail-closed when no approval service is composed).
+   * Validated against `observe`/`enforce` at plugin load.
+   */
+  mode?: string
+  /**
+   * Treat tools without a declared `effects` as side-effectful (default
+   * true). `false` restricts the gate to tools that explicitly declare
+   * `effects: 'side-effectful'`.
+   */
+  treatUndeclaredAsSideEffectful?: boolean
+}
+```
+
+Source: [`packages/guard/action-policy-guard/src/index.ts:28`](../packages/guard/action-policy-guard/src/index.ts)
+
 <a id="deepseek-aidsh-agent-default-model"></a>
 
 ## `@deepseek-ai/dsh-agent-default-model`
@@ -146,6 +171,12 @@ export interface Config {
    * omission defaults to {@link DEFAULT_MAX_PARALLEL_TOOL_CALLS}.
    */
   maxParallelToolCalls?: number
+  /**
+   * Hard cap on model-request attempts per step, including retries. A faulty
+   * or hostile `agent/request-error` listener cannot retry forever; the step
+   * fails with `REQUEST_ATTEMPTS_EXCEEDED` at the cap. Default 16.
+   */
+  maxRequestAttempts?: number
   /** Agents created or resumed at plugin startup. */
   agents: (AgentOptions & {
     /** Stable config label used in logs and as the fresh combined-id prefix. */
@@ -162,7 +193,7 @@ export interface Config {
 
 Depends on: [`AgentOptions`](subsystems/core.md) · [`SessionId`](subsystems/core.md)
 
-Source: [`packages/core/agent-loop/src/index.ts:255`](../packages/core/agent-loop/src/index.ts)
+Source: [`packages/core/agent-loop/src/index.ts:270`](../packages/core/agent-loop/src/index.ts)
 
 <a id="deepseek-aidsh-agent-presets"></a>
 
@@ -593,6 +624,35 @@ export interface Config {
 
 Source: [`packages/e2b/e2b/src/index.ts:43`](../packages/e2b/e2b/src/index.ts)
 
+<a id="deepseek-aidsh-escalation-hider"></a>
+
+## `@deepseek-ai/dsh-escalation-hider`
+
+```ts config-catalog
+/**
+ * Plugin config, validated by the same-named schemastery schema plus the
+ * load-time checks in `apply` (misconfiguration fails loud).
+ */
+export interface Config {
+  /**
+   * Hide escalation parameters when the effective sandbox mode is at least
+   * this wide (default `danger-full-access` — the widest mode, where escalation
+   * is never a strict widening). Validated against {@link SANDBOX_MODES} at
+   * plugin load.
+   */
+  hideAtOrAboveMode?: string
+  /**
+   * Hide when the session's approval policy is `never` (escalation can never be
+   * approved). Default true.
+   */
+  hideWhenApprovalNever?: boolean
+  /** Tool-name wildcard patterns whose escalation parameters are hidden. */
+  tools?: string[]
+}
+```
+
+Source: [`packages/guard/escalation-hider/src/index.ts:47`](../packages/guard/escalation-hider/src/index.ts)
+
 <a id="deepseek-aidsh-experimental-agent-team"></a>
 
 ## `@deepseek-ai/dsh-experimental-agent-team`
@@ -705,6 +765,13 @@ Requires: `agents`
 export interface Config {
   /** Total rounds used when a create request omits its own cap. */
   defaultMaxGoalRounds?: number
+  /**
+   * Deployment-wide hard ceiling for `maxGoalRounds`: any requested cap above
+   * it (create or edit) is clamped to the ceiling. A goal objective may be
+   * inferred from an ordinary user message, so a model-authorized huge
+   * autonomous run must not exceed a deployment budget. Default 512.
+   */
+  maxGoalRoundsCeiling?: number
 }
 ```
 
@@ -786,10 +853,19 @@ export interface Config {
   defaultTimeoutMs?: number
   /** Character cap for the `hook/result` event's persisted stderr summary. */
   stderrSummaryMaxChars?: number
+  /**
+   * Hard budget of Stop-hook forced continuations within ONE turn. A blocking
+   * Stop hook steers another step each time it denies; without a cap an
+   * unconditional hook force-continues every step until it self-limits (or
+   * the budget/cost dies first). Once the budget is exhausted the turn is
+   * allowed to stop, and `stop_hook_active` is reported `true` so a
+   * cooperative hook can see the ceiling. Default 8.
+   */
+  stopContinuationLimit?: number
 }
 ```
 
-Source: [`packages/hooks/hooks-codex/src/index.ts:44`](../packages/hooks/hooks-codex/src/index.ts)
+Source: [`packages/hooks/hooks-codex/src/index.ts:47`](../packages/hooks/hooks-codex/src/index.ts)
 
 <a id="deepseek-aidsh-host-apiproxy"></a>
 
@@ -1396,6 +1472,12 @@ export interface StdioConfig {
   cwd: string
   /** Per-tool-call timeout in milliseconds. */
   toolCallTimeoutMs: number
+  /** Maximum tools/list pages to drain before aborting (default 50). */
+  maxSyncPages?: number
+  /** Maximum tools per server before aborting the sync (default 2000). */
+  maxToolsPerServer?: number
+  /** Whole-sync deadline in ms (default 30000). */
+  syncTimeoutMs?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -1418,6 +1500,12 @@ export interface StreamableHttpConfig {
   headers: Record<string, string>
   /** Per-tool-call timeout in milliseconds. */
   toolCallTimeoutMs: number
+  /** Maximum tools/list pages to drain before aborting (default 50). */
+  maxSyncPages?: number
+  /** Maximum tools per server before aborting the sync (default 2000). */
+  maxToolsPerServer?: number
+  /** Whole-sync deadline in ms (default 30000). */
+  syncTimeoutMs?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -1437,7 +1525,7 @@ export interface ReconnectConfig {
 }
 ```
 
-Source: [`packages/mcp/mcp-client/src/index.ts:98`](../packages/mcp/mcp-client/src/index.ts)
+Source: [`packages/mcp/mcp-client/src/index.ts:117`](../packages/mcp/mcp-client/src/index.ts)
 
 <a id="deepseek-aidsh-message-feedback"></a>
 
@@ -1454,6 +1542,32 @@ export interface Config {
 ```
 
 Source: [`packages/feedback/message-feedback/src/index.ts:49`](../packages/feedback/message-feedback/src/index.ts)
+
+<a id="deepseek-aidsh-output-repetition-guard"></a>
+
+## `@deepseek-ai/dsh-output-repetition-guard`
+
+```ts config-catalog
+/** Detector options, validated fail-loud in `apply` and at construction. */
+export interface Config {
+  /** Minimum section length in characters before a repeat is reportable (default 400). */
+  minSectionChars?: number
+  /** Minimum occurrence count of the section before a repeat is reportable (default 2). */
+  minRepeat?: number
+  /** Maximum detections emitted per agent step (default 1). */
+  emitLimit?: number
+  /**
+   * When a repeat is detected, cancel the streaming agent turn (cause
+   * `{kind:'hook'}`) so the degenerate output stops being generated live; the
+   * already-streamed prefix is preserved as an interrupted assistant message.
+   * Default false — telemetry only, so the safe order (observe first) is the
+   * default.
+   */
+  abortStream?: boolean
+}
+```
+
+Source: [`packages/guard/output-repetition-guard/src/index.ts:44`](../packages/guard/output-repetition-guard/src/index.ts)
 
 <a id="deepseek-aidsh-permission-presets"></a>
 
@@ -1618,6 +1732,14 @@ export interface Config {
    * always compares the FULL canonical string).
    */
   argumentsPreviewChars?: number
+  /**
+   * Optional circuit breaker: after this many consecutive identical calls —
+   * or consecutive calls failing with the same failure fingerprint, even when
+   * arguments differ — the guard DENIES the call before dispatch (identical
+   * arguments) or blocks its result with breaker feedback (same-failure run).
+   * Default undefined = advisory reminders only (fully backward compatible).
+   */
+  vetoAt?: number
 }
 ```
 
@@ -2989,7 +3111,7 @@ export interface Config {
 export type ToolPresentationMode = 'native' | 'code' | 'both'
 ```
 
-Source: [`packages/core/tools/src/index.ts:654`](../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:665`](../packages/core/tools/src/index.ts)
 
 <a id="deepseek-aidsh-typert-loader"></a>
 
@@ -3107,6 +3229,11 @@ export interface Config {
   maxRedirects?: number
   /** `User-Agent` header sent on every request. */
   userAgent?: string
+  /**
+   * Resolve every hostname and refuse loopback/private/link-local/multicast
+   * targets (SSRF protection). Default true.
+   */
+  blockPrivateAddresses?: boolean
 }
 ```
 

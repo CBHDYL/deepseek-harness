@@ -65,6 +65,7 @@ export const Config: z<Config> = z.object({
   abortStream: z.boolean().default(false),
 })
 
+/** One repetition detection: the repeating section length and how many repeats were observed. */
 export interface Detection {
   sectionChars: number
   repeatCount: number

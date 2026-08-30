@@ -218,7 +218,6 @@ export interface ToolOutputDefinition {
   presentationMeta?(args: unknown, value: JsonValue): JsonValue
 }
 
-/** A registered tool: its schema plus the execution function. */
 /**
  * Declared execution effect of a tool, used by action-policy guards to gate
  * side-effectful work. `'read-only'` tools mutate nothing; `'side-effectful'`
@@ -228,10 +227,10 @@ export interface ToolOutputDefinition {
  */
 export type ToolEffects = 'read-only' | 'side-effectful'
 
+/** A registered tool: its schema plus the execution function. */
 export interface ToolDefinition extends ToolSchema {
   /** Declared execution effect for action-policy guards; absent = undeclared. */
   readonly effects?: ToolEffects
-
   /** Mandatory canonical output declaration. */
   readonly output: ToolOutputDefinition
   /**

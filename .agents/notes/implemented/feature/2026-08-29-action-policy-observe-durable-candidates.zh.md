@@ -12,10 +12,7 @@ action-policy 守卫的 `observe` 模式只通过 `logger.warn` 报告未受治�
 
 在 `observe` 模式下，每个副作用候选调用追加一条仅记录（log-only）的 `action-policy/candidate` 会话事件，其 payload 恰好为 `{ toolName, callId, effectSource }`：
 
-- `effectSource` 是封闭词表 `'declared'`（工具声明了 `effects: 'side-effectful'`）或 `'undeclared'`（由 `treatUndeclaredAsSideEffectful` 分类捕获）——observe 统计真正要区分的两种治理事实。
-- `callId` 将候选关联回其所属的 `tool/call`/`tool/result` 事件，因此 payload 不携带参数、命令、路径、justification 或凭据；持久日志绝不复制工具输入或密钥。
-- 事件标记 `ignorable: true`，不认识该类型的读取器可安全跳过；`Session.append` 为此新增了类型化 `LogEventIntent` 选项——这是会话日志版本化 Agent Note 预留的信封标记的第一个生产者。
-- 只读调用不追加任何事件，`enforce` 模式从不追加候选事件，无 agent 的执行（无会话）也不追加；这些路径保持原行为逐字节不变。
+- `effectSource` 是封闭词表 `'declared'`（工具声明了 `effects: 'side-effectful'`）或 `'undeclared'`（由 `treatUndeclaredAsSideEffectful` 分类捕获）——observe 统计真正要区分的两种治理事实。 - `callId` 将候选关联回其所属的 `tool/call`/`tool/result` 事件，因此 payload 不携带参数、命令、路径、justification 或凭据；持久日志绝不复制工具输入或密钥。 - 事件标记 `ignorable: true`，不认识该类型的读取器可安全跳过；`Session.append` 为此新增了类型化 `LogEventIntent` 选项——这是会话日志版本化 Agent Note 预留的信封标记的第一个生产者。 - 只读调用不追加任何事件，`enforce` 模式从不追加候选事件，无 agent 的执行（无会话）也不追加；这些路径保持原行为逐字节不变。
 
 ## Alternatives considered
 

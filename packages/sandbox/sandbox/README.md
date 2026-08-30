@@ -12,15 +12,11 @@ Policy rides the call, not the provider: two consumers may confine under differe
 
 Implementations: [`@deepseek-ai/dsh-sandbox-local`](../sandbox-local/) (Linux: `bwrap`, else the per-platform Landlock launcher; macOS: `sandbox-exec`/Seatbelt). Consumers: [`@deepseek-ai/dsh-bash-sandbox`](../../shell/bash-sandbox/) (wraps `['bash', '-c', command]`).
 
+## Escalation failures
+
+Repeating the mode already in force is idempotent: the call executes under the standing policy and no approval prompt is raised. A genuinely non-widening request fails closed with the stable code `SANDBOX_ESCALATION_NOT_WIDER` carried on the tool result's structured error, so retry and observer layers classify it without parsing the message.
+
 ## Model Experience
-
-### Escalation failures
-
-Repeating the mode already in force is idempotent: the call executes under the
-standing policy and no approval prompt is raised. A genuinely non-widening
-request fails closed with the stable code `SANDBOX_ESCALATION_NOT_WIDER`
-carried on the tool result's structured error, so retry and observer layers
-classify it without parsing the message.
 
 ### Confinement error, indirectly
 

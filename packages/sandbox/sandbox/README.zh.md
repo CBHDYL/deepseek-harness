@@ -12,11 +12,11 @@
 
 实现：[`@deepseek-ai/dsh-sandbox-local`](../sandbox-local/)（Linux：`bwrap`，否则使用相应平台的 Landlock launcher；macOS：`sandbox-exec`／Seatbelt）。消费方：[`@deepseek-ai/dsh-bash-sandbox`](../../shell/bash-sandbox/)（包装 `['bash', '-c', command]`）。
 
-## 模型体验
-
-### 升级失败
+## 升级失败
 
 重复请求当前已生效的模式是幂等的：调用按当前策略执行，不发起审批询问。真正不加宽的请求以稳定代码 `SANDBOX_ESCALATION_NOT_WIDER` 失败关闭，并随工具结果的错误结构携带，使重试与观测层无需解析消息即可分类。
+
+## 模型体验
 
 <a id="confinement-error-indirectly"></a>
 

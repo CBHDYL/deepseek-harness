@@ -25,6 +25,8 @@ interface ToolOutputDefinition {
 ```ts type-equiv
 /** A registered tool: its schema plus the execution function. */
 interface ToolDefinition extends ToolSchema {
+  /** Declared execution effect for action-policy guards; absent = undeclared. */
+  readonly effects?: ToolEffects
   /** Mandatory canonical output declaration. */
   readonly output: ToolOutputDefinition
   /**

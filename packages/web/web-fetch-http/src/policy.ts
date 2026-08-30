@@ -59,6 +59,8 @@ export function isSameOrigin(a: URL, b: URL): boolean {
  * unspecified, IPv6 ULA/link-local/multicast, and IPv4-mapped forms of any of
  * the above. The 169.254.0.0/16 range also covers cloud metadata endpoints
  * (169.254.169.254). Unparseable input is treated as blocked (fail closed).
+ * @param address - the host address to test, as an IPv4/IPv6 literal or hostname.
+ * @returns true when the address must never be fetched.
  */
 export function isBlockedAddress(address: string): boolean {
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address)

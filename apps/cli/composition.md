@@ -148,6 +148,12 @@ flowchart LR
   cfg --> plugin_dsh_base_tool_str_replace_editor
   plugin_dsh_base_repeat_tool_reminder["repeat-tool-reminder<br/>@deepseek-ai/dsh-repeat-tool-reminder"]
   cfg --> plugin_dsh_base_repeat_tool_reminder
+  plugin_dsh_base_escalation_hider["escalation-hider<br/>@deepseek-ai/dsh-escalation-hider"]
+  cfg --> plugin_dsh_base_escalation_hider
+  plugin_dsh_base_output_repetition_guard["output-repetition-guard<br/>@deepseek-ai/dsh-output-repetition-guard"]
+  cfg --> plugin_dsh_base_output_repetition_guard
+  plugin_dsh_base_action_policy_guard["action-policy-guard<br/>@deepseek-ai/dsh-action-policy-guard"]
+  cfg --> plugin_dsh_base_action_policy_guard
   plugin_dsh_base_web["web<br/>@deepseek-ai/dsh-web"]
   cfg --> plugin_dsh_base_web
   plugin_dsh_base_web_search_deepseek["web-search-deepseek<br/>@deepseek-ai/dsh-web-search-deepseek"]
@@ -238,6 +244,9 @@ flowchart LR
 | `tool-ralph` | `@deepseek-ai/dsh-tool-ralph` |
 | `tool-str-replace-editor` | `@deepseek-ai/dsh-tool-str-replace-editor` |
 | `repeat-tool-reminder` | `@deepseek-ai/dsh-repeat-tool-reminder` |
+| `escalation-hider` | `@deepseek-ai/dsh-escalation-hider` |
+| `output-repetition-guard` | `@deepseek-ai/dsh-output-repetition-guard` |
+| `action-policy-guard` | `@deepseek-ai/dsh-action-policy-guard` |
 | `web` | `@deepseek-ai/dsh-web` |
 | `web-search-deepseek` | `@deepseek-ai/dsh-web-search-deepseek` |
 | `tool-web` | `@deepseek-ai/dsh-tool-web` |
