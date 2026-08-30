@@ -18,7 +18,10 @@ export interface BrowserSession {
   url: string | undefined
 }
 
-/** Resolve a usable Chromium executable, or undefined when none is found. */
+/**
+ * Resolve a usable Chromium executable, or undefined when none is found.
+ * @returns the executable path, or undefined when no browser is available.
+ */
 export function resolveBrowserExecutable(): string | undefined {
   const fromEnv = process.env.DSH_BROWSER_EXECUTABLE
   if (fromEnv !== undefined && existsSync(fromEnv)) return fromEnv
@@ -44,12 +47,20 @@ export class BrowserManager {
   private sessions = new Map<string, BrowserSession>()
   private browser: Browser | undefined
 
-  /** Whether any session has a live page. */
+  /**
+   * Whether any session has a live page.
+   * @param sessionId - the owning session id.
+   * @returns true when the session's page exists.
+   */
   has(sessionId: string): boolean {
     return this.sessions.has(sessionId)
   }
 
-  /** The session's page, launching the browser on first use. */
+  /**
+   * The session's page, launching the browser on first use.
+   * @param sessionId - the owning session id.
+   * @returns the session's live page.
+   */
   async pageFor(sessionId: string): Promise<Page> {
     const existing = this.sessions.get(sessionId)
     if (existing !== undefined) return existing.page
@@ -65,7 +76,10 @@ export class BrowserManager {
     return page
   }
 
-  /** Close one session's page. */
+  /**
+   * Close one session's page.
+   * @param sessionId - the owning session id.
+   */
   async close(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (session === undefined) return

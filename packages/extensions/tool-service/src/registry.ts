@@ -40,7 +40,11 @@ function logRoot(): string {
   return root
 }
 
-/** Whether a process with this pid is alive (no signal sent). */
+/**
+ * Whether a process with this pid is alive (no signal sent).
+ * @param pid - the process id to probe.
+ * @returns true when the process exists.
+ */
 export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -50,7 +54,12 @@ export function isAlive(pid: number): boolean {
   }
 }
 
-/** Whether a TCP port is currently bound on loopback. */
+/**
+ * Whether a TCP port is currently bound on loopback.
+ * @param port - the port to probe.
+ * @param host - the bind address to probe.
+ * @returns true when something is listening on the port.
+ */
 export async function isPortInUse(port: number, host = '127.0.0.1'): Promise<boolean> {
   return new Promise((resolveResult) => {
     const server = createServer()
@@ -61,7 +70,12 @@ export async function isPortInUse(port: number, host = '127.0.0.1'): Promise<boo
   })
 }
 
-/** Fetch a healthcheck URL with a short timeout; false on any failure. */
+/**
+ * Fetch a healthcheck URL with a short timeout; false on any failure.
+ * @param url - the healthcheck URL.
+ * @param timeoutMs - the request timeout.
+ * @returns whether the endpoint answered with an ok status.
+ */
 export async function healthOk(url: string, timeoutMs = 2000): Promise<boolean> {
   try {
     const controller = new AbortController()
@@ -74,7 +88,11 @@ export async function healthOk(url: string, timeoutMs = 2000): Promise<boolean> 
   }
 }
 
-/** Terminate a process, escalating to SIGKILL when it does not exit promptly. */
+/**
+ * Terminate a process, escalating to SIGKILL when it does not exit promptly.
+ * @param pid - the process id to terminate.
+ * @param graceMs - how long to wait for SIGTERM before SIGKILL.
+ */
 export async function killProcess(pid: number, graceMs = 1500): Promise<void> {
   if (!isAlive(pid)) return
   try { process.kill(pid, 'SIGTERM') } catch { return }
@@ -87,7 +105,12 @@ export async function killProcess(pid: number, graceMs = 1500): Promise<void> {
   }
 }
 
-/** The last `lines` lines of a log file, or a message when it is unreadable. */
+/**
+ * The last `lines` lines of a log file, or a message when it is unreadable.
+ * @param logPath - the absolute log file path.
+ * @param lines - how many trailing lines to return.
+ * @returns the log tail.
+ */
 export function tailLog(logPath: string, lines: number): string {
   try {
     const text = readFileSync(logPath, 'utf8')
@@ -119,16 +142,29 @@ export class ServiceRegistry {
   private services = new Map<string, ManagedService>()
   private readonly root = logRoot()
 
-  /** All managed services. */
+  /**
+   * All managed services.
+   * @returns the complete service list.
+   */
   list(): ManagedService[] {
     return [...this.services.values()]
   }
 
+  /**
+   * The managed service record for an id, or undefined.
+   * @param id - the managed service id.
+   * @returns the service record when managed.
+   */
   get(id: string): ManagedService | undefined {
     return this.services.get(id)
   }
 
-  /** Tail a service's log. */
+  /**
+   * Tail a service's log.
+   * @param id - the managed service id.
+   * @param lines - how many trailing lines to return.
+   * @returns the log tail, or a readable error message.
+   */
   logs(id: string, lines: number): string {
     const service = this.services.get(id)
     if (service === undefined) throw new Error(`service "${id}" is not managed`)
@@ -139,6 +175,8 @@ export class ServiceRegistry {
    * Start a detached service. Rejects a duplicate id, a port already in use,
    * and a command that fails to spawn. The service is killed on plugin
    * disposal and on its owning session's disposal.
+   * @param input - the service identity, command, and optional port/health/workdir/owner.
+   * @returns the started service record.
    */
   async start(input: {
     id: string
@@ -185,7 +223,10 @@ export class ServiceRegistry {
     return service
   }
 
-  /** Stop and forget a service; idempotent for unknown ids. */
+  /**
+   * Stop and forget a service; idempotent for unknown ids.
+   * @param id - the managed service id.
+   */
   async stop(id: string): Promise<void> {
     const service = this.services.get(id)
     if (service === undefined) return
@@ -193,7 +234,11 @@ export class ServiceRegistry {
     this.services.delete(id)
   }
 
-  /** Current status facts for a service, or a not-managed error. */
+  /**
+   * Current status facts for a service, or a not-managed error.
+   * @param id - the managed service id.
+   * @returns liveness, port, and health facts for the service.
+   */
   async status(id: string): Promise<ServiceStatus> {
     const service = this.services.get(id)
     if (service === undefined) throw new Error(`service "${id}" is not managed`)
@@ -210,7 +255,10 @@ export class ServiceRegistry {
     }
   }
 
-  /** Kill every managed process; called on plugin disposal and per-session cleanup. */
+  /**
+   * Kill every managed process; called on plugin disposal and per-session cleanup.
+   * @param filter - optional predicate limiting which services are killed.
+   */
   async killAll(filter?: (service: ManagedService) => boolean): Promise<void> {
     const targets = [...this.services.values()].filter(filter ?? (() => true))
     await Promise.all(targets.map(service => killProcess(service.pid)))
@@ -218,7 +266,11 @@ export class ServiceRegistry {
   }
 }
 
-/** Total bytes currently written to a service log (0 when absent). */
+/**
+ * Total bytes currently written to a service log (0 when absent).
+ * @param logPath - the absolute log file path.
+ * @returns the log size in bytes.
+ */
 export function logSize(logPath: string): number {
   try {
     return statSync(logPath).size

@@ -2641,7 +2641,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/shell/tool-bash/src/index.ts:34`](../packages/shell/tool-bash/src/index.ts)
+Source: [`packages/shell/tool-bash/src/index.ts:35`](../packages/shell/tool-bash/src/index.ts)
 
 <a id="deepseek-aidsh-tool-bash-persistent"></a>
 
@@ -2665,6 +2665,22 @@ export interface Config {
 
 Source: [`packages/shell/tool-bash-persistent/src/index.ts:432`](../packages/shell/tool-bash-persistent/src/index.ts)
 
+<a id="deepseek-aidsh-tool-browser"></a>
+
+## `@deepseek-ai/dsh-tool-browser`
+
+Requires: `tools` · `systemPrompt`
+
+```ts config-catalog
+/** Plugin config; no tunables yet. */
+export interface Config {
+  /** Directory for screenshots (default: OS temp dir). */
+  screenshotDir?: string
+}
+```
+
+Source: [`packages/extensions/tool-browser/src/index.ts:25`](../packages/extensions/tool-browser/src/index.ts)
+
 <a id="deepseek-aidsh-tool-fs"></a>
 
 ## `@deepseek-ai/dsh-tool-fs`
@@ -2685,7 +2701,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/fs/tool-fs/src/index.ts:25`](../packages/fs/tool-fs/src/index.ts)
+Source: [`packages/fs/tool-fs/src/index.ts:26`](../packages/fs/tool-fs/src/index.ts)
 
 <a id="deepseek-aidsh-tool-fs-search"></a>
 
@@ -2851,6 +2867,22 @@ export interface Config {
 ```
 
 Source: [`packages/workflow/tool-ralph/src/index.ts:23`](../packages/workflow/tool-ralph/src/index.ts)
+
+<a id="deepseek-aidsh-tool-service"></a>
+
+## `@deepseek-ai/dsh-tool-service`
+
+Requires: `tools` · `systemPrompt`
+
+```ts config-catalog
+/** Plugin config; currently no tunables, kept for forward compatibility. */
+export interface Config {
+  /** Maximum log lines returned by a `logs` call (default 200). */
+  maxLogLines?: number
+}
+```
+
+Source: [`packages/extensions/tool-service/src/index.ts:23`](../packages/extensions/tool-service/src/index.ts)
 
 <a id="deepseek-aidsh-tool-session-query"></a>
 
