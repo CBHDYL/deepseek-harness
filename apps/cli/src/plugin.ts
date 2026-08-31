@@ -11,7 +11,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import {
   DEFAULT_PROFILE_BUNDLES,
@@ -91,6 +91,44 @@ function reconcilePlugins(before: ProfileManifest, profileDir: string): void {
 }
 
 /**
+ * Whether the profile directory is a pnpm workspace root: its
+ * `pnpm-workspace.yaml` declares a `packages:` list containing the profile
+ * itself (`package.json` sits in the workspace root). pnpm treats such a
+ * profile as a workspace root and (≥10) rejects `add` to it without `-w`.
+ * @param profileDir - the profile directory.
+ * @returns true when the profile dir is a pnpm workspace root.
+ */
+export function isWorkspaceRootProfile(profileDir: string): boolean {
+  const workspace = join(profileDir, 'pnpm-workspace.yaml')
+  if (!existsSync(workspace)) return false
+  try {
+    const text = readFileSync(workspace, 'utf8')
+    return /packages:\s*\n(?:\s*-[ \t]*\.\s*\n?)+/.test(text)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Inject `pnpm --workspace-root` for a dependency-write command (`add`/
+ * `install`) on a workspace-root profile. pnpm ≥10 refuses to add to a
+ * workspace root without `-w`, which a profile template's `packages: [.]`
+ * triggers (the rescue-capsule provisioning failed on exactly this). The flag
+ * is harmless on earlier pnpm, so it is injected unconditionally for these
+ * commands when the profile is a workspace root.
+ * @param args - pnpm arguments, verbatim from argv.
+ * @param profileDir - the profile directory.
+ * @returns args with `-w` appended when the profile is a workspace root and the command is a dependency-write.
+ */
+export function injectWorkspaceRootFlag(args: readonly string[], profileDir: string): string[] {
+  const verb = args.find(argument => !argument.startsWith('-')) ?? ''
+  const command = verb === 'add' || verb === 'install' ? verb : ''
+  if (command === '' || !isWorkspaceRootProfile(profileDir)) return [...args]
+  if (args.includes('-w') || args.includes('--workspace-root')) return [...args]
+  return [...args, '-w']
+}
+
+/**
  * Rewrite relative filesystem specs against the user's invoking directory.
  * pnpm runs with cwd = the profile directory, so a bare `.` or `../plugin`
  * (or their `file:`/`link:` forms) would silently resolve inside the profile
@@ -124,9 +162,10 @@ export function runPlugin(profile: string, args: readonly string[]): number {
     process.stderr.write(`${NAME}: initialized profile ${profile} at ${dir}\n`)
   }
   const before = readProfileManifest(NAME, dir)
+  const pnpmArgs = injectWorkspaceRootFlag(args.map(argument => anchorPathSpec(argument, process.cwd())), dir)
   // Windows resolves pnpm through its .cmd shim, which spawn() refuses
   // without a shell since the CVE-2024-27980 hardening.
-  const result = spawnSync('pnpm', args.map(argument => anchorPathSpec(argument, process.cwd())), {
+  const result = spawnSync('pnpm', pnpmArgs, {
     cwd: dir,
     stdio: 'inherit',
     shell: process.platform === 'win32',
