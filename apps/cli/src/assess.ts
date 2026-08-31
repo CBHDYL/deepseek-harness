@@ -171,7 +171,10 @@ function detectWebProcess(): { running: boolean; mode: 'direct' | 'doctor-manage
     return { running: false, mode: 'unknown' }
   }
   const lines = procs.split('\n').filter(Boolean)
-  const dshWeb = lines.find(l => /\bdsh\s+web\b/.test(l))
+  // Match both direct `dsh web` and Doctor-launched `dsh/lib/bin.js --profile web`.
+  const isWebLine = (line: string): boolean =>
+    /\bdsh\s+web\b/.test(line) || /\bdsh\/lib\/bin\.js\s+--profile\s+(web|headless)/.test(line)
+  const dshWeb = lines.find(isWebLine)
   if (!dshWeb) return { running: false, mode: 'unknown' }
   // Follow the parent chain; a Doctor launcher's CLI module marks managed launch.
   const rows: { pid: string; ppid: string; cmd: string }[] = []
@@ -182,7 +185,7 @@ function detectWebProcess(): { running: boolean; mode: 'direct' | 'doctor-manage
     }
   }
   const byPid = new Map(rows.map(r => [r.pid, r]))
-  let cur = rows.find(r => /\bdsh\s+web\b/.test(r.cmd))
+  let cur = rows.find(r => isWebLine(r.cmd))
   let mode: 'direct' | 'doctor-managed' | 'unknown' = 'direct'
   let guard = 0
   while (cur && guard < 20) {
