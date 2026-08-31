@@ -62,6 +62,20 @@ dsh --profile tui
 
 Git-hosted plugins that ship sources build during install through their `prepare` script, which pnpm ≥10 blocks until the consumer allows it: the first `add` fails with pnpm's `allowBuilds` hint (and a dsh pointer at the profile's `pnpm-workspace.yaml`); copy the printed key there and re-run. Installing a built tarball or a local checkout needs no allowance.
 
+## Assess
+
+`dsh assess [--profile <name>] [--port <n>] [--json]` prints a **read-only** runtime-identity and health report without booting a tree or writing anywhere. It reports the running version, node/OS, the profile directory, its `cordis.patch.yml` digest and declared bundle count, the npm dist-tags for the DSH package, whether a `dsh web` process is running and how it was launched, and a small set of always-safe probes. The default profile is `$DSH_PROFILE` then `web`; the GUI probe uses `--port` (default 3080).
+
+Each check carries a stable id, a check version, a status (`PASS`/`WARN`/`BLOCK`/`NOT_TESTED`/`STALE`), JSON evidence, an observation time, a duration, and a mapped exit code. `--json` prints one versioned JSON report; otherwise a human summary. The process exit code is `0` on `PASS`, `1` on `WARN`/`STALE`, and `2` on `BLOCK`, so scripts and CI can gate on severity.
+
+`dsh assess` never reads or hashes credential files, never writes to the profile directory, never triggers an update or a promotion, and never runs tests or a candidate runtime — any check that would need a booted tree, an external key, or a full test run stays `NOT_TESTED` and belongs to the candidate gate. Deeper, deployment-local analysis (source-vs-runtime artifact drift, a Doctor supervisor, a patch-set manifest) lives in a deployment-owned tool that binds to an explicit runtime identity, not in this portable command.
+
+```sh
+dsh assess                          # human-readable summary for the default profile
+dsh assess --profile web --json     # versioned JSON report
+dsh assess --profile web --port 3090 --json
+```
+
 ## Web alias
 
 `dsh web` is a hardcoded alias for `--profile web`; the flags after it belong to the web app, whose ordinary bundle provider parses them. `--host` and `--port` override the composed values of the rows that carry them, repeatable `--trusted-host` contributes invocation authorities through `ctx.webRuntime.trustedHosts` (a deployment expression concatenates its own authorities), and `--no-open` disables the default-browser handoff for this invocation. The client-plugin HMR receiver is always mounted and stays idle until a separate `pnpm run dev:web` watcher rebuilds client bundles.

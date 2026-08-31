@@ -62,6 +62,20 @@ dsh --profile tui
 
 随源码发布的 Git 托管插件会在安装期间通过 `prepare` 脚本构建，而 pnpm ≥10 默认会阻止该脚本，直到使用方明确允许。首次运行 `add` 会失败，并显示 pnpm 的 `allowBuilds` 提示；dsh 还会提示应修改该 profile 的 `pnpm-workspace.yaml`。将输出的键复制到该文件后，重新运行命令即可。安装已经构建好的 tarball 或本地 checkout 时，无需加入 `allowBuilds`。
 
+## Assess（评估）
+
+`dsh assess [--profile <name>] [--port <n>] [--json]` 打印一份**只读**的运行时身份与健康报告：既不启动 tree，也不写入任何路径。它报告运行中的版本、node/OS、profile 目录、其 `cordis.patch.yml` 摘要与声明的 bundle 数、DSH 包的 npm dist-tags、是否运行着一个 `dsh web` 进程及它如何被启动，以及一组始终安全的探针。默认 profile 取 `$DSH_PROFILE` 后 `web`；GUI 探针用 `--port`（默认 3080）。
+
+每项检查携带稳定 id、check 版本、状态（`PASS`/`WARN`/`BLOCK`/`NOT_TESTED`/`STALE`）、JSON 证据、观察时间、耗时与映射的退出码。`--json` 输出一份版本化 JSON 报告；否则输出人类可读摘要。进程退出码：`PASS` 为 `0`，`WARN`/`STALE` 为 `1`，`BLOCK` 为 `2`，便于脚本与 CI 按严重度门禁。
+
+`dsh assess` 永不读取或散列凭据文件，永不写 profile 目录，永不触发更新或晋级，也永不运行测试或候选运行时——任何需要 booted tree、外部密钥或完整测试的检查一律保持 `NOT_TESTED`，归候选 Gate 负责。更深的、部署本机的分析（source-vs-runtime 产物漂移、Doctor supervisor、patch-set manifest）由部署自有、绑定到显式运行身份的工具承担，而非这个可移植命令。
+
+```sh
+dsh assess                          # human-readable summary for the default profile
+dsh assess --profile web --json     # versioned JSON report
+dsh assess --profile web --port 3090 --json
+```
+
 ## Web 别名
 
 `dsh web` 是 `--profile web` 的硬编码别名；写在它之后的 flag 属于 web 应用，由组合包中的普通提供方解析。`--host` 和 `--port` 覆盖承载它们的那些行的组合取值，可重复的 `--trusted-host` 通过 `ctx.webRuntime.trustedHosts` 提供本次调用的 authority（部署表达式会拼接自己的 authority），`--no-open` 则只对本次调用关闭默认浏览器交接。客户端插件 HMR（热模块替换）接收器始终挂载，在单独运行的 `pnpm run dev:web` watcher 重建客户端 bundle 之前保持空闲。
