@@ -57,6 +57,17 @@ describe('parseDshArgs', () => {
       .toEqual({ mode: 'plugin', profile: 'tui', args: ['add', '--save-dev', 'x'] })
   })
 
+  it('routes assess reports', () => {
+    const defaultProfile = process.env.DSH_PROFILE ?? 'web'
+    expect(parse(['assess'])).toEqual({ mode: 'assess', profile: defaultProfile, port: 3080, json: false })
+    expect(parse(['assess', '--profile', 'tui']))
+      .toEqual({ mode: 'assess', profile: 'tui', port: 3080, json: false })
+    expect(parse(['assess', '--profile', 'headless', '--json']))
+      .toEqual({ mode: 'assess', profile: 'headless', port: 3080, json: true })
+    expect(parse(['assess', '--port', '9090', '--json']))
+      .toEqual({ mode: 'assess', profile: defaultProfile, port: 9090, json: true })
+  })
+
   it('routes profile and web config dumps', () => {
     expect(parse(['--profile', 'web', '--dump-config']))
       .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: false, patches: [] })
@@ -96,6 +107,9 @@ describe('parseDshArgs', () => {
     expect(exitCode(['plugin', '--profile', 'tui'])).toBe(1) // nothing to forward
     expect(exitCode(['plugin', '--profile', ''])).toBe(1)
     expect(exitCode(['--profile', 'x', 'plugin', 'add', 'y'])).toBe(1)
+    expect(exitCode(['assess', '--port', '0'])).toBe(1) // out-of-range port
+    expect(exitCode(['assess', '--port', 'abc'])).toBe(1) // non-numeric port
+    expect(exitCode(['--profile', 'x', 'assess'])).toBe(1) // parent flags rejected by subcommand
   })
 
   it('keeps its own help for an invocation with no app to hand it to', () => {

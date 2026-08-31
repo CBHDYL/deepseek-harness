@@ -44,8 +44,19 @@ interface PluginInvocation {
   args: string[]
 }
 
+/** Print a read-only runtime identity + health report, without booting or writing. */
+interface AssessInvocation {
+  mode: 'assess'
+  /** The profile whose composition to report on. */
+  profile: string
+  /** Local web host port used by the GUI probe. */
+  port: number
+  /** Emit a versioned JSON report instead of the human summary. */
+  json: boolean
+}
+
 /** The resolved `dsh` invocation. Help, version, and errors exit inside {@link parseDshArgs}. */
-export type DshInvocation = ProfileInvocation | DumpConfigInvocation | PluginInvocation
+export type DshInvocation = ProfileInvocation | DumpConfigInvocation | PluginInvocation | AssessInvocation
 
 /** Launcher flags shared by the default command and the `web` alias. */
 interface BootOptions {
@@ -69,6 +80,7 @@ Examples:
   dsh --profile tui --resume <session>       arguments after the launcher flags reach the app
   dsh --profile web --help                   the web app's own flags and help
   dsh plugin --profile tui add <package>     install a plugin into the tui profile
+  dsh assess --profile web --json            print a read-only runtime+health report
 `
 
 /**
@@ -178,6 +190,20 @@ export function parseDshArgs(argv: readonly string[], version: string): DshInvoc
       if (options.profile === '') program.error('error: --profile needs a name')
       if (args.length === 0) program.error('error: plugin needs pnpm arguments to forward (e.g. add <package>)')
       resolved = { mode: 'plugin', profile: options.profile, args }
+    })
+
+  const assess = program.command('assess').description('print a read-only runtime-identity and health report (human or --json) without booting a tree')
+  assess
+    .option('--profile <name>', 'profile to report on (default: DSH_PROFILE then web)')
+    .option('--port <n>', 'local web-host port for the GUI probe (default 3080)')
+    .option('--json', 'emit a versioned JSON report')
+    .action((options: { profile?: string; port?: string; json?: boolean }) => {
+      rejectParentOptions('assess')
+      const profile = options.profile ?? process.env.DSH_PROFILE ?? 'web'
+      if (profile === '') program.error('error: --profile needs a name')
+      const port = options.port === undefined ? 3080 : Number(options.port)
+      if (!Number.isInteger(port) || port <= 0 || port > 65535) program.error('error: --port must be an integer in 1..65535')
+      resolved = { mode: 'assess', profile, port, json: options.json === true }
     })
 
   try {

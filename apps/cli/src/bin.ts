@@ -47,6 +47,11 @@ switch (invocation.mode) {
     runDumpConfig(invocation.profile, invocation.defaultOnly, invocation.patches)
     break
   }
+  case 'assess': {
+    const { printAssess } = await import('./assess.ts')
+    process.exit(await printAssess({ profile: invocation.profile, port: invocation.port, json: invocation.json }))
+    break
+  }
   default:
     invocation satisfies never
     throw new Error(`dsh: unhandled invocation mode ${JSON.stringify(invocation)}`)
