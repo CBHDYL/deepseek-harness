@@ -13,6 +13,7 @@
  */
 
 import { createRequire } from 'node:module'
+import { randomUUID } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-command-feedback'
@@ -198,6 +199,10 @@ export class OpenTelemetrySessionBackend extends SessionTelemetryBackend {
       resource: resourceFromAttributes({
         'service.name': APP_IDENTITY.product,
         'service.version': APP_IDENTITY.version,
+        // OTel semconv's per-process instance identifier: a fresh UUID per
+        // provider (one per process), so a collector can tell two harness
+        // processes/instances apart even when they share service.name+version.
+        'service.instance.id': randomUUID(),
         // OTel semconv's standard user attribute, carried once per export
         // batch on the Resource rather than per record: the collector
         // aggregates by Resource, and the id is process-stable anyway.
