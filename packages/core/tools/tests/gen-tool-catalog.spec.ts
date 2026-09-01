@@ -81,10 +81,12 @@ describe('gen-tool-catalog collectToolCatalog', () => {
         expect(['read-only', 'side-effectful', 'undeclared']).toContain(effects)
       }
     }
-    // Spot-check two runtime declarations: the lsp tool declares read-only,
-    // the service runner declares side-effectful.
+    // Spot-check the mirror against the CURRENT runtime declaration: upstream
+    // declares no effects on the lsp tool yet, so the harvest reports the
+    // honest "undeclared" (the pin tracks the shipped definition and moves
+    // with the PR-6 effects port).
     const lsp = catalog.find(entry => entry.pkg === '@deepseek-ai/dsh-tool-lsp')
-    expect(lsp?.effects.lsp).toBe('read-only')
+    expect(lsp?.effects.lsp).toBe('undeclared')
     // EFFECT-1: the trusted catalog never harvests MCP runtime registrations
     // (server self-claims stay outside the shipped classification authority).
     expect(catalog.some(entry => entry.pkg.includes('mcp'))).toBe(false)

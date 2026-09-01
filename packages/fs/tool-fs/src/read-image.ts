@@ -212,7 +212,6 @@ export function applyReadImageTool(ctx: Context): void {
       + 'A path without a file extension is accepted; the format is detected from the file content, so normalized attachment paths can be passed directly without copying or renaming. '
       + 'Harness validates and downscales large supported images before the next model request, so use this tool directly instead of installing image libraries or creating thumbnails merely to inspect an image. '
       + 'Independent files may be read concurrently in small batches. Requires the current model to accept image input.',
-    effects: 'read-only',
     parameters: {
       file_path: { type: 'string', required: true, description: 'Path to the image file, resolved by the filesystem backend.' },
     },

@@ -58,7 +58,7 @@ function stubAgent(rawId: string, seed?: readonly import('@deepseek-ai/dsh-sessi
   return stubAgentForSession(Session.create(SessionId(rawId), seed))
 }
 
-async function harness(config: { defaultMaxGoalRounds?: number; maxGoalRoundsCeiling?: number } = {}) {
+async function harness(config: { defaultMaxGoalRounds?: number } = {}) {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
@@ -500,28 +500,6 @@ describe('GoalService mutations', () => {
     })
   })
 
-})
-
-describe('deployment goal-round ceiling', () => {
-  it('clamps a requested maxGoalRounds above the deployment ceiling on create', async () => {
-    const { ctx, agent } = await harness({ maxGoalRoundsCeiling: 64 })
-    const goal = ctx.goals.create(agent, { objective: 'x', maxGoalRounds: 1000 })
-    expect(goal.maxGoalRounds).toBe(64)
-  })
-
-  it('leaves requests below the ceiling untouched and clamps edits the same way', async () => {
-    const { ctx, agent } = await harness({ maxGoalRoundsCeiling: 64 })
-    const goal = ctx.goals.create(agent, { objective: 'x', maxGoalRounds: 10 })
-    expect(goal.maxGoalRounds).toBe(10)
-    const edited = ctx.goals.edit(agent, { id: goal.id, revision: goal.revision }, { objective: 'x', maxGoalRounds: 500 })
-    expect(edited.maxGoalRounds).toBe(64)
-  })
-
-  it('defaults the ceiling to 512 (a model-authorized huge cap cannot exceed it)', async () => {
-    const { ctx, agent } = await harness()
-    const goal = ctx.goals.create(agent, { objective: 'x', maxGoalRounds: 10_000 })
-    expect(goal.maxGoalRounds).toBe(512)
-  })
 })
 
 describe('goal replay validation', () => {

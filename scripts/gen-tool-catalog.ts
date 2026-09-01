@@ -59,8 +59,6 @@ import * as ToolLsp from '@deepseek-ai/dsh-tool-lsp'
 import * as ToolSkill from '@deepseek-ai/dsh-tool-skill'
 import * as ToolSessionQuery from '@deepseek-ai/dsh-tool-session-query'
 import * as ToolTasks from '@deepseek-ai/dsh-tool-jobs'
-import * as ToolService from '@deepseek-ai/dsh-tool-service'
-import * as ToolBrowser from '@deepseek-ai/dsh-tool-browser'
 import type TeamService from '@deepseek-ai/dsh-experimental-agent-team'
 import * as ToolTeam from '@deepseek-ai/dsh-experimental-tool-agent-team'
 import * as ToolTodo from '@deepseek-ai/dsh-tool-todo'
@@ -530,30 +528,6 @@ const TOOL_PACKAGES: ToolPackage[] = [
     },
     note:
       'The kind-agnostic background-job controller: background bash commands, PTY sends, and subagents are read, listed, and killed through the same three tools. Loading the plugin attaches the controller that arms producers\' `ctx.jobs.start()`.',
-  },
-  {
-    pkg: '@deepseek-ai/dsh-tool-service',
-    dir: 'tool-service',
-    source: 'packages/extensions/tool-service/src/index.ts',
-    requires: ['ctx.tools', 'ctx.systemPrompt'],
-    writes: ['tool/call', 'tool/result'],
-    async mount(ctx) {
-      await ctx.plugin(ToolService)
-    },
-    note:
-      'service_manage tracks long-running processes with guaranteed session cleanup; every started process is killed when its owning session disposes or the plugin unloads.',
-  },
-  {
-    pkg: '@deepseek-ai/dsh-tool-browser',
-    dir: 'tool-browser',
-    source: 'packages/extensions/tool-browser/src/index.ts',
-    requires: ['ctx.tools', 'ctx.systemPrompt'],
-    writes: ['tool/call', 'tool/result'],
-    async mount(ctx) {
-      await ctx.plugin(ToolBrowser)
-    },
-    note:
-      'browser drives one headless Chromium page per session for smoke-level UI checks; the page and browser close when the session disposes.',
   },
   {
     pkg: '@deepseek-ai/dsh-experimental-tool-agent-team',

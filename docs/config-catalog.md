@@ -575,35 +575,6 @@ export interface Config {
 
 Source: [`packages/e2b/e2b/src/index.ts:43`](../packages/e2b/e2b/src/index.ts)
 
-<a id="deepseek-aidsh-escalation-hider"></a>
-
-## `@deepseek-ai/dsh-escalation-hider`
-
-```ts config-catalog
-/**
- * Plugin config, validated by the same-named schemastery schema plus the
- * load-time checks in `apply` (misconfiguration fails loud).
- */
-export interface Config {
-  /**
-   * Hide escalation parameters when the effective sandbox mode is at least
-   * this wide (default `danger-full-access` — the widest mode, where escalation
-   * is never a strict widening). Validated against {@link SANDBOX_MODES} at
-   * plugin load.
-   */
-  hideAtOrAboveMode?: string
-  /**
-   * Hide when the session's approval policy is `never` (escalation can never be
-   * approved). Default true.
-   */
-  hideWhenApprovalNever?: boolean
-  /** Tool-name wildcard patterns whose escalation parameters are hidden. */
-  tools?: string[]
-}
-```
-
-Source: [`packages/guard/escalation-hider/src/index.ts:47`](../packages/guard/escalation-hider/src/index.ts)
-
 <a id="deepseek-aidsh-experimental-agent-team"></a>
 
 ## `@deepseek-ai/dsh-experimental-agent-team`
@@ -865,19 +836,10 @@ export interface Config {
   defaultTimeoutMs?: number
   /** Character cap for the `hook/result` event's persisted stderr summary. */
   stderrSummaryMaxChars?: number
-  /**
-   * Hard budget of Stop-hook forced continuations within ONE turn. A blocking
-   * Stop hook steers another step each time it denies; without a cap an
-   * unconditional hook force-continues every step until it self-limits (or
-   * the budget/cost dies first). Once the budget is exhausted the turn is
-   * allowed to stop, and `stop_hook_active` is reported `true` so a
-   * cooperative hook can see the ceiling. Default 8.
-   */
-  stopContinuationLimit?: number
 }
 ```
 
-Source: [`packages/hooks/hooks-codex/src/index.ts:48`](../packages/hooks/hooks-codex/src/index.ts)
+Source: [`packages/hooks/hooks-codex/src/index.ts:45`](../packages/hooks/hooks-codex/src/index.ts)
 
 <a id="deepseek-aidsh-host-directory-picker-browse"></a>
 
@@ -1554,32 +1516,6 @@ export interface Config {
 
 Source: [`packages/feedback/message-feedback/src/index.ts:49`](../packages/feedback/message-feedback/src/index.ts)
 
-<a id="deepseek-aidsh-output-repetition-guard"></a>
-
-## `@deepseek-ai/dsh-output-repetition-guard`
-
-```ts config-catalog
-/** Detector options, validated fail-loud in `apply` and at construction. */
-export interface Config {
-  /** Minimum section length in characters before a repeat is reportable (default 400). */
-  minSectionChars?: number
-  /** Minimum occurrence count of the section before a repeat is reportable (default 2). */
-  minRepeat?: number
-  /** Maximum detections emitted per agent step (default 1). */
-  emitLimit?: number
-  /**
-   * When a repeat is detected, cancel the streaming agent turn (cause
-   * `{kind:'hook'}`) so the degenerate output stops being generated live; the
-   * already-streamed prefix is preserved as an interrupted assistant message.
-   * Default false — telemetry only, so the safe order (observe first) is the
-   * default.
-   */
-  abortStream?: boolean
-}
-```
-
-Source: [`packages/guard/output-repetition-guard/src/index.ts:44`](../packages/guard/output-repetition-guard/src/index.ts)
-
 <a id="deepseek-aidsh-permission-presets"></a>
 
 ## `@deepseek-ai/dsh-permission-presets`
@@ -1759,14 +1695,6 @@ export interface Config {
    * always compares the FULL canonical string).
    */
   argumentsPreviewChars?: number
-  /**
-   * Optional circuit breaker: after this many consecutive identical calls —
-   * or consecutive calls failing with the same failure fingerprint, even when
-   * arguments differ — the guard DENIES the call before dispatch (identical
-   * arguments) or blocks its result with breaker feedback (same-failure run).
-   * Default undefined = advisory reminders only (fully backward compatible).
-   */
-  vetoAt?: number
 }
 ```
 
@@ -2087,7 +2015,7 @@ export enum SessionTelemetryMode {
 
 Depends on: `BatchLogRecordProcessorOptions` (`@opentelemetry/sdk-logs`) · `OTLPExporterNodeConfigBase` (`@opentelemetry/otlp-exporter-base`)
 
-Source: [`packages/session/session-telemetry-otel/src/index.ts:92`](../packages/session/session-telemetry-otel/src/index.ts)
+Source: [`packages/session/session-telemetry-otel/src/index.ts:91`](../packages/session/session-telemetry-otel/src/index.ts)
 
 <a id="deepseek-aidsh-session-title"></a>
 
@@ -2745,26 +2673,6 @@ export interface Config {
 
 Source: [`packages/shell/tool-bash-persistent/src/index.ts:432`](../packages/shell/tool-bash-persistent/src/index.ts)
 
-<a id="deepseek-aidsh-tool-browser"></a>
-
-## `@deepseek-ai/dsh-tool-browser`
-
-Requires: `tools` · `systemPrompt`
-
-```ts config-catalog
-/** Plugin config. */
-export interface Config {
-  /** Directory for screenshots (default: OS temp dir). */
-  screenshotDir?: string
-  /** `goto` navigation timeout in ms (default 30000). */
-  gotoTimeoutMs?: number
-  /** CSS selector action (`click`/`fill`/`read_text`) timeout in ms (default 10000). */
-  actionTimeoutMs?: number
-}
-```
-
-Source: [`packages/extensions/tool-browser/src/index.ts:26`](../packages/extensions/tool-browser/src/index.ts)
-
 <a id="deepseek-aidsh-tool-fs"></a>
 
 ## `@deepseek-ai/dsh-tool-fs`
@@ -2785,7 +2693,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/fs/tool-fs/src/index.ts:26`](../packages/fs/tool-fs/src/index.ts)
+Source: [`packages/fs/tool-fs/src/index.ts:25`](../packages/fs/tool-fs/src/index.ts)
 
 <a id="deepseek-aidsh-tool-fs-search"></a>
 
@@ -2951,22 +2859,6 @@ export interface Config {
 ```
 
 Source: [`packages/workflow/tool-ralph/src/index.ts:21`](../packages/workflow/tool-ralph/src/index.ts)
-
-<a id="deepseek-aidsh-tool-service"></a>
-
-## `@deepseek-ai/dsh-tool-service`
-
-Requires: `tools` · `systemPrompt`
-
-```ts config-catalog
-/** Plugin config; currently no tunables, kept for forward compatibility. */
-export interface Config {
-  /** Maximum log lines returned by a `logs` call (default 200). */
-  maxLogLines?: number
-}
-```
-
-Source: [`packages/extensions/tool-service/src/index.ts:23`](../packages/extensions/tool-service/src/index.ts)
 
 <a id="deepseek-aidsh-tool-session-query"></a>
 
@@ -3348,11 +3240,6 @@ export interface Config {
   maxRedirects?: number
   /** `User-Agent` header sent on every request. */
   userAgent?: string
-  /**
-   * Resolve every hostname and refuse loopback/private/link-local/multicast
-   * targets (SSRF protection). Default true.
-   */
-  blockPrivateAddresses?: boolean
 }
 ```
 

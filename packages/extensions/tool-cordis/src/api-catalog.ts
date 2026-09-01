@@ -1311,15 +1311,26 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [],
       },
       {
+        signature: 'readonly maxMode: SandboxMode',
+        description: 'The hard ceiling no resolution exceeds — the security cap for session overrides and escalations.',
+        parameters: [],
+      },
+      {
         signature: 'readonly workspaceRoot: string',
         description: 'The absolute `workspace-write` fallback root for calls without a session cwd.',
         parameters: [],
       },
       {
         signature: 'resolve(request: SandboxPolicyRequest = {}): SandboxExecutionPolicy',
-        description: 'Resolve the complete policy for one capability call. An approved explicit mode outranks the session\'s last `sandbox/mode` event, which outranks the deployment default. A session cwd is its workspace-write boundary; the configured root is the fallback for agentless calls and sessions without a cwd.',
+        description: 'Resolve the complete policy for one capability call. An approved explicit mode outranks the session\'s last `sandbox/mode` event, which outranks the deployment default. Every resolved mode is capped at the deployment `maxMode` ceiling, and the returned policy is deep-frozen and recorded in this owner\'s minted set — enforcing backends accept only policies that pass isMinted, so a caller-constructed object can never select a mode. A session cwd is its workspace-write boundary; the configured root is the fallback for agentless calls and sessions without a cwd.',
         parameters: [{ name: 'request', description: 'optional session and approved mode override.' }],
         returns: 'the fully resolved per-call mode and absolute workspace root.',
+      },
+      {
+        signature: 'isMinted(policy: unknown): boolean',
+        description: 'Answer whether this owner minted the given policy. The enforcing filesystem and shell backends check this at every entry: a constructed object fails the check and re-resolves to the deployment default.',
+        parameters: [{ name: 'policy', description: 'candidate authority to verify.' }],
+        returns: 'true only for policies this service minted.',
       },
       {
         signature: 'overrideOf(session: Session): SandboxMode | undefined',
@@ -1521,7 +1532,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'a disposable immutable observation.',
       },
       {
-        signature: 'abstract readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }>',
+        signature: 'abstract readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }>',
         description: 'Read the stored events from `fromSeq` onward — the read-from-seq primitive for read models that resume from a watermark (e.g. a persisted projection cache folding only the tail past its checkpoint). Unlike inspect, it is a detached physical suffix read: no preparation cache, torn-tail truncation, synthetic closers, or coordinator-state publication. Only events from the valid contiguous stored prefix are returned, so a torn fragment never reaches the caller. `fromSeq` at or beyond the stored prefix returns an empty event list (never an error). A backend whose medium can seek by seq may read only the suffix; sequential media such as JSONL still parse the whole artifact and skip forward. The primitive bounds what is returned and refolded, not every backend\'s physical read.',
         parameters: [{ name: 'id', description: 'the persisted session to read.' }, { name: 'fromSeq', description: 'first event seq to include; a non-negative safe integer.' }, { name: 'signal', description: 'optional cancellation for queued and backend read work.' }],
         returns: 'the header and the stored events with `seq >= fromSeq`.',
@@ -4953,7 +4964,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionInspection',
-    declaration: 'export interface SessionInspection {\n    readonly meta: SessionHeader;\n    readonly events: readonly SessionEvent[];\n}',
+    declaration: 'export interface SessionInspection {\n    readonly meta: SessionHeader;\n    readonly events: readonly SessionEvent[];\n    readonly integrity: SessionIntegrity;\n}',
+  },
+  {
+    name: 'SessionIntegrity',
+    declaration: 'export type SessionIntegrity = \'intact\' | \'repaired\' | \'unknown\';',
   },
   {
     name: 'SessionJob',

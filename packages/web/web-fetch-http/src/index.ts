@@ -40,11 +40,6 @@ export interface Config {
   maxRedirects?: number
   /** `User-Agent` header sent on every request. */
   userAgent?: string
-  /**
-   * Resolve every hostname and refuse loopback/private/link-local/multicast
-   * targets (SSRF protection). Default true.
-   */
-  blockPrivateAddresses?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -53,7 +48,6 @@ export const Config: z<Config> = z.object({
   timeoutMs: z.number().default(30_000),
   maxRedirects: z.number().default(5),
   userAgent: z.string().default(DEFAULT_USER_AGENT),
-  blockPrivateAddresses: z.boolean().default(true),
 })
 
 /** Complete config after schemastery applies every field default. */
@@ -95,7 +89,6 @@ export function apply(ctx: Context, config: Config): void {
     timeoutMs: resolved.timeoutMs,
     maxRedirects: resolved.maxRedirects,
     userAgent: resolved.userAgent,
-    blockPrivateAddresses: resolved.blockPrivateAddresses,
   }
   ctx.web.registerFetchProvider(new HttpFetchProvider(limits))
 }

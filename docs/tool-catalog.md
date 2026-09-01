@@ -114,6 +114,8 @@ Ask the user a concise question when you need confirmation, a choice, or missing
 
 Source: [`packages/interaction/tool-ask-user/src/index.ts`](../packages/interaction/tool-ask-user/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ask_user_question pauses the tool call until the active UI provider returns a human answer.
 
 <a id="deepseek-aidsh-tools"></a>
@@ -146,6 +148,8 @@ Execute a TypeScript program against the available tools. Takes two required arg
 
 Source: [`packages/core/tools/src/ptc.ts`](../packages/core/tools/src/ptc.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 Owned by the tool registry as a reserved transport outside filterable capability layers under `mode: ptc` / `mode: both` (see the PTC mode Agent Note). Under `ptc` it is the registry's only wire contribution; the other visible capabilities are declared in a generated SDK section in the loaded runtime's language, and a program calls them through bindings scheduled under the native concurrency contract (submission-ordered starts and policy; concurrency-safe bodies overlap up to `maxParallelSubCalls`) that re-enter the complete guarded tool pipeline and link each nested execution to this outer result.
 
 <a id="deepseek-aidsh-plan-mode"></a>
@@ -172,6 +176,8 @@ Use only in plan mode. Present your plan for the user's review and, on approval,
 ```
 
 Source: [`packages/plan/plan-mode/src/index.ts`](../packages/plan/plan-mode/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 exit_plan_mode stays in the model-facing schema while planning is inactive so transitions add no tool-catalog churn on top of the plan-policy change. Its execute path rejects calls outside plan mode; in plan mode it presents the plan over the user-questions seam (approve / keep planning with feedback), and approval logs plan mode inactive at the step boundary.
 
@@ -217,6 +223,8 @@ Execute a bash command (`bash -c`) and return its stdout/stderr. Each call runs 
 
 Source: [`packages/shell/tool-bash/src/index.ts`](../packages/shell/tool-bash/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 The bash tool is the model-facing consumer of the bash executor seam. A `run_in_background` run registers with the generic `ctx.jobs` runtime and is collected/stopped through the `job_*` tools from `@deepseek-ai/dsh-tool-jobs`; the `enableRunInBackground` config (default true) removes the parameter entirely when disabled.
 
 <a id="deepseek-aidsh-tool-pwsh"></a>
@@ -260,6 +268,8 @@ Execute a PowerShell command (`pwsh -Command`) and return its stdout/stderr. Eac
 ```
 
 Source: [`packages/shell/tool-pwsh/src/index.ts`](../packages/shell/tool-pwsh/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 The pwsh tool is the PowerShell-dialect consumer of the bash executor seam for Windows compositions (a PowerShell executor such as `@deepseek-ai/dsh-pwsh-local` backs `ctx.shell`); it mirrors the bash tool call-for-call minus sandbox controls — `run_in_background` runs register with the generic `ctx.jobs` runtime and are collected/stopped through the `job_*` tools, and the managed `DSH_*` environment comes from `@deepseek-ai/dsh-shell-env`. Each call runs in a fresh process (no persistent PTY session), with native `C:\...` paths and `$env:NAME` variables.
 
@@ -349,6 +359,8 @@ Define an immutable Cordis Package. For a new Plugin, use kind:"new" and provide
 
 Source: [`packages/extensions/tool-cordis/src/index.ts`](../packages/extensions/tool-cordis/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `cordis_inspect_list`
 
 List every Cordis Inspect Provider currently known to the Host, including local Host Providers and the latest manifests synchronized from the Client. Each entry includes its platform, purpose, read-only methods, and input/output schemas. Call this Tool before creating or modifying a Package, then select the provider and method for cordis_inspect_query from its result. Do not guess names or treat an Inspect method as a business Service that Plugin code can call.
@@ -361,6 +373,8 @@ List every Cordis Inspect Provider currently known to the Host, including local 
 ```
 
 Source: [`packages/extensions/tool-cordis/src/index.ts`](../packages/extensions/tool-cordis/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `cordis_inspect_query`
 
@@ -400,6 +414,8 @@ Run a read-only query explicitly declared by an Inspect Provider. platform, prov
 
 Source: [`packages/extensions/tool-cordis/src/index.ts`](../packages/extensions/tool-cordis/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `cordis_inspect_self`
 
 Inspect dynamic Cordis objects owned by the current Session at increasing levels of detail. With no IDs, list only Plugin summaries. With pluginId alone, return version pointers, the latest Run, and every Package summary. Only pluginId plus packageId returns that immutable Package's Host/Client source and runtime diagnostics. packageId cannot be supplied alone. Query an exact Package before handling @pluginId, repairing an asynchronous failure, or defining an updated version. This Tool is read-only: it neither executes code nor changes version pointers.
@@ -421,6 +437,8 @@ Inspect dynamic Cordis objects owned by the current Session at increasing levels
 ```
 
 Source: [`packages/extensions/tool-cordis/src/index.ts`](../packages/extensions/tool-cordis/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `cordis_run`
 
@@ -457,6 +475,8 @@ Activate one exact Package of a dynamic Plugin. Use mode:"run" for the first act
 
 Source: [`packages/extensions/tool-cordis/src/index.ts`](../packages/extensions/tool-cordis/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `cordis_stop`
 
 Stop the current Run of a dynamic Plugin and cancel unfinished approval or activation requests. Retain the Plugin, every immutable Package, grants, currentPackageId, and nextPackageId so it can later run or update directly. Stopping an already stopped Plugin succeeds idempotently. Use this Tool to disable effects temporarily; use cordis_undefine for permanent removal.
@@ -478,6 +498,8 @@ Stop the current Run of a dynamic Plugin and cancel unfinished approval or activ
 
 Source: [`packages/extensions/tool-cordis/src/index.ts`](../packages/extensions/tool-cordis/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `cordis_undefine`
 
 Permanently remove a dynamic Plugin owned by the current Session. If it is running or awaiting approval, first stop it and cancel the request, then delete every Package, grant, and version pointer. After this returns, its pluginId, packageIds, @ reference, and Package business views are invalid; historical cards retain only a "Plugin removed" record. Do not call this Tool when versions must remain available for restart or rollback; use cordis_stop instead.
@@ -498,6 +520,8 @@ Permanently remove a dynamic Plugin owned by the current Session. If it is runni
 ```
 
 Source: [`packages/extensions/tool-cordis/src/index.ts`](../packages/extensions/tool-cordis/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 Not in any shipped tree (a deliberate opt-in — dynamic package code reaches the real runtime, see .agents/notes/implemented/feature/2026-07-08-self-referential-cordis-toolset.md). The toolset injects `ctx.dynamicCordisRunner` from `@deepseek-ai/dsh-cordis-host-runner`, which owns the definition registry and the vm sandbox; a composition missing it never activates the tools. A running package may register ADDITIONAL model-visible tools until it is stopped, undefined, or DSH restarts; a full changed request header logs those tool-set changes.
 
@@ -526,6 +550,8 @@ Run commands in a persistent bash shell. State, including the current directory 
 
 Source: [`packages/shell/tool-bash-persistent/src/index.ts`](../packages/shell/tool-bash-persistent/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 One owner-isolated persistent bash tool; deployment composition supplies the PTY backend and may override the model-facing environment description.
 
 <a id="deepseek-aidsh-tool-pwsh-persistent"></a>
@@ -552,6 +578,8 @@ Run commands in a persistent PowerShell shell. State, including the current dire
 ```
 
 Source: [`packages/shell/tool-pwsh-persistent/src/index.ts`](../packages/shell/tool-pwsh-persistent/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 One owner-isolated persistent pwsh tool, the Windows counterpart of the persistent bash tool; deployment composition supplies a pwsh-dialect PTY backend and may override the model-facing environment description.
 
@@ -659,6 +687,8 @@ Notes for using the `str_replace` command:
 
 Source: [`packages/fs/tool-str-replace-editor/src/index.ts`](../packages/fs/tool-str-replace-editor/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 Standalone view/create/unique literal replace/line insert tool over the filesystem seam; it composes with any shell or terminal API.
 
 <a id="deepseek-aidsh-tool-fs"></a>
@@ -700,6 +730,8 @@ Edit an existing UTF-8 text file by replacing literal text.
 
 Source: [`packages/fs/tool-fs/src/index.ts`](../packages/fs/tool-fs/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `read`
 
 Read a UTF-8 text file and return line-numbered content.
@@ -729,6 +761,8 @@ Read a UTF-8 text file and return line-numbered content.
 
 Source: [`packages/fs/tool-fs/src/index.ts`](../packages/fs/tool-fs/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `read_image`
 
 Read a PNG/JPEG/WebP/GIF file and return the image itself. A path without a file extension is accepted; the format is detected from the file content, so normalized attachment paths can be passed directly without copying or renaming. Harness validates and downscales large supported images before the next model request, so use this tool directly instead of installing image libraries or creating thumbnails merely to inspect an image. Independent files may be read concurrently in small batches. Requires the current model to accept image input.
@@ -749,6 +783,8 @@ Read a PNG/JPEG/WebP/GIF file and return the image itself. A path without a file
 ```
 
 Source: [`packages/fs/tool-fs/src/index.ts`](../packages/fs/tool-fs/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `write`
 
@@ -775,6 +811,8 @@ Create or fully replace a UTF-8 text file.
 ```
 
 Source: [`packages/fs/tool-fs/src/index.ts`](../packages/fs/tool-fs/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 The read-before-write/edit policy is added by `@deepseek-ai/dsh-fs-observation-policy` (an `fs/*` event-gate plugin, no schema change); a deployment that loads these tools is expected to also load it. The image tool is not registered without `ctx.attachments`; its schema is route-independent, and execution refuses unless the exact routed model declares image input.
 
@@ -807,6 +845,8 @@ Find files whose paths match a glob pattern. Returns matching file paths — nev
 
 Source: [`packages/fs/tool-fs-search/src/index.ts`](../packages/fs/tool-fs-search/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `grep`
 
 Search file contents with a ripgrep regular expression. Returns matching lines with line numbers, grouped by file. Returns the first 250 matches inline; a capped result reports where the complete match list was saved. Use read on a matched file for surrounding context.
@@ -836,6 +876,8 @@ Search file contents with a ripgrep regular expression. Returns matching lines w
 
 Source: [`packages/fs/tool-fs-search/src/index.ts`](../packages/fs/tool-fs-search/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 glob and grep are unconditional discovery tools that spawn the packaged ripgrep binary (`@vscode/ripgrep`) through ctx.subprocess as ordinary foreground calls (never background jobs) — no host `rg` install and no shell layer. The catalog uses `sampleOverCapGlobResults: true`; deployments must choose that behavior explicitly. Capped results save the complete formatted list through the optional ctx.spillStore backend; returned locators are follow-up-readable/searchable when the backend exposes local paths in co-located deployments.
 
 <a id="deepseek-aidsh-tool-terminal"></a>
@@ -863,6 +905,8 @@ Close one persistent terminal and wait until its captured owned process tree is 
 
 Source: [`packages/terminal/tool-terminal/src/index.ts`](../packages/terminal/tool-terminal/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `terminal_list`
 
 List persistent terminal sessions owned by the current agent.
@@ -875,6 +919,8 @@ List persistent terminal sessions owned by the current agent.
 ```
 
 Source: [`packages/terminal/tool-terminal/src/index.ts`](../packages/terminal/tool-terminal/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `terminal_open`
 
@@ -905,6 +951,8 @@ Create a persistent, owner-isolated terminal session from a registered backend t
 
 Source: [`packages/terminal/tool-terminal/src/index.ts`](../packages/terminal/tool-terminal/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `terminal_read`
 
 Read a bounded page of retained output from a persistent terminal without sending input.
@@ -933,6 +981,8 @@ Read a bounded page of retained output from a persistent terminal without sendin
 ```
 
 Source: [`packages/terminal/tool-terminal/src/index.ts`](../packages/terminal/tool-terminal/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `terminal_send`
 
@@ -968,6 +1018,8 @@ Send text to a persistent terminal. By default Enter is submitted and the call w
 
 Source: [`packages/terminal/tool-terminal/src/index.ts`](../packages/terminal/tool-terminal/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `terminal_signal`
 
 Send an allowed signal to the current foreground process group of a persistent terminal.
@@ -1001,6 +1053,8 @@ Send an allowed signal to the current foreground process group of a persistent t
 
 Source: [`packages/terminal/tool-terminal/src/index.ts`](../packages/terminal/tool-terminal/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 The six terminal tools are opt-in and complement one-shot shell/filesystem tools. `terminal_send(run_in_background: true)` registers with `ctx.jobs`; TUI, named key sequences, BEL, resize, auto-start, and cross-agent sharing are absent from the schema.
 
 <a id="deepseek-aidsh-tool-goal"></a>
@@ -1032,6 +1086,8 @@ Create one persisted same-session completion goal when the current direct human 
 
 Source: [`packages/goal/tool-goal/src/index.ts`](../packages/goal/tool-goal/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `get_goal`
 
 Read the current same-session goal, including its exact id/revision, objective, phase, completed continuation rounds, round limit, blocker reason when present, and whether another continuation is armed. Call this before updating a goal.
@@ -1044,6 +1100,8 @@ Read the current same-session goal, including its exact id/revision, objective, 
 ```
 
 Source: [`packages/goal/tool-goal/src/index.ts`](../packages/goal/tool-goal/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `update_goal`
 
@@ -1094,6 +1152,8 @@ Update the exact current goal revision. edit, pause, and resume require a direct
 ```
 
 Source: [`packages/goal/tool-goal/src/index.ts`](../packages/goal/tool-goal/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 create, edit, pause, and resume require direct-human root authority; complete and blocked also accept the exact current goal round. The default blocked lower bound is three admitted rounds.
 
@@ -1158,6 +1218,8 @@ Create one reminder in the current session. Supply a non-empty prompt and exactl
 
 Source: [`packages/schedule/schedule/src/tools.ts`](../packages/schedule/schedule/src/tools.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `schedule_delete`
 
 Delete one active reminder in the current session by the exact id returned by schedule_create or schedule_list. Unknown or already-finished ids return deleted false.
@@ -1179,6 +1241,8 @@ Delete one active reminder in the current session by the exact id returned by sc
 
 Source: [`packages/schedule/schedule/src/tools.ts`](../packages/schedule/schedule/src/tools.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `schedule_list`
 
 List every active reminder in the current session in creation order, including its exact id, UTC target, scheduled or overdue state, and session-local delivery mode.
@@ -1191,6 +1255,8 @@ List every active reminder in the current session in creation order, including i
 ```
 
 Source: [`packages/schedule/schedule/src/tools.ts`](../packages/schedule/schedule/src/tools.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 Registered only inside live root Agent scopes created after the opt-in Schedule plugin loads. Version 1 accepts after_seconds, explicit absolute at, and bounded fixed-rate every_seconds, and discloses session-local delivery; management reads and mutations require the shared Session persistence barrier.
 
@@ -1240,6 +1306,8 @@ Query a language server for precise code navigation. operation is one of goToDef
 
 Source: [`packages/lsp/tool-lsp/src/index.ts`](../packages/lsp/tool-lsp/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 The lsp tool keeps provider selection and language-server subprocesses behind ctx.lsp, so its model-visible schema stays stable across providers. Requires a registered provider (e.g. `@deepseek-ai/dsh-lsp-stdio`) at runtime; without one, a query returns the structured `LSP_UNAVAILABLE` error rather than changing the schema.
 
 <a id="deepseek-aidsh-tool-ralph"></a>
@@ -1271,6 +1339,8 @@ Run a foreground fresh-agent Ralph loop toward one immutable objective. Use only
 
 Source: [`packages/workflow/tool-ralph/src/index.ts`](../packages/workflow/tool-ralph/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 A fixed foreground workflow starts one fresh structured child per round; the model selects only the immutable objective and an optional round cap.
 
 <a id="deepseek-aidsh-tool-skill"></a>
@@ -1297,6 +1367,8 @@ Load the full instructions for an available skill. Call this with the exact skil
 ```
 
 Source: [`packages/skill/tool-skill/src/index.ts`](../packages/skill/tool-skill/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 <a id="deepseek-aidsh-tool-session-query"></a>
 
@@ -1334,6 +1406,8 @@ Read one full unabridged event and optional neighboring raw-event summaries from
 ```
 
 Source: [`packages/session-query/tool-session-query/src/index.ts`](../packages/session-query/tool-session-query/src/index.ts)
+
+Effects: `read-only` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `session_event_search`
 
@@ -1395,6 +1469,8 @@ Search prior events in one authorized session; the current session excludes the 
 
 Source: [`packages/session-query/tool-session-query/src/index.ts`](../packages/session-query/tool-session-query/src/index.ts)
 
+Effects: `read-only` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `session_event_trace`
 
 Read every direct replacement and relationship to a cited source event for one event in an authorized session.
@@ -1419,6 +1495,8 @@ Read every direct replacement and relationship to a cited source event for one e
 ```
 
 Source: [`packages/session-query/tool-session-query/src/index.ts`](../packages/session-query/tool-session-query/src/index.ts)
+
+Effects: `read-only` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `session_search`
 
@@ -1513,6 +1591,8 @@ Search prior sessions in the caller workspace and return the strongest matching 
 
 Source: [`packages/session-query/tool-session-query/src/index.ts`](../packages/session-query/tool-session-query/src/index.ts)
 
+Effects: `read-only` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `session_trace`
 
 Read the authorized session lineage around one session, including complete visible ancestor and descendant relationships.
@@ -1530,6 +1610,8 @@ Read the authorized session lineage around one session, including complete visib
 ```
 
 Source: [`packages/session-query/tool-session-query/src/index.ts`](../packages/session-query/tool-session-query/src/index.ts)
+
+Effects: `read-only` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 The five read-only tools hide provider cursors and authorize every result from the immutable calling agent session. The package is opt-in; compositions that need enforced deadlines or bounded inline output also mount the generic timeout or spill policies.
 
@@ -1558,6 +1640,8 @@ Discover LLM routes for subagents without changing the current Agent. Call with 
 ```
 
 Source: [`packages/subagent/tool-subagent/src/list-models.ts`](../packages/subagent/tool-subagent/src/list-models.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `subagent`
 
@@ -1589,6 +1673,8 @@ Delegate a self-contained task to a subagent (a separate agent that works in its
 
 Source: [`packages/subagent/tool-subagent/src/index.ts`](../packages/subagent/tool-subagent/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 The registered delegation name is the load-time `toolName` config (default `subagent`); the default schema above has model selection off, while the discovery schema is shown as the fixed companion available in an enabled Session. Web presets sample the Plugins preference for each new top-level Session and preserve that decision for its child Sessions; `subagent_fork` remains fixed-route. Each instance independently controls whether it reads model-selection settings and its background behavior through `modelSelectionSettings`, `backgroundMode`, and `enableRunInBackground`.
 
 <a id="deepseek-aidsh-tool-subagent-control"></a>
@@ -1616,6 +1702,8 @@ Request cancellation of a background agent's current turn by its agent id. The t
 
 Source: [`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `list_agents`
 
 List your continuable background subagents by durable id and label. Use it to recall which ones you started, not to poll for completion — you are told when one finishes. Status comes from the live registry: running means the agent is working right now, idle means it is loaded but between turns (it may be waiting on agents it started), and ready means it exists only in storage — resumable, not terminal, and not a result waiting to be collected; a `send_message` starts a new turn on the same conversation, and a direct child remains a `send_message` candidate in every status. The snapshot is not a delivery promise — `send_message` performs the authoritative check and may still fail. Children that could not be read are reported as diagnostics instead of being silently dropped. Scope `descendants` walks the whole tree below you in stable pre-order, annotating each entry with its durable direct-parent session id and depth. You may use `send_message` only for depth-1 entries; deeper entries are candidates for `interrupt_agent` only.
@@ -1637,6 +1725,8 @@ List your continuable background subagents by durable id and label. Use it to re
 ```
 
 Source: [`packages/subagent/tool-subagent-control/src/list-agents.ts`](../packages/subagent/tool-subagent-control/src/list-agents.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `send_message`
 
@@ -1664,6 +1754,8 @@ Send a message to a background subagent by its subagent id, continuing the same 
 
 Source: [`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 The globally named control tools over continuable background subagents: provider-bound `tool-subagent` instances register distinct delegation tools, while this package registers `send_message` and `interrupt_agent` once, plus `list_agents` from its separately loaded `/list-agents` plugin (whose catalog rows use the sessionProjections and live Agent registries).
 
 <a id="deepseek-aidsh-tool-subagent-report"></a>
@@ -1690,6 +1782,8 @@ Report selected content to the agent that started you. Call this once before you
 ```
 
 Source: [`packages/subagent/tool-subagent-report/src/index.ts`](../packages/subagent/tool-subagent-report/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 Registered per continuable in-process child rather than globally, so this schema is visible only inside such a child and survives its global `toolFilter`. The same contribution installs the child-scoped `tool:report` prompt section, which this catalog does not render. The parent-facing `send_message` tool is installed independently.
 
@@ -1722,6 +1816,8 @@ Request cancellation of a running background job by job id. Returns immediately;
 
 Source: [`packages/jobs/tool-jobs/src/index.ts`](../packages/jobs/tool-jobs/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `job_list`
 
 List your background jobs (running and finished) with their ids, kinds, and statuses.
@@ -1734,6 +1830,8 @@ List your background jobs (running and finished) with their ids, kinds, and stat
 ```
 
 Source: [`packages/jobs/tool-jobs/src/index.ts`](../packages/jobs/tool-jobs/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `job_output`
 
@@ -1763,6 +1861,8 @@ Read a background job. Stream jobs return only output since the previous read; f
 ```
 
 Source: [`packages/jobs/tool-jobs/src/index.ts`](../packages/jobs/tool-jobs/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 The kind-agnostic background-job controller: background bash commands, PTY sends, and subagents are read, listed, and killed through the same three tools. Loading the plugin attaches the controller that arms producers' `ctx.jobs.start()`.
 
@@ -1796,6 +1896,8 @@ Send a durable follow-up task to another Team member and start a turn when neede
 
 Source: [`packages/experimental/tool-agent-team/src/index.ts`](../packages/experimental/tool-agent-team/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `interrupt_agent`
 
 Interrupt one teammate's current turn while preserving its pending inbox. Team Lead only.
@@ -1817,6 +1919,8 @@ Interrupt one teammate's current turn while preserving its pending inbox. Team L
 
 Source: [`packages/experimental/tool-agent-team/src/index.ts`](../packages/experimental/tool-agent-team/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `list_agents`
 
 List the Lead and every durable teammate with current runtime status.
@@ -1829,6 +1933,8 @@ List the Lead and every durable teammate with current runtime status.
 ```
 
 Source: [`packages/experimental/tool-agent-team/src/index.ts`](../packages/experimental/tool-agent-team/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `send_message`
 
@@ -1855,6 +1961,8 @@ Send durable information to another Team member without starting an idle member.
 ```
 
 Source: [`packages/experimental/tool-agent-team/src/index.ts`](../packages/experimental/tool-agent-team/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `spawn_teammate`
 
@@ -1894,6 +2002,8 @@ Create one named, durable teammate. Only the Team Lead may call this tool.
 ```
 
 Source: [`packages/experimental/tool-agent-team/src/index.ts`](../packages/experimental/tool-agent-team/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `team_task_create`
 
@@ -1935,6 +2045,8 @@ Create one unowned pending task on the shared Team task board.
 
 Source: [`packages/experimental/tool-agent-team/src/index.ts`](../packages/experimental/tool-agent-team/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `team_task_get`
 
 Read the complete latest value of one shared task before changing or executing it.
@@ -1955,6 +2067,8 @@ Read the complete latest value of one shared task before changing or executing i
 ```
 
 Source: [`packages/experimental/tool-agent-team/src/index.ts`](../packages/experimental/tool-agent-team/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `team_task_list`
 
@@ -1994,6 +2108,8 @@ List shared tasks, including readiness, owner, revision, blockers, and write-sco
 ```
 
 Source: [`packages/experimental/tool-agent-team/src/index.ts`](../packages/experimental/tool-agent-team/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 ### `team_task_update`
 
@@ -2062,6 +2178,8 @@ Compare-and-set a shared task action using the latest revision from team_task_ge
 
 Source: [`packages/experimental/tool-agent-team/src/index.ts`](../packages/experimental/tool-agent-team/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `wait_agent`
 
 Wait for the next teammate status, mailbox, or shared-task change after this call starts. This never wakes inactive members and returns noProgress immediately when no other member is running or provisioning. Re-list after wakeup or timeout instead of polling.
@@ -2079,6 +2197,8 @@ Wait for the next teammate status, mailbox, or shared-task change after this cal
 ```
 
 Source: [`packages/experimental/tool-agent-team/src/index.ts`](../packages/experimental/tool-agent-team/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 All ten tools are scoped to implicit Team Leads and durable teammates. The shipped dsh-base bundle keeps the package disabled; the documented Agent Teams profile patch enables it while disabling the legacy continuable-child control names.
 
@@ -2129,6 +2249,8 @@ Record and update a structured task list for the current work. Send the ENTIRE l
 ```
 
 Source: [`packages/todo/tool-todo/src/index.ts`](../packages/todo/tool-todo/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task.
 
@@ -2227,6 +2349,8 @@ Constraints: concurrency and total-agent caps apply; no filesystem, network, tim
 
 Source: [`packages/workflow/tool-workflow/src/index.ts`](../packages/workflow/tool-workflow/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 <a id="deepseek-aidsh-tool-web"></a>
 
 ## `@deepseek-ai/dsh-tool-web`
@@ -2252,6 +2376,8 @@ Fetch the content of a specific HTTP(S) URL and return it decoded to text.
 
 Source: [`packages/web/tool-web/src/index.ts`](../packages/web/tool-web/src/index.ts)
 
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
 ### `web_search`
 
 Search the web for current information. Provide 1–4 queries in the required queries array. Returns an optional summary answer and a list of source URLs.
@@ -2275,5 +2401,7 @@ Search the web for current information. Provide 1–4 queries in the required qu
 ```
 
 Source: [`packages/web/tool-web/src/index.ts`](../packages/web/tool-web/src/index.ts)
+
+Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps.

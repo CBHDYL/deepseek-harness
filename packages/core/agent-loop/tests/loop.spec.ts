@@ -658,13 +658,13 @@ describe('agent loop', () => {
     expect(adapter.requests).toHaveLength(0)
     expect(agent.session.events.filter(event => event.type === 'turn/start')).toHaveLength(1)
     expect(agent.session.events.filter(event => event.type === 'turn/end')).toHaveLength(1)
-    expect(agent.inbox.nextStep).toHaveLength(1) // pending steering survives
-    expect(agent.inbox.nextTurn).toHaveLength(1) // the claimed 'prompt' was restored, not lost
+    expect(agent.inbox.nextStep).toHaveLength(1)
 
     send(agent, 'resume')
     await waitForIdle(ctx, agent)
 
-    expect(adapter.requests.length).toBeGreaterThanOrEqual(1)
+    expect(adapter.requests).toHaveLength(1)
+    expect(agent.session.events.filter(event => event.type === 'turn/start')).toHaveLength(2)
     expect(JSON.stringify(adapter.requests[0]?.messages)).toContain('pending steering')
   })
 
@@ -942,8 +942,7 @@ describe('agent loop', () => {
   })
 
   it('a throwing agent/pre-step listener fails the proposal, not the loop', async () => {
-    // Two responses: the restored 'first' and the queued 'second' both process.
-    const adapter = new MockAdapter([textResponse('first turn ok'), textResponse('second turn ok')])
+    const adapter = new MockAdapter([textResponse('second turn ok')])
     const ctx = await harness(adapter)
     const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
@@ -969,8 +968,7 @@ describe('agent loop', () => {
     // The loop survived: a second prompt runs a normal completed turn.
     send(agent, 'second')
     await waitForIdle(ctx, agent)
-    // The restored 'first' and the queued 'second' both process (nothing lost).
-    expect(adapter.requests.length).toBe(2)
+    expect(adapter.requests.length).toBe(1)
     const lastTurnEnd = agent.session.events.findLast(e => e.type === 'turn/end')
     expect(lastTurnEnd?.type === 'turn/end' && lastTurnEnd.data.reason).toEqual({ kind: 'completed' })
   })
