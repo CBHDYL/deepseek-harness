@@ -39,6 +39,17 @@ describe('dsh-base bundle', () => {
       disabled: true,
       config: { root: ['.'] },
     })
+    // E18 (Final Convergence Audit): the shipped base bundle defaults the
+    // action-policy guard to OBSERVE — side-effectful calls run ungoverned and
+    // are only logged. This is an explicit deferred product decision: the
+    // enforce rollout is gated on the PR-5 verification assets and a test
+    // deployment window, not silently flipped here. Touching this assertion
+    // means the enforcement-default decision is being made — do it in that
+    // decision's own change, not as a side effect.
+    expect(rows.find(row => row.id === 'action-policy-guard')?.config).toMatchObject({
+      mode: 'observe',
+      treatUndeclaredAsSideEffectful: true,
+    })
     expect(rows.filter(row => row.id === 'subagent-codex')).toHaveLength(0)
     expect(rows.filter(row => row.id === 'subagent-claude-code')).toHaveLength(0)
     expect(rows.find(row => row.id === 'web')?.config).toMatchObject({ fetchProvider: 'http' })

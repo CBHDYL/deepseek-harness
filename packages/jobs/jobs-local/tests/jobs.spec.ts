@@ -110,6 +110,54 @@ function waitResolverCount(ctx: Context, id: JobId): number {
   return job.waitResolvers.size
 }
 
+describe('durable orchestration journal', () => {
+  it('records job/start on open and job/end on settlement into the owner session', async () => {
+    const ctx = await harness()
+    const agent = stubAgent(ctx, 'journal-agent')
+    ctx.agents.register(agent)
+    const { spec, settle } = producer({ owner: agent })
+
+    const jobId = ctx.jobs.start(spec)
+    expect(agent.session.events.some(e =>
+      e.type === 'job/start' && e.data.jobId === String(jobId) && e.data.kind === 'bash')).toBe(true)
+
+    settle({ status: 'completed' })
+    await tick()
+
+    expect(agent.session.events.some(e =>
+      e.type === 'job/end' && e.data.jobId === String(jobId) && e.data.status === 'completed')).toBe(true)
+    await disposeAgentScope(agent)
+    await ctx.fiber.dispose()
+  })
+
+  it('records a failed settlement with its detail', async () => {
+    const ctx = await harness()
+    const agent = stubAgent(ctx, 'journal-fail')
+    ctx.agents.register(agent)
+    const { spec, settle } = producer({ owner: agent })
+
+    const jobId = ctx.jobs.start(spec)
+    settle({ status: 'failed', detail: 'boom' })
+    await tick()
+
+    expect(agent.session.events.some(e =>
+      e.type === 'job/end' && e.data.jobId === String(jobId)
+      && e.data.status === 'failed' && e.data.detail === 'boom')).toBe(true)
+    await disposeAgentScope(agent)
+    await ctx.fiber.dispose()
+  })
+
+  it('does not journal ownerless jobs (no session to write to)', async () => {
+    const ctx = await harness()
+    const { spec, settle } = producer() // no owner
+    const jobId = ctx.jobs.start(spec)
+    settle({ status: 'completed' })
+    await tick()
+    expect(jobId).toBeDefined()
+    await ctx.fiber.dispose()
+  })
+})
+
 describe('LocalJobRegistry.start', () => {
   it('preserves the SessionId brand on public owner snapshots', () => {
     expectTypeOf<JobSnapshot['ownerSession']>().toEqualTypeOf<SessionId | undefined>()

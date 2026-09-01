@@ -141,6 +141,9 @@ describe('OpenTelemetrySessionBackend wire', () => {
 
     const resource = first.body.resourceLogs[0]!.resource.attributes
     expect(resource).toContainEqual({ key: 'service.name', value: { stringValue: 'deepseek-harness' } })
+    const instanceId = resource.find(attribute => attribute.key === 'service.instance.id')?.value.stringValue
+    expect(instanceId).toEqual(expect.any(String))
+    expect(instanceId).not.toBe('')
     expect(resource).toContainEqual({ key: 'user.id', value: { stringValue: getOrCreateAnonymousUserId() } })
 
     const records = allRecords(captures)

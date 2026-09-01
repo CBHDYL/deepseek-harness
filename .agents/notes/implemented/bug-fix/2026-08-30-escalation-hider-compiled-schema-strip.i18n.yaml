@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-30-escalation-hider-compiled-schema-strip.md
+2026-08-30-escalation-hider-compiled-schema-strip.md: f93607db475181e437640ba69f0fcd1b08e303fc
+2026-08-30-escalation-hider-compiled-schema-strip.zh.md: 282bb28d8d3d1397d44ca8a30134eb046266eb3d

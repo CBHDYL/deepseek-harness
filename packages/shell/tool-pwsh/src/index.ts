@@ -1,3 +1,4 @@
+import type { OperationId } from '@deepseek-ai/dsh-session'
 /**
  * Model-facing PowerShell Consumer of the `ctx.shell` capability seam. Intended for
  * Windows compositions where a PowerShell executor (e.g.
@@ -227,14 +228,34 @@ export function apply(ctx: Context, config: Config = {}): void {
       throw new Error('sandbox_permissions is not available in this composition (no sandboxing executor to escalate)')
     }
     const effectiveMode = (standingPolicy as SandboxExecutionPolicy).mode
+    // The attempt's single execution approval already named exactly this
+    // dimension (recorded on the approval/decided audit pair) — reuse it
+    // instead of asking the human twice for the same execution.
+    const approval = ctx.get('approval')
+    const preauthorized = approval?.executionApproval?.(exec)?.sandboxMode === mode
     return approveEscalation(
       { requestedMode: mode, justification, effectiveMode, subject: 'command' },
       {
-        approver: ctx.get('approval'),
+        // A thin wrapper carries the branded operation id across the
+        // structurally typed approver seam.
+        approver: approval === undefined ? undefined : {
+          request: (req) => {
+            const { operationId: supplied, ...rest } = req
+            return approval.request({
+              ...rest,
+              ...supplied !== undefined ? { operationId: supplied as OperationId } : {},
+            })
+          },
+        },
         agent: exec.agent,
         callId: exec.callId,
         toolName: 'pwsh',
         signal: exec.signal,
+      },
+      {
+        preauthorized,
+        operationId: exec.operationId,
+        ...exec.argsDigest !== undefined ? { argsDigest: exec.argsDigest } : {},
       },
     )
   }
@@ -352,7 +373,9 @@ export function apply(ctx: Context, config: Config = {}): void {
         : undefined
       const policy = approvedMode === undefined
         ? standingPolicy
-        : { ...(standingPolicy as SandboxExecutionPolicy), mode: approvedMode }
+        // Mint the escalated authority through the policy owner so the ceiling
+        // applies and the enforcing backend accepts its provenance.
+        : sandboxPolicy?.resolve({ ...exec.agent ? { session: exec.agent.session } : {}, mode: approvedMode })
       const workdir = resolveWorkdir(args.workdir, exec)
       const request = {
         command: args.command,

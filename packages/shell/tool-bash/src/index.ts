@@ -1,3 +1,4 @@
+import type { OperationId } from '@deepseek-ai/dsh-session'
 /**
  * Model-facing Consumer of the `ctx.shell` capability seam. Background calls
  * register process handles with `ctx.jobs`; their work uses job cancellation
@@ -25,6 +26,7 @@ import { DSH_ENV_PREFIX } from '@deepseek-ai/dsh-shell'
 import type { ShellRunResult } from '@deepseek-ai/dsh-shell'
 import { processOutcome } from './background.ts'
 import { parseExitStatus, renderProcessRead, renderResult } from './render.ts'
+import { recordBashReadObservations } from './record-observed-read.ts'
 
 export const name = 'tool-bash'
 export const inject = ['tools', 'shell', 'systemPrompt', 'shellEnv']
@@ -219,14 +221,34 @@ export function apply(ctx: Context, config: Config = {}): void {
       throw new Error('sandbox_permissions is not available in this composition (no sandboxing executor to escalate)')
     }
     const effectiveMode = (standingPolicy as SandboxExecutionPolicy).mode
+    // The attempt's single execution approval already named exactly this
+    // dimension (recorded on the approval/decided audit pair) — reuse it
+    // instead of asking the human twice for the same execution.
+    const approval = ctx.get('approval')
+    const preauthorized = approval?.executionApproval?.(exec)?.sandboxMode === mode
     return approveEscalation(
       { requestedMode: mode, justification, effectiveMode, subject: 'command' },
       {
-        approver: ctx.get('approval'),
+        // A thin wrapper carries the branded operation id across the
+        // structurally typed approver seam.
+        approver: approval === undefined ? undefined : {
+          request: (req) => {
+            const { operationId: supplied, ...rest } = req
+            return approval.request({
+              ...rest,
+              ...supplied !== undefined ? { operationId: supplied as OperationId } : {},
+            })
+          },
+        },
         agent: exec.agent,
         callId: exec.callId,
         toolName: 'bash',
         signal: exec.signal,
+      },
+      {
+        preauthorized,
+        operationId: exec.operationId,
+        ...exec.argsDigest !== undefined ? { argsDigest: exec.argsDigest } : {},
       },
     )
   }
@@ -335,7 +357,9 @@ export function apply(ctx: Context, config: Config = {}): void {
         : undefined
       const policy = approvedMode === undefined
         ? standingPolicy
-        : { ...(standingPolicy as SandboxExecutionPolicy), mode: approvedMode }
+        // Mint the escalated authority through the policy owner so the ceiling
+        // applies and the enforcing backend accepts its provenance.
+        : sandboxPolicy?.resolve({ ...exec.agent ? { session: exec.agent.session } : {}, mode: approvedMode })
       const workdir = resolveWorkdir(args.workdir, exec, standingPolicy?.workspaceRoot)
       const dshEnv = ctx.shellEnv.collect(exec)
       const request = {
@@ -385,6 +409,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         error.name = 'AbortError'
         throw error
       }
+      await recordBashReadObservations(ctx, args.command, workdir, result.exitCode, exec)
       return { kind: 'foreground' as const, ...canonicalBashResult(result) }
     },
     presentCall: presentBashCall,

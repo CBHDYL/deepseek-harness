@@ -1,3 +1,4 @@
+import type { OperationId } from '@deepseek-ai/dsh-session'
 /**
  * The sandbox-escalation API shared by the `write` and `edit` tools: the
  * per-call policy resolution, the advertised escalation fields, and the denial-marker
@@ -94,17 +95,39 @@ export class FsSandboxController {
       throw new Error('sandbox_permissions is not available in this composition (no sandboxing filesystem to escalate)')
     }
     const policy = standingPolicy as SandboxExecutionPolicy
+    // The attempt's single execution approval already named exactly this
+    // dimension (recorded on the approval/decided audit pair) — reuse it
+    // instead of asking the human twice for the same execution.
+    const approval = this.ctx.get('approval')
+    const preauthorized = approval?.executionApproval?.(exec)?.sandboxMode === args.sandbox_permissions
     const approvedMode = await approveEscalation(
       { requestedMode: args.sandbox_permissions, justification: args.justification, effectiveMode: policy.mode, subject: 'operation' },
       {
-        approver: this.ctx.get('approval'),
+        // A thin wrapper carries the branded operation id across the
+        // structurally typed approver seam.
+        approver: approval === undefined ? undefined : {
+          request: (req) => {
+            const { operationId: supplied, ...rest } = req
+            return approval.request({
+              ...rest,
+              ...supplied !== undefined ? { operationId: supplied as OperationId } : {},
+            })
+          },
+        },
         agent: exec.agent,
         callId: exec.callId,
         toolName,
         signal: exec.signal,
       },
+      {
+        preauthorized,
+        operationId: exec.operationId,
+        ...exec.argsDigest !== undefined ? { argsDigest: exec.argsDigest } : {},
+      },
     )
-    return { ...policy, mode: approvedMode }
+    // Mint the escalated authority through the policy owner so the ceiling
+    // applies and the enforcing backend accepts its provenance.
+    return this.policy?.resolve({ ...exec.agent ? { session: exec.agent.session } : {}, mode: approvedMode })
   }
 
   /**

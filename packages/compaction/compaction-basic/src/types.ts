@@ -40,6 +40,14 @@ export interface BasicCompactionConfig extends CompactionPolicyConfig {
   modelPolicies?: ModelCompactPolicyConfig[]
   /** Enable automatic step-boundary pressure and overflow-recovery listeners. Defaults to `true`. */
   auto?: boolean
+  /**
+   * Hard UTF-8 byte allowance on one summarizer request's model-facing
+   * representation (messages + system + tool schemas). Defaults to
+   * {@link DEFAULT_SUMMARIZATION_MAX_BYTES}. This is the compaction reserve
+   * that bounds the auxiliary dispatch: a region that does not fit is refused
+   * before any provider dispatch and fails the compaction transaction typed.
+   */
+  summarizationMaxBytes?: number
 }
 
 /** Exactly one validated retention form. */
@@ -53,6 +61,7 @@ interface ResolvedPolicyFields {
   readonly summarizationProvider: string
   readonly summarizationModel: string
   readonly maxTokens: number
+  readonly summarizationMaxBytes: number
   readonly compactionRetries: number
   readonly maxOverflowRetries: number
 }

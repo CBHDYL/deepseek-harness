@@ -1008,6 +1008,13 @@ export class LlmRuntime extends TypertRemoteService {
     }
 
     let completed = false
+    let finished = false
+    // Safety bound: a misbehaving adapter that yields chunks forever (never
+    // done, never finish) must not spin the loop or grow memory unboundedly.
+    // Derived from the requested max tokens so a legitimate response never
+    // trips it (a normal stream is ~maxTokens chunks + one terminal finish).
+    const maxChunks = (options.maxTokens ?? 8192) * 8
+    let chunks = 0
     try {
       while (true) {
         let item: { done: true } | { done: false; value: StreamChunk }
@@ -1022,12 +1029,45 @@ export class LlmRuntime extends TypertRemoteService {
           return
         }
         if (item.done) {
+          // Clean EOF is a protocol violation unless a terminal finish arrived:
+          // committing a partial stream as a successful response silently drops
+          // the termination fact every consumer relies on. Synthesize a
+          // structured, retryable error finish instead.
+          if (!finished) {
+            yield adapterFailureChunk(new LlmError(
+              `adapter stream for provider "${options.provider}" ended without a terminal finish chunk`,
+              'STREAM_UNTERMINATED',
+            ), options.signal)
+          }
           completed = true
+          return
+        }
+        const chunk = item.value
+        if (chunk.type === 'finish') {
+          if (finished) {
+            // The adapter already terminated; a second finish is garbage. Drop
+            // it (yielding another finish would itself violate the one-finish
+            // grammar) and keep the stream observable via the log.
+            this.ctx.logger.warn(`adapter stream for provider "${options.provider}" emitted a second terminal finish chunk; ignoring it`)
+            continue
+          }
+          finished = true
+        } else if (finished) {
+          this.ctx.logger.warn(`adapter stream for provider "${options.provider}" emitted a ${chunk.type} chunk after the terminal finish chunk; ignoring it`)
+          continue
+        }
+        chunks += 1
+        if (chunks > maxChunks) {
+          completed = true
+          yield adapterFailureChunk(new LlmError(
+            `adapter stream for provider "${options.provider}" exceeded ${maxChunks} chunks without a terminal finish`,
+            'STREAM_UNTERMINATED',
+          ), options.signal)
           return
         }
         // End the adapter-owned try before yielding: consumer/middleware
         // failures resumed into this generator must remain thrown.
-        yield item.value
+        yield chunk
       }
     } finally {
       if (!completed) {

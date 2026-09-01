@@ -6,6 +6,7 @@
 
 import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm/types'
+import type { OperationId } from '@deepseek-ai/dsh-session'
 
 /** Payload recorded when one nested PTC mode Tool dispatch starts. */
 export interface PtcDispatchStartEventData {
@@ -14,6 +15,8 @@ export interface PtcDispatchStartEventData {
   subCallId: ToolCallId
   name: string
   arguments: unknown
+  /** Registry-minted attempt correlation — the sub-dispatch's terminal disposition key. */
+  operationId?: OperationId
 }
 
 /** Payload recorded when one nested PTC mode Tool dispatch settles. */

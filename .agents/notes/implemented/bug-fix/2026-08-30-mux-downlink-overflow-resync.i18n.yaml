@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-30-mux-downlink-overflow-resync.md
+2026-08-30-mux-downlink-overflow-resync.md: 9e9badec2b2f56e7c75fa12c0a5858b56c123d22
+2026-08-30-mux-downlink-overflow-resync.zh.md: 851b8e1826f00e5a8df4aa09a25ee08bc10d858b

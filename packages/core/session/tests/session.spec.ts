@@ -807,6 +807,14 @@ describe('Session', () => {
     expect(session.events).toEqual([])
   })
 
+  it('accepts ignorable:true on a log-only append and freezes it into the event', () => {
+    const session = Session.create(SessionId('append-ignorable'))
+    const event = session.append('todo/write', { todos: [] }, { ignorable: true })
+    expect(event).toMatchObject({ type: 'todo/write', ignorable: true })
+    expect(Object.isFrozen(event)).toBe(true)
+    expect(Object.isFrozen(event.data)).toBe(true)
+  })
+
   it('rejects exotic surface metadata before cloning can erase its prototype', () => {
     class ReplaceOp {
       readonly op = 'replace' as const
@@ -1042,7 +1050,7 @@ describe('Session', () => {
     const cases: Array<{ header: unknown; error: RegExp }> = [
       { header: 1, error: /not a plain JSON record/ },
       { header: null, error: /not a plain JSON record/ },
-      { header: { ...base, version: 1 }, error: /header version/ },
+      { header: { ...base, version: 2 }, error: /header version/ },
       { header: { ...base, createdAt: '123' }, error: /createdAt must be a non-negative safe integer/ },
       { header: { ...base, cwd: 1 }, error: /header cwd must be a string/ },
       { header: { ...base, cwd: 'relative' }, error: /header cwd must be an absolute path/ },

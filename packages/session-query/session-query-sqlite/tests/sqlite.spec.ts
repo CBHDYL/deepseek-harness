@@ -131,7 +131,7 @@ class TestPersistence extends SessionPersistence {
     return Promise.resolve()
   }
 
-  async load(id: SessionIdType): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  async load(id: SessionIdType): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: 'intact' | 'repaired' | 'unknown' }> {
     TestPersistence.loads.set(id, (TestPersistence.loads.get(id) ?? 0) + 1)
     if (TestPersistence.failure !== undefined) throw TestPersistence.failure
     const entry = TestPersistence.entries.get(id)
@@ -142,10 +142,10 @@ class TestPersistence extends SessionPersistence {
       effect(entry)
       TestPersistence.revisions.set(id, ++TestPersistence.nextRevision)
     }
-    return structuredClone(entry)
+    return { ...structuredClone(entry), integrity: 'unknown' as const }
   }
 
-  async inspect(id: SessionIdType, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  async inspect(id: SessionIdType, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: 'intact' | 'repaired' | 'unknown' }> {
     TestPersistence.inspections.set(id, (TestPersistence.inspections.get(id) ?? 0) + 1)
     TestPersistence.inspectSignals.push(signal)
     if (TestPersistence.failure !== undefined) throw TestPersistence.failure
@@ -153,12 +153,12 @@ class TestPersistence extends SessionPersistence {
     if (entry === undefined) throw new Error('missing test session')
     await TestPersistence.inspectEffect?.(entry, signal)
     TestPersistence.inspectEffect = undefined
-    return structuredClone(entry)
+    return { ...structuredClone(entry), integrity: 'unknown' as const }
   }
 
-  async readFrom(id: SessionIdType, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  async readFrom(id: SessionIdType, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: 'intact' | 'repaired' | 'unknown' }> {
     const whole = await this.inspect(id, signal)
-    return { meta: whole.meta, events: whole.events.filter(event => event.seq >= fromSeq) }
+    return { meta: whole.meta, events: whole.events.filter(event => event.seq >= fromSeq), integrity: 'unknown' as const }
   }
 
   async list(): Promise<SessionHeader[]> {

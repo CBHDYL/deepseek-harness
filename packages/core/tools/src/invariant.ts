@@ -34,6 +34,51 @@ const install: InvariantInstaller = Object.assign((ctx: Context, fail: Invariant
   const stages = new WeakMap<object, ToolStage>()
   const openTurns = new WeakMap<Session, number | null>()
   const dispatchRoots = new WeakMap<Session, Map<string, string>>()
+  // A6: every allowed-once decision carrying an operation id resolves through
+  // exactly one terminal disposition on the same id (tool/result or the
+  // Code Mode settle event); duplicate operation ids across one session log
+  // fail (restart/HMR collision guard). Seeded from the loaded log so only
+  // NEW appends are checked — legacy duplicate rows stay readable.
+  const pendingAllowed = new WeakMap<Session, Set<string>>()
+  const seenOperationIds = new WeakMap<Session, Set<string>>()
+  // An operation identity is CLAIMED by its attempt's opening event —
+  // `tool/call` for native calls, `tool/code-dispatch-start` for Code Mode
+  // sub-dispatches — and then repeated only on that attempt's continuation
+  // events (approval pair, result, settle). Uniqueness therefore applies to
+  // opening events, and the seed scans the same opening set so a restart or
+  // ToolRuntime replacement can never re-mint a logged id.
+  const openingOperationIdOf = (event: SessionEvent): string | undefined =>
+    event.type === 'tool/call' ? event.data.operationId
+      : event.type === 'tool/code-dispatch-start' ? event.data.operationId
+        : undefined
+  const validateOperationId = (session: Session, operationId: string | undefined): void => {
+    if (operationId === undefined) return
+    const seen = seenOperationIds.get(session) as Set<string>
+    if (seen.has(operationId)) fail(`duplicate durable operationId ${JSON.stringify(operationId)} within one session log`)
+    seen.add(operationId)
+  }
+  const seedOperationIds = (session: Session): { pending: Set<string>; seen: Set<string> } => {
+    const pending = new Set<string>()
+    const seen = new Set<string>()
+    for (const event of session.events) {
+      const openingId = openingOperationIdOf(event)
+      if (openingId !== undefined) seen.add(openingId)
+      if (event.type === 'approval/decided' && event.data.outcome === 'allowed-once'
+        && event.data.operationId !== undefined) {
+        pending.add(event.data.operationId)
+      }
+      if (event.type === 'tool/result' && event.data.operationId !== undefined) pending.delete(event.data.operationId)
+      if (event.type === 'tool/code-dispatch' && event.data.operationId !== undefined) pending.delete(event.data.operationId)
+    }
+    pendingAllowed.set(session, pending)
+    seenOperationIds.set(session, seen)
+    return { pending, seen }
+  }
+  const operationTraceFor = (session: Session): { pending: Set<string>; seen: Set<string> } => {
+    const pending = pendingAllowed.get(session)
+    if (pending !== undefined) return { pending, seen: seenOperationIds.get(session) as Set<string> }
+    return seedOperationIds(session)
+  }
   const validateDispatch = (session: Session, event: SessionEvent): void => {
     if (event.type !== 'tool/code-dispatch-start' && event.type !== 'tool/code-dispatch') return
     const root = String(event.data.rootCallId)
@@ -73,8 +118,11 @@ const install: InvariantInstaller = Object.assign((ctx: Context, fail: Invariant
   }
   const openTurnFor = (session: Session): number | null => openTurns.get(session) ?? seed(session)
 
-  for (const session of ctx.sessions.list()) seed(session)
-  ctx.on('session/created', (session) => { seed(session) }, { global: true })
+  for (const session of ctx.sessions.list()) {
+    seed(session)
+    seedOperationIds(session)
+  }
+  ctx.on('session/created', (session) => { seed(session); seedOperationIds(session) }, { global: true })
   ctx.on('session/event', (session, event) => {
     validateDispatch(session, event)
     commitDispatch(session, event)
@@ -88,6 +136,25 @@ const install: InvariantInstaller = Object.assign((ctx: Context, fail: Invariant
       if ((event.type === 'tool/code-dispatch-start' || event.type === 'tool/code-dispatch')
         && openTurnFor(session) === null) {
         fail(`${event.type} appended outside any open turn`)
+      }
+      // Pre-commit, authoritative gate: an A6 violation (duplicate opening
+      // identity, or an allowed-once attempt reaching turn end without its
+      // terminal disposition) rejects the append BEFORE the event enters the
+      // durable log.
+      validateOperationId(session, openingOperationIdOf(event))
+      if (event.type === 'approval/decided' && event.data.outcome === 'allowed-once'
+        && event.data.operationId !== undefined) {
+        operationTraceFor(session).pending.add(event.data.operationId)
+      }
+      if ((event.type === 'tool/result' || event.type === 'tool/code-dispatch')
+        && event.data.operationId !== undefined) {
+        operationTraceFor(session).pending.delete(event.data.operationId)
+      }
+      if (event.type === 'turn/end') {
+        const { pending } = operationTraceFor(session)
+        if (pending.size > 0) {
+          fail(`allowed-once attempt without a terminal disposition: ${[...pending].map(id => JSON.stringify(id)).join(', ')}`)
+        }
       }
       return
     }

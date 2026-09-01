@@ -32,6 +32,23 @@ export interface ToolBridgeOptions {
   registrationFailure: 'contain' | 'throw'
   serverName: string
   toolCallTimeoutMs: number
+  /** Maximum tools/list pages to drain before aborting (server pagination loop guard). */
+  maxSyncPages: number
+  /** Maximum tools per server before aborting the sync. */
+  maxToolsPerServer: number
+  /** Whole-sync deadline in ms (a stalled server cannot wedge startup forever). */
+  syncTimeoutMs: number
+  /**
+   * Maximum UTF-8 bytes of one tool's description before the tool is excluded
+   * from the generation (PR-6 product constant, default 4096).
+   */
+  maxToolDescriptionBytes: number
+  /**
+   * Maximum UTF-8 bytes of one tool's serialized `inputSchema` + `outputSchema`
+   * before the tool is excluded from the generation (PR-6 product constant,
+   * default 65536).
+   */
+  maxToolSchemaBytes: number
 }
 
 /** State for one sync generation: the current set of disposers keyed by public name. */
@@ -55,6 +72,11 @@ const INVALID_NAME_CHARS = /[^A-Za-z0-9_-]/g
 /** Hex chars of the SHA-256 identity hash appended on lossy normalization. */
 const HASH_LENGTH = 12
 
+/** UTF-8 byte length of a string (multibyte-correct, `string.length` is not). */
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).length
+}
+
 /** Raw result record: the bridge owns JSON-value validation after transport. */
 const RawCallToolResultSchema = z.record(z.string(), z.unknown())
 
@@ -70,10 +92,11 @@ const IMAGE_MEDIA_TYPES: readonly ImageMediaType[] = [
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 
 /** List without mutating the SDK's per-page output-validator cache. */
-function listToolsUncached(client: Client, cursor?: string) {
+function listToolsUncached(client: Client, cursor?: string, opts?: { timeout?: number; signal?: AbortSignal }) {
   return client.request(
     { method: 'tools/list', ...cursor === undefined ? {} : { params: { cursor } } },
     ListToolsResultSchema,
+    opts,
   )
 }
 
@@ -149,15 +172,51 @@ export async function syncTools(
 ): Promise<ToolDisposers> {
   // Phase 1: fetch and build the next generation without touching the registry.
   const definitions = new Map<string, ToolDefinition>()
+  const seenCursors = new Set<string>()
   let cursor: string | undefined
+  let pages = 0
+  const syncDeadline = Date.now() + opts.syncTimeoutMs
   do {
-    const response = await listToolsUncached(client, cursor)
+    pages += 1
+    if (pages > opts.maxSyncPages) {
+      throw new Error(`mcp-client(${opts.serverName}): tools/list exceeded ${opts.maxSyncPages} pages — aborting (server pagination loop)`)
+    }
+    if (Date.now() > syncDeadline) {
+      throw new Error(`mcp-client(${opts.serverName}): tools/list sync exceeded ${opts.syncTimeoutMs}ms — aborting`)
+    }
+    if (cursor !== undefined) {
+      if (seenCursors.has(cursor)) {
+        throw new Error(`mcp-client(${opts.serverName}): tools/list returned the same cursor twice — aborting (server pagination loop)`)
+      }
+      seenCursors.add(cursor)
+    }
+    // Per-request deadline derived from the sync budget, so a single hung
+    // `tools/list` cannot wedge the whole startup sync (the page cap only
+    // bounds *how many* pages, and the cursor check only bounds pagination).
+    const response = await listToolsUncached(client, cursor, { timeout: Math.max(1, syncDeadline - Date.now()) })
+    let excludedTools = 0
     for (const tool of response.tools) {
       const publicName = publicToolName(opts.serverName, tool.name)
       if (definitions.has(publicName)) {
         throw new Error(
           `mcp-client(${opts.serverName}): server listed tool "${tool.name}" more than once — invalid tool list`,
         )
+      }
+      // PR-6 source bounds: untrusted model-facing metadata is measured in
+      // UTF-8 bytes at sync and an offending tool is EXCLUDED from the
+      // generation (rejected, never silently truncated into the prompt). The
+      // final request byte ceiling remains the aggregate safety net.
+      const descriptionBytes = utf8Bytes(tool.description ?? '')
+      const schemaBytes = utf8Bytes(JSON.stringify(tool.inputSchema))
+        + utf8Bytes(JSON.stringify(supportedOutputSchema(tool.outputSchema) ?? {}))
+      if (descriptionBytes > opts.maxToolDescriptionBytes || schemaBytes > opts.maxToolSchemaBytes) {
+        excludedTools += 1
+        ctx.logger.warn(
+          `mcp-client(${opts.serverName}): excluding tool "${tool.name}" — model-facing metadata is `
+          + `${descriptionBytes} description bytes and ${schemaBytes} schema bytes `
+          + `(limits ${opts.maxToolDescriptionBytes}/${opts.maxToolSchemaBytes})`,
+        )
+        continue
       }
       definitions.set(publicName, createDefinition(
         client,
@@ -171,8 +230,14 @@ export async function syncTools(
         opts,
       ))
     }
+    if (excludedTools > 0) {
+      ctx.logger.warn(`mcp-client(${opts.serverName}): excluded ${excludedTools} tool(s) whose model-facing metadata exceeds the source bounds`)
+    }
+    if (definitions.size > opts.maxToolsPerServer) {
+      throw new Error(`mcp-client(${opts.serverName}): tool list exceeds ${opts.maxToolsPerServer} tools — aborting`)
+    }
     cursor = response.nextCursor
-  } while (cursor)
+  } while (cursor !== undefined)
 
   // Phase 2: swap generations.
   for (const dispose of previous.values()) dispose()

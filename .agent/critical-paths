@@ -1,0 +1,14 @@
+# 项目真实敏感路径（治理门禁 critical-paths 声明）
+# 命中这些路径的改动会被门禁按 CRITICAL 处理；未声明的普通源码不受关键词兜底误判。
+# deepseek-harness 的真实敏感面：凭据/授权/密钥/支付。
+
+**/.env
+**/.env.*
+packages/credentials/**
+packages/interaction/authorization/**
+packages/identity/**
+**/*secret*
+**/*api-key*
+**/apikey*
+packages/api/remotes/src/credential*
+packages/llm/llm/src/api-key.ts

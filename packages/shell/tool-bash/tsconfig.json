@@ -49,6 +49,15 @@
     },
     {
       "path": "../../sandbox/sandbox-policy"
+    },
+    {
+      "path": "../../fs/fs"
+    },
+    {
+      "path": "../../fs/fs-observation-policy"
+    },
+    {
+      "path": "../../fs/tool-fs"
     }
   ]
 }

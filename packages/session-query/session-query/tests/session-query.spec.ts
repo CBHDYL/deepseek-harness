@@ -1,4 +1,5 @@
 import { createUserMessage, createMessage } from '@deepseek-ai/dsh-llm'
+import type { SessionIntegrity } from '@deepseek-ai/dsh-session-persistence'
 import { describe, expect, it, vi } from 'vitest'
 import { Context, type Fiber } from '@deepseek-ai/cordis'
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId } from '@deepseek-ai/dsh-session'
@@ -42,7 +43,7 @@ class TestPersistence extends SessionPersistence {
   static inspectOverride: ((
     id: SessionIdType,
     signal?: AbortSignal,
-  ) => Promise<{ meta: SessionHeader; events: SessionEvent[] }>) | undefined
+  ) => Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }>) | undefined
   static afterList: (() => void) | undefined
   static listCalls = 0
   static inspectCalls: SessionIdType[] = []
@@ -83,14 +84,14 @@ class TestPersistence extends SessionPersistence {
     return Promise.resolve()
   }
 
-  load(id: SessionIdType): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  load(id: SessionIdType): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
     return this.inspect(id)
   }
 
   inspect(
     id: SessionIdType,
     signal?: AbortSignal,
-  ): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  ): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
     TestPersistence.inspectCalls.push(id)
     TestPersistence.inspectSignals.push(signal)
     if (TestPersistence.inspectOverride !== undefined) {
@@ -102,12 +103,12 @@ class TestPersistence extends SessionPersistence {
     const result = structuredClone(entry)
     TestPersistence.inspectEffect?.()
     TestPersistence.inspectEffect = undefined
-    return Promise.resolve(result)
+    return Promise.resolve({ ...result, integrity: 'unknown' as const })
   }
 
-  async readFrom(id: SessionIdType, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  async readFrom(id: SessionIdType, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
     const whole = await this.inspect(id, signal)
-    return { meta: whole.meta, events: whole.events.filter(event => event.seq >= fromSeq) }
+    return { meta: whole.meta, events: whole.events.filter(event => event.seq >= fromSeq), integrity: 'unknown' as const }
   }
 
   list(signal?: AbortSignal): Promise<SessionHeader[]> {
@@ -344,7 +345,7 @@ describe.each(cancellableExactReads)('$name cancellation', ({ inspects, run }) =
         started.resolve(undefined)
         await release.promise
         active = false
-        return structuredClone(entry)
+        return { ...structuredClone(entry), integrity: 'unknown' as const }
       }
     } else {
       TestPersistence.listOverride = async () => {
@@ -574,7 +575,7 @@ describe('session-query exact reads', () => {
       active -= 1
       const entry = TestPersistence.entries.get(id)
       if (entry === undefined) throw new Error('missing bounded test session')
-      return structuredClone(entry)
+      return { ...structuredClone(entry), integrity: 'unknown' as const }
     }
 
     const results = await ctx.sessionQuery.readTitleSnapshots(entries.map(entry => entry.meta.id))
@@ -616,6 +617,7 @@ describe('session-query exact reads', () => {
         resolve({
           meta: entries.find(entry => entry.meta.id === id)!.meta,
           events: [...eventLog(marker), titleEvent],
+          integrity: 'unknown' as const,
         })
       })
     })
@@ -772,7 +774,7 @@ describe('session-query exact reads', () => {
           source: { kind: 'fallback' },
         })
       }
-      return Promise.resolve(structuredClone(entry))
+      return Promise.resolve({ ...structuredClone(entry), integrity: 'unknown' as const })
     }
 
     const results = await ctx.sessionQuery.readTitleSnapshots([

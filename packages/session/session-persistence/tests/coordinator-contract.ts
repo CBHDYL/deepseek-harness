@@ -1350,7 +1350,7 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
         await ctx.sessionPersistence.append(m.id, oneTurnLog())
         const failure = await ctx.sessionPersistence.load(m.id).then(() => undefined, (error: unknown) => error as Error)
         expect(failure?.name).toBe('SessionFormatUnsupportedError')
-        expect(failure?.message).toMatch(/older than the supported v0.*no upgrade path/)
+        expect(failure?.message).toMatch(/which this build does not support/)
       } finally {
         await fiber.dispose()
         await fix.cleanup()
@@ -1457,22 +1457,26 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
       const second = await freshCtx(fix)
       try {
         const loaded = await second.ctx.sessionPersistence.load(SessionId('torn'))
-        expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+        expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
         expect(loaded.events.map(e => e.type)).toEqual([
           'turn/start', 'user/message', 'step/start', 'assistant/message', 'step/end', 'turn/end', // turn 1
-          'turn/start', 'step/start', 'step/end', 'turn/end', // turn 2: real + synthetic closers
+          'turn/start', 'step/start', 'step/end', 'turn/end', 'session/repaired', // turn 2: real + synthetic closers + diagnostic
         ])
-        const last = loaded.events.at(-1)!
+        const last = loaded.events.at(-2)!
         expect(last.type === 'turn/end' && last.data.reason).toEqual({ kind: 'interrupted' })
+        const repaired = loaded.events.at(-1)!
+        expect(repaired?.type === 'session/repaired' && repaired.data).toMatchObject({ reason: 'torn-tail' })
+        expect(loaded.integrity).toBe('repaired')
 
         // The repair is durable: the next append continues at the balanced length
-        // (seq 10) and a reload round-trips identically.
+        // (seq 11) and a reload round-trips identically.
         await second.ctx.sessionPersistence.append(SessionId('torn'), [
-          { type: 'turn/start', seq: 10, time: 9, data: { turn: 3 } },
-          { type: 'turn/end', seq: 11, time: 10, data: { turn: 3, reason: { kind: 'completed' } } },
+          { type: 'turn/start', seq: 11, time: 9, data: { turn: 3 } },
+          { type: 'turn/end', seq: 12, time: 10, data: { turn: 3, reason: { kind: 'completed' } } },
         ])
         const reloaded = await second.ctx.sessionPersistence.load(SessionId('torn'))
-        expect(reloaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+        expect(reloaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+        expect(reloaded.integrity).toBe('repaired')
       } finally {
         await second.fiber.dispose()
         await fix.cleanup()

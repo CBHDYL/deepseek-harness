@@ -119,7 +119,10 @@ export function resolveExampleLaunch(options: ExampleLaunchOptions): ExampleLaun
       ? import.meta.resolve('tsx/esm')
       : import.meta.resolve('tsx')
     env.TSX_TSCONFIG_PATH = options.tsconfigPath
-    return { command: process.execPath, args: ['--import', tsxLoader, options.srcBin, ...configArgs], env }
+    // Keyless snapshot subprocesses must keep stderr oracle-clean: silence the
+    // Node 22 `node:sqlite` ExperimentalWarning (a no-op flag on Node 24 where
+    // sqlite is stable) so `expect(result.stderr).toBe('')` pins product output.
+    return { command: process.execPath, args: ['--disable-warning=ExperimentalWarning', '--import', tsxLoader, options.srcBin, ...configArgs], env }
   }
 
   return { command: process.execPath, args: [options.libBin ?? toLibBin(options.srcBin), ...configArgs], env }

@@ -51,6 +51,10 @@ function projectSessionConversation(snapshot: SessionSurfaceSnapshot): Projected
       }
       case 'tool/result':
         break
+      case 'session/repaired':
+        // A repair notice belongs to the model history, not to a human
+        // conversation excerpt — the resumed model sees it via deriveMessages.
+        break
       /* v8 ignore next 2 -- SurfaceEventType is closed and every variant is handled above. */
       default:
         assertNever(event, 'session-reference surface event')

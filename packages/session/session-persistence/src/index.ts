@@ -23,12 +23,25 @@ export interface SessionPersistenceSnapshot {
   revision: SessionPersistenceRevision
 }
 
+/**
+ * Provenance of one durable session's completeness.
+ * - `intact`: the log scans parse-consistent with no torn tail or known
+ *   corruption (NOT bit-perfect — silent bit flips remain undetectable).
+ * - `repaired`: a recovery transaction committed durably (`session/repaired`
+ *   present; the header is stamped v1 at the repair commit).
+ * - `unknown`: completeness cannot be proven — legacy v0 logs, damage detected
+ *   but not yet committed to repair, or a live in-memory view.
+ */
+export type SessionIntegrity = 'intact' | 'repaired' | 'unknown'
+
 /** Immutable logical session prepared from persistence or a live owner. */
 export interface SessionInspection {
   /** Validated immutable session metadata. */
   readonly meta: SessionHeader
   /** Validated contiguous logical event log. */
   readonly events: readonly SessionEvent[]
+  /** Durably provable completeness provenance for this inspection. */
+  readonly integrity: SessionIntegrity
 }
 
 /** A borrowed exact Session source returned from a cold materialization or concurrent live owner. */
@@ -260,7 +273,7 @@ export abstract class SessionPersistence extends Service {
    * @returns the header and the stored events with `seq >= fromSeq`.
    */
   abstract readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal):
-  Promise<{ meta: SessionHeader; events: SessionEvent[] }>
+  Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }>
 
   /**
    * Lightweight listing from metadata, without a full-log parse.

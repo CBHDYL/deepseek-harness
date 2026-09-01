@@ -88,6 +88,50 @@ function executionPolicy(mode: SandboxMode, workspaceRoot = resolve(process.cwd(
   return { mode, workspaceRoot }
 }
 
+describe('authority provenance', () => {
+  it('ignores a caller-supplied forged policy and resolves the deployment default', async () => {
+    const { bash } = await setup({ mode: 'read-only' })
+    const spec = bash.resolve({
+      command: 'echo hi',
+      sandboxPolicy: executionPolicy('danger-full-access', '/forged'),
+    })
+    expect(spec.sandboxPolicy).toEqual({ mode: 'read-only', workspaceRoot: resolve(process.cwd()) })
+  })
+
+  it('carries an owner-minted policy through to the provider', async () => {
+    const { ctx, bash, calls } = await setup({ mode: 'read-only' })
+    const minted = ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' })
+    const result = await bash.run(bash.resolve({ command: 'echo minted', sandboxPolicy: minted }))
+    expect(result.exitCode).toBe(0)
+    expect(calls).toHaveLength(0)
+    expect(result.sandbox).toEqual({ mode: 'danger-full-access', denied: false })
+  })
+})
+
+describe('authority substitution at the execution consumption point', () => {
+  it('re-resolves a forged policy substituted into a resolved spec at run()', async () => {
+    const { bash, calls } = await setup({ mode: 'read-only' })
+    const spec = bash.resolve({ command: 'echo substituted-run' })
+    spec.sandboxPolicy = executionPolicy('danger-full-access', '/forged')
+    const result = await bash.run(spec)
+    expect(result.stdout.text).toBe('substituted-run\n')
+    expect(result.sandbox).toEqual({ mode: 'read-only', denied: false, enforcement: 'full' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.policy.mode).toBe('read-only')
+  })
+
+  it('re-resolves a forged policy substituted into a resolved spec at start()', async () => {
+    const { bash, calls } = await setup({ mode: 'read-only' })
+    const spec = bash.resolve({ command: 'echo substituted-start' })
+    spec.sandboxPolicy = executionPolicy('danger-full-access', '/forged')
+    const proc = bash.start(spec)
+    await proc.done
+    expect(proc.sandbox).toEqual({ mode: 'read-only', denied: false, enforcement: 'full' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.policy.mode).toBe('read-only')
+  })
+})
+
 describe('the provider hand-off', () => {
   it('hands the provider the exact bash argv and the per-call policy, and runs the returned argv', async () => {
     const { bash, calls } = await setup()
@@ -315,9 +359,9 @@ describe('per-call sandbox policy (the session and escalation carrier)', () => {
     expect(bash.resolve({ command: 'true' }).sandboxPolicy).toEqual(executionPolicy('read-only'))
   })
 
-  it('an explicit policy outranks the default at resolve(), and the wrap follows its mode and root', async () => {
-    const { bash, calls } = await setup()
-    const explicit = executionPolicy('workspace-write', '/session/project')
+  it('an owner-minted explicit policy outranks the default at resolve(), and the wrap follows its mode and root', async () => {
+    const { ctx, bash, calls } = await setup()
+    const explicit = ctx.sandboxPolicy.resolve({ mode: 'workspace-write' })
     expect(bash.resolve({ command: 'true', sandboxPolicy: explicit }).sandboxPolicy).toEqual(explicit)
     await bash.run(bash.resolve({ command: 'true', sandboxPolicy: explicit }))
     await bash.run(bash.resolve({ command: 'true' }))
@@ -325,14 +369,14 @@ describe('per-call sandbox policy (the session and escalation carrier)', () => {
   })
 
   it('an escalated run reports the mode it ACTUALLY ran under', async () => {
-    const { bash } = await setup()
-    const result = await bash.run(bash.resolve({ command: 'true', sandboxPolicy: executionPolicy('workspace-write') }))
+    const { ctx, bash } = await setup()
+    const result = await bash.run(bash.resolve({ command: 'true', sandboxPolicy: ctx.sandboxPolicy.resolve({ mode: 'workspace-write' }) }))
     expect(result.sandbox).toEqual({ mode: 'workspace-write', denied: false, enforcement: 'full' })
   })
 
   it('escalating to danger-full-access bypasses the provider entirely — the grant, not a probe, is the authority there', async () => {
-    const { bash, calls } = await setup()
-    const result = await bash.run(bash.resolve({ command: 'echo free', sandboxPolicy: executionPolicy('danger-full-access') }))
+    const { ctx, bash, calls } = await setup()
+    const result = await bash.run(bash.resolve({ command: 'echo free', sandboxPolicy: ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }) }))
     expect(result.stdout.text).toBe('free\n')
     expect(result.sandbox).toEqual({ mode: 'danger-full-access', denied: false })
     expect(calls).toHaveLength(0)
@@ -342,8 +386,8 @@ describe('per-call sandbox policy (the session and escalation carrier)', () => {
     // With per-call policy, tasks under different modes are in flight at
     // once — anything keyed off the configured default would misreport the
     // escalated one at its settle stamp.
-    const { bash } = await setup()
-    const escalated = bash.start(bash.resolve({ command: 'sleep 0.3; echo "x: Permission denied" >&2; exit 1', sandboxPolicy: executionPolicy('workspace-write') }))
+    const { ctx, bash } = await setup()
+    const escalated = bash.start(bash.resolve({ command: 'sleep 0.3; echo "x: Permission denied" >&2; exit 1', sandboxPolicy: ctx.sandboxPolicy.resolve({ mode: 'workspace-write' }) }))
     const plain = bash.start(bash.resolve({ command: 'true' }))
     await plain.done
     await escalated.done
@@ -352,8 +396,8 @@ describe('per-call sandbox policy (the session and escalation carrier)', () => {
   })
 
   it('an escalated danger-full-access background job carries no facts (nothing confined it)', async () => {
-    const { bash, calls } = await setup()
-    const task = bash.start(bash.resolve({ command: 'echo bg-free', sandboxPolicy: executionPolicy('danger-full-access') }))
+    const { ctx, bash, calls } = await setup()
+    const task = bash.start(bash.resolve({ command: 'echo bg-free', sandboxPolicy: ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }) }))
     await task.done
     expect(task.sandbox).toBeUndefined()
     expect(task.readOutput().delta).toContain('bg-free')

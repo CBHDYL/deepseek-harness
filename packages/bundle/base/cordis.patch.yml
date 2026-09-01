@@ -430,12 +430,51 @@
       config:
         maxOutputChars: 16000
 
-    # Consecutive-repeat reminders on the tool chain.
+    # Consecutive-repeat reminders on the tool chain, plus a circuit breaker:
+    # after 6 consecutive identical calls (or same-failure calls even with
+    # drifting arguments) the guard denies/blocks instead of only reminding.
     - id: repeat-tool-reminder
       name: '@deepseek-ai/dsh-repeat-tool-reminder'
       config:
         thresholds: [3, 5, 8]
         argumentsPreviewChars: 500
+        vetoAt: 6
+
+    # Hide sandbox-escalation parameters from the model-visible tool schema
+    # when escalation can never succeed for the session (effective mode is
+    # already danger-full-access, or the approval policy is never) — stops the
+    # model from hammering a knob that always fails closed.
+    - id: escalation-hider
+      name: '@deepseek-ai/dsh-escalation-hider'
+
+    # Bypass output-repetition telemetry: emits output-repetition/detected when
+    # a long section repeats in one assistant stream, without rewriting history.
+    - id: output-repetition-guard
+      name: '@deepseek-ai/dsh-output-repetition-guard'
+      config:
+        minSectionChars: 400
+        minRepeat: 2
+        emitLimit: 1
+
+    # Mandatory action-policy interceptor (observe mode: logs ungoverned
+    # side-effectful calls without changing behavior; flip to enforce to gate
+    # them through the approval seam).
+    - id: action-policy-guard
+      name: '@deepseek-ai/dsh-action-policy-guard'
+      config:
+        mode: observe
+        treatUndeclaredAsSideEffectful: true
+
+    # Managed long-running services: start/stop/status/logs/list with
+    # guaranteed cleanup when the owning session disposes or the plugin
+    # unloads — the anti-orphan-process tool.
+    - id: tool-service
+      name: '@deepseek-ai/dsh-tool-service'
+
+    # Smoke-level UI verification: one headless Chromium page per session
+    # (goto/screenshot/click/fill/read_text), closed on session disposal.
+    - id: tool-browser
+      name: '@deepseek-ai/dsh-tool-browser'
 
     # Every mode enables the stable model-facing web_search tool. The Web app's
     # per-agent presets additionally enable web_fetch; other products opt in by

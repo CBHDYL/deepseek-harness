@@ -11,6 +11,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 
 export {
   ESCALATION_TARGETS,
+  SANDBOX_ESCALATION_NOT_WIDER,
   WIDER_MODES,
   approveEscalation,
   escalationHintMarker,

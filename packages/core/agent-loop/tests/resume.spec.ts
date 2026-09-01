@@ -258,6 +258,39 @@ describe('the session-persistence Agent Note: AgentLoop factory create/resume', 
     await ctx2.fiber.dispose()
   })
 
+  it('E21/E22: resume restores the recorded cwd verbatim without filesystem revalidation (accepted path-based contract)', async () => {
+    // Final Convergence Audit E21/E22: cwd restore is path-based — the
+    // header is the durable record and is returned verbatim. A deleted,
+    // symlink-swapped, or file-replaced workspace directory is NOT
+    // revalidated at resume (realpath identity checks would break legitimate
+    // directory migration). The accepted residual keeps the recorded path and
+    // shows the resolved workspace root at resume. This test pins the
+    // contract: the string round-trips exactly, and a path that no longer
+    // exists on disk resumes instead of being rejected.
+    const vanished = join(await mkdtemp(join(tmpdir(), 'dsh-resume-gone-')), 'workspace')
+    // Never created on disk: the recorded path exists only in the header.
+    const adapter1 = new MockAdapter([textResponse('a')])
+    const { ctx: ctx1, root } = await persistentHarness(adapter1)
+    const a1 = (await ctx1.agents.create({ sessionId: SessionId('cwd-verbatim'), meta: { cwd: vanished } })).agent
+    a1.followup(createUserMessage({ content: [{ type: 'text', text: 'q' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx1, a1)
+    await ctx1.fiber.dispose()
+
+    const adapter2 = new MockAdapter([textResponse('b')])
+    const ctx2 = new Context()
+    await ctx2.plugin(LlmRuntime)
+    await ctx2.plugin(SessionStore)
+    await ctx2.plugin(SystemPrompt)
+    await ctx2.plugin(ToolRuntime)
+    await ctx2.plugin(AgentRegistry)
+    await ctx2.plugin(AgentLoop, { agents: [] })
+    await ctx2.plugin(JsonlSessionPersistence, { root })
+    ctx2.llm.registerAdapter(['mock'], adapter2)
+    const a2 = (await ctx2.agents.resume({ resumeSessionId: SessionId('cwd-verbatim') })).agent
+    expect(a2.session.header.cwd).toBe(vanished)
+    await ctx2.fiber.dispose()
+  })
+
   it('agent/session-start fires "startup" for createAgent and "resume" for resume()', async () => {
     // Lifecycle 1: a fresh createAgent emits session-start with source 'startup'.
     const adapter1 = new MockAdapter([textResponse('a')])

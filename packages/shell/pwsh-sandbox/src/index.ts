@@ -20,10 +20,10 @@ import type {
   ConfinedSandboxMode,
   RunnerFailureRule,
   SandboxEnforcement,
-  SandboxExecutionPolicy,
   SandboxMode,
   SandboxPolicy,
 } from '@deepseek-ai/dsh-sandbox'
+import { trustedAuthority } from '@deepseek-ai/dsh-sandbox-policy'
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import { PwshLocalExecutor } from '@deepseek-ai/dsh-pwsh-local'
 import type { Config as LocalConfig } from '@deepseek-ai/dsh-pwsh-local'
@@ -90,11 +90,20 @@ export class SandboxPwshExecutor extends PwshLocalExecutor {
    * the deployment policy.
    */
   override resolve(request: ShellExecRequest): ShellExecSpec {
-    return { ...super.resolve(request), sandboxPolicy: request.sandboxPolicy ?? this.ctx.sandboxPolicy.resolve() }
+    // Provenance boundary: a caller-supplied policy object must be minted by
+    // the policy owner; a forged object falls back to the owner's default.
+    const sandboxPolicy = trustedAuthority(
+      request.sandboxPolicy, this.ctx.sandboxPolicy, 'pwsh-sandbox', message => this.ctx.logger.warn(message),
+    ) ?? this.ctx.sandboxPolicy.resolve()
+    return { ...super.resolve(request), sandboxPolicy }
   }
 
   override async run(spec: ShellExecSpec): Promise<ShellRunResult> {
-    const policy = spec.sandboxPolicy as SandboxExecutionPolicy
+    // Re-check at the execution consumption point: a spec whose policy was
+    // substituted after resolve() must not execute under the forged fields.
+    const policy = trustedAuthority(
+      spec.sandboxPolicy, this.ctx.sandboxPolicy, 'pwsh-sandbox', message => this.ctx.logger.warn(message),
+    ) ?? this.ctx.sandboxPolicy.resolve()
     const { mode } = policy
     if (mode === 'danger-full-access') {
       const result = await super.run(spec)
@@ -122,7 +131,10 @@ export class SandboxPwshExecutor extends PwshLocalExecutor {
   }
 
   override start(spec: ShellExecSpec): ShellProcess {
-    const policy = spec.sandboxPolicy as SandboxExecutionPolicy
+    // Re-check at the execution consumption point (see run()).
+    const policy = trustedAuthority(
+      spec.sandboxPolicy, this.ctx.sandboxPolicy, 'pwsh-sandbox', message => this.ctx.logger.warn(message),
+    ) ?? this.ctx.sandboxPolicy.resolve()
     const { mode } = policy
     if (mode === 'danger-full-access') return super.start(spec)
     // Once startArgv returns, install facts synchronously; promise settlement

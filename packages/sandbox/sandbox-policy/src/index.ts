@@ -32,6 +32,48 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 
 export { SANDBOX_MODES, setSandboxMode } from './session-mode.ts'
 
+declare const sandboxAuthorityBrand: unique symbol
+
+/** An authority minted by the sandbox-policy owner; caller code cannot construct one. */
+export type ResolvedSandboxAuthority = SandboxExecutionPolicy & { readonly [sandboxAuthorityBrand]: true }
+
+/**
+ * Enforce provenance at an enforcing backend's consumption point: a minted
+ * authority passes through; a caller-constructed object is reported and
+ * yields undefined so the backend applies its owner default (never the forged
+ * object's declared fields). Shared by the fs/shell enforcing backends so the
+ * check lives exactly where the authority is consumed.
+ * @param policy - the caller-supplied policy, if any.
+ * @param owner - the policy service whose minted set decides provenance.
+ * @param consumer - the backend name for the warning message.
+ * @param warn - the backend's logger-warning sink.
+ * @returns the policy when minted, undefined for a forged object.
+ */
+export function trustedAuthority(
+  policy: SandboxExecutionPolicy | undefined,
+  owner: SandboxPolicyService,
+  consumer: string,
+  warn: (message: string) => void,
+): SandboxExecutionPolicy | undefined {
+  if (policy !== undefined && !owner.isMinted(policy)) {
+    warn(`${consumer}: ignoring a caller-supplied sandbox policy that was not minted by ctx.sandboxPolicy`)
+    return undefined
+  }
+  return policy
+}
+
+/** Strictly-wider order over the closed mode vocabulary, for ceiling comparison. */
+const SANDBOX_MODE_ORDER: Record<SandboxMode, number> = {
+  'read-only': 0,
+  'workspace-write': 1,
+  'danger-full-access': 2,
+}
+
+/** Freeze a plain authority so callers cannot widen a minted value in place. */
+function deepFreeze<T extends object>(value: T): T {
+  return Object.freeze(value)
+}
+
 /** Resolve filesystem identity before lexical normalization can erase symlink-sensitive components. */
 function resolveWorkspaceRoot(path: string): string {
   return resolvePath(canonicalPath(path))
@@ -70,6 +112,12 @@ declare module '@deepseek-ai/cordis' {
 export interface Config {
   /** File-sandbox mode a session starts from (default: `read-only`). */
   mode?: SandboxMode
+  /**
+   * Hard deployment ceiling (default: `danger-full-access`, preserving the
+   * historical semantics where an approved escalation may reach the widest
+   * mode). No session override or approved escalation resolves above it.
+   */
+  maxMode?: SandboxMode
   /**
    * Fallback root for agentless calls and sessions without a cwd (default:
    * `process.cwd()`). Normal agent calls use their session cwd instead.
@@ -110,6 +158,7 @@ export class SandboxPolicyService extends Service {
   // Inline schema call: the config catalog walks `static Config` statically.
   static Config: z<Config> = z.object({
     mode: z.union(['read-only', 'workspace-write', 'danger-full-access'] as const).default('read-only'),
+    maxMode: z.union(['read-only', 'workspace-write', 'danger-full-access'] as const).default('danger-full-access'),
     // No schema default: process.cwd() is resolved in the constructor so the
     // stored root is always absolute regardless of how it was supplied.
     workspaceRoot: z.string(),
@@ -119,14 +168,22 @@ export class SandboxPolicyService extends Service {
 
   /** The deployment default mode — the fallback beneath a session override. */
   readonly defaultMode: SandboxMode
+  /** The hard ceiling no resolution exceeds — the security cap for session overrides and escalations. */
+  readonly maxMode: SandboxMode
   /** The absolute `workspace-write` fallback root for calls without a session cwd. */
   readonly workspaceRoot: string
+  /** Authorities this owner minted — the provenance the enforcing backends check. */
+  private readonly minted = new WeakSet<object>()
   constructor(ctx: Context, config: Config) {
     super(ctx, 'sandboxPolicy')
     // schemastery (static Config) already filled `mode`; the cast records that
     // runtime fact. `workspaceRoot` has NO schema default, so its fallback to
     // the process cwd is real branching, resolved absolute either way.
     this.defaultMode = config.mode as SandboxMode
+    this.maxMode = config.maxMode as SandboxMode
+    if (SANDBOX_MODE_ORDER[this.defaultMode] > SANDBOX_MODE_ORDER[this.maxMode]) {
+      throw new Error(`sandbox-policy: deployment default mode ${this.defaultMode} exceeds the configured maxMode ceiling ${this.maxMode}`)
+    }
     this.workspaceRoot = resolveWorkspaceRoot(config.workspaceRoot ?? process.cwd())
 
     ctx.sessionProjections.register({
@@ -162,11 +219,29 @@ export class SandboxPolicyService extends Service {
    */
   resolve(request: SandboxPolicyRequest = {}): SandboxExecutionPolicy {
     const { session } = request
-    return {
-      mode: request.mode ?? (session === undefined ? undefined : this.overrideOf(session)) ?? this.defaultMode,
+    const requested = request.mode ?? (session === undefined ? undefined : this.overrideOf(session)) ?? this.defaultMode
+    const mode = SANDBOX_MODE_ORDER[requested] > SANDBOX_MODE_ORDER[this.maxMode] ? this.maxMode : requested
+    const authority = deepFreeze({
+      mode,
       workspaceRoot: resolveWorkspaceRoot(session?.header.cwd ?? this.workspaceRoot),
       ...session === undefined ? {} : { sessionId: session.id },
-    }
+    })
+    this.minted.add(authority)
+    return authority
+  }
+
+  /**
+   * Whether this owner minted the authority. Enforcing backends accept only
+   * minted authorities; a caller-constructed object is ignored and the owner's
+   * default applies. TypeScript cannot forge the brand, and this runtime check
+   * stops structurally forged objects from partially-trusted in-process code.
+   * It is not a malicious-code boundary: a plugin that can patch the service
+   * or reach an unrestricted capability is out of scope.
+   * @param authority - the policy object a capability call carries.
+   * @returns true only for an authority this service returned from `resolve`.
+   */
+  isMinted(authority: SandboxExecutionPolicy): boolean {
+    return this.minted.has(authority)
   }
 
   /**

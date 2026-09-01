@@ -5,8 +5,8 @@ import type { ContentBlock, Message, TokenUsage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId, canonicalHeader } from '@deepseek-ai/dsh-session'
 import type { EpochHeader, SessionEvent } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
-import TokenMeter from '@deepseek-ai/dsh-token-meter'
-import type { TokenMeasurement, TokenMeterConfig } from '@deepseek-ai/dsh-token-meter'
+import TokenMeter, { estimateRequest } from '@deepseek-ai/dsh-token-meter'
+import type { TokenMeasurement, TokenMeterConfig, RequestEnvelope } from '@deepseek-ai/dsh-token-meter'
 
 function header(model: string, extras: Omit<EpochHeader, 'config'> = {}): EpochHeader {
   return canonicalHeader({ config: { provider: 'mock', model }, ...extras })
@@ -149,6 +149,25 @@ describe('TokenMeter pricing', () => {
     }))
     expect(estimated).toBeGreaterThan(30)
     expect(service.estimateMessage(textMessage('abcd'))).toBe(9)
+  })
+
+  it('F2 contract: estimateRequest is an advisory provider-agnostic heuristic — the envelope carries no provider and pricing is deterministic', () => {
+    // Accepted design deviation (PR-6 F2, option B): no provider/model identity
+    // participates in the estimate, so the number is never a provider token
+    // guarantee. This pins the contract so implementation, design, docs, and
+    // tests cannot drift apart again.
+    const envelope: RequestEnvelope = {
+      messages: [textMessage('abcd'), textMessage('界'.repeat(16))],
+      system: 'system prompt',
+      tools: [{ type: 'object', properties: { pad: { type: 'string', description: 'x'.repeat(100) } } }],
+    }
+    const first = estimateRequest(envelope)
+    expect(first).toBe(estimateRequest(envelope))
+    expect(first).toBeGreaterThan(0)
+    // The RequestEnvelope type has no provider/model field: pricing is
+    // structurally independent of the dispatch target by contract.
+    expectTypeOf<RequestEnvelope>().not.toHaveProperty('provider')
+    expectTypeOf<RequestEnvelope>().not.toHaveProperty('model')
   })
 
   it('returns a detached deeply immutable empty measurement', () => {

@@ -62,7 +62,7 @@ describe('MessageFeedbackService public contract', () => {
     })
 
     const fixture = messageFixture('corrupt-session')
-    persistence.setDurable({ meta: fixture.session.header, events: fixture.session.events })
+    persistence.setDurable({ meta: fixture.session.header, events: fixture.session.events, integrity: 'unknown' as const })
     const corruption = new Error('stored log checksum mismatch')
     persistence.inspectFailure = corruption
     await expect(ctx.messageFeedback.list({ sessionId: fixture.session.id })).rejects.toBe(corruption)
@@ -258,7 +258,7 @@ describe('MessageFeedbackService public contract', () => {
     rawCtx.provide('sessions', { get: () => undefined } as never)
     rawCtx.provide('sessionPersistence', {
       listSnapshots: () => Promise.resolve([{ header: fixture.session.header, revision: 'test' }]),
-      inspect: () => Promise.resolve({ meta: fixture.session.header, events: fixture.session.events }),
+      inspect: () => Promise.resolve({ meta: fixture.session.header, events: fixture.session.events, integrity: 'unknown' as const }),
     } as never)
     const raw = new MessageFeedbackService(rawCtx, { maxNoteBytes: 1 })
     await expect(raw.list({ sessionId: fixture.session.id }))
@@ -519,8 +519,9 @@ describe('MessageFeedbackService durability ordering', () => {
     persistence.logical.set(fixture.session.id, {
       meta: fixture.session.header,
       events: fixture.session.events,
+      integrity: 'unknown' as const,
     })
-    persistence.setDurable({ meta: fixture.session.header, events: [] })
+    persistence.setDurable({ meta: fixture.session.header, events: [], integrity: 'unknown' as const })
 
     await expect(ctx.messageFeedback.put({
       sessionId: fixture.session.id,
