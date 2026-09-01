@@ -45,6 +45,7 @@ declare module '@deepseek-ai/dsh-session/types' {
       id: ApprovalRequestId
       toolName: string
       callId?: ToolCallId
+      operationId?: string
       reason?: string
     }
     /**
@@ -55,6 +56,7 @@ declare module '@deepseek-ai/dsh-session/types' {
     'approval/decided': {
       id: ApprovalRequestId
       outcome: ApprovalOutcome
+      operationId?: string
     }
   }
 }

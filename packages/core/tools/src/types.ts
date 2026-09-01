@@ -7,6 +7,16 @@
 import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm/types'
 
+/**
+ * Per-session unique identifier for one execution ATTEMPT (PR-2 authorization
+ * port). Minted by the tool registry at execution creation, seeded from the
+ * loaded log's high-water mark, and carried on every durable row of that
+ * attempt's chain: `tool/call`, `tool/result`, the `tool/code-dispatch*` pair,
+ * and the `approval/asked` + `approval/decided` pair. Never a capability —
+ * it names the attempt so grants and dispositions bind to it exactly.
+ */
+export type OperationId = string
+
 /** Payload recorded when one nested PTC mode Tool dispatch starts. */
 export interface PtcDispatchStartEventData {
   rootCallId: ToolCallId
@@ -14,6 +24,8 @@ export interface PtcDispatchStartEventData {
   subCallId: ToolCallId
   name: string
   arguments: unknown
+  /** The sub-dispatch's own execution attempt identity (PR-2 port). */
+  operationId?: OperationId
 }
 
 /** Payload recorded when one nested PTC mode Tool dispatch settles. */

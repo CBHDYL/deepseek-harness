@@ -1,6 +1,6 @@
 /** Durable action-policy observation event types. */
 
-import type { CallId } from '@deepseek-ai/dsh-llm/brand'
+import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 
 /** Why an observe-mode call is a side-effectful candidate. */
 export type ActionPolicyEffectSource = 'declared' | 'undeclared'
@@ -10,7 +10,7 @@ export interface ActionPolicyCandidateEventData {
   /** Tool name used to aggregate candidates without retaining arguments. */
   toolName: string
   /** Existing call identity used to correlate with the owning tool event. */
-  callId: CallId
+  callId: ToolCallId
   /** Whether side effects were explicit or inferred from missing metadata. */
   effectSource: ActionPolicyEffectSource
 }

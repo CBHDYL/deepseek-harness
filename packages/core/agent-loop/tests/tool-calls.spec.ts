@@ -5,7 +5,8 @@
 
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { createUserMessage, ToolCallId, StreamChunk  } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, StreamChunk } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 import SessionStore, { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
@@ -649,7 +650,7 @@ describe('tool-call scheduler: failure quiescence', () => {
     const scheduler = ctx.tools[TOOL_RUNTIME_SCHEDULER]
     const dispatch = scheduler.dispatch.bind(scheduler)
     const schedulerError = new Error('scheduler exploded')
-    scheduler.dispatch = exec => exec.callId === CallId('c1')
+    scheduler.dispatch = exec => exec.callId === ToolCallId('c1')
       ? new Promise((_resolve, reject) => { reject(schedulerError) })
       : dispatch(exec).then(() => { throw new Error('sibling failed while draining') })
     const agent = ctx.agentLoop.create(SessionId('closure-1'), { provider: 'mock', model: 'mock' })
@@ -663,11 +664,11 @@ describe('tool-call scheduler: failure quiescence', () => {
     // Every started call has a matching result: no orphan tool/call remains.
     expect(calls.length).toBe(results.length)
     // The interrupted call is marked outcome-unknown, not silently missing.
-    const interrupted = results.find(r => r.data.message.source.callId === CallId('c1'))
+    const interrupted = results.find(r => r.data.message.source.callId === ToolCallId('c1'))
     expect(interrupted?.data.error?.code).toBe('TOOL_OUTCOME_UNKNOWN')
     // The failure-path terminal disposition still closes the operation audit
     // chain: every started call's result carries its call's operation id.
-    const interruptedCall = calls.find(c => c.data.callId === CallId('c1'))
+    const interruptedCall = calls.find(c => c.data.callId === ToolCallId('c1'))
     expect(interruptedCall?.data.operationId).toBeTruthy()
     expect(interrupted?.data.operationId).toBe(interruptedCall?.data.operationId)
   })

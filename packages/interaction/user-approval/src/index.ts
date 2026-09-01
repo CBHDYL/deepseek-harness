@@ -10,7 +10,7 @@ import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type ToolCallId } from '@deepseek-ai/dsh-llm'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 
 declare module '@deepseek-ai/cordis' {
@@ -129,6 +129,18 @@ export interface ApprovalRequest extends ApprovalRequestEvent {
    * attach the prompt to the tool call it already streamed.
    */
   readonly callId?: ToolCallId
+  /**
+   * Registry-minted execution-attempt identity (PR-2 port): the grant this
+   * approval may mint binds to it, so the same allowance can never authorize
+   * a different attempt.
+   */
+  readonly operationId?: string
+  /**
+   * SHA-256 digest of the frozen argument snapshot (PR-2 port): the grant's
+   * exact-arguments binding witness. A substitution between ask and dispatch
+   * changes the digest and fails the grant consumption.
+   */
+  readonly argsDigest?: string
   /** The asker's human-readable explanation of WHY it is asking. */
   readonly reason?: string
   /**
@@ -154,10 +166,30 @@ export interface Config {
  * ask/outcome pair to the requesting session. It exposes deterministic policy
  * changes to the model through the runtime-context snapshot and switch notices.
  */
+/**
+ * One-shot grant record minted for an allowed-once decision (PR-2 port).
+ * Private to the service: callers prove identity field-by-field through
+ * {@link ApprovalService.takeGrant}; the record is never handed out.
+ */
+interface AuthorizationGrantRecord {
+  readonly operationId: string
+  readonly toolName: string
+  readonly callId: ToolCallId | undefined
+  readonly argsDigest: string
+  readonly sessionId: SessionId
+  taken: boolean
+}
+
 export class ApprovalService extends Service {
   static Config: z<Config> = z.object({
     policy: z.union(['ask', 'never'] as const).default('ask'),
   })
+
+  /**
+   * One-shot grants minted for allowed-once decisions (PR-2 port).
+   * `takeGrant` consumes exactly once.
+   */
+  private readonly grants = new Map<AuthorizationGrantRecord, true>()
 
   constructor(ctx: Context, public config: Config) {
     super(ctx, 'approval')
@@ -233,11 +265,52 @@ export class ApprovalService extends Service {
       id,
       toolName: req.toolName,
       ...req.callId !== undefined ? { callId: req.callId } : {},
+      ...req.operationId !== undefined ? { operationId: req.operationId } : {},
       ...req.reason !== undefined ? { reason: req.reason } : {},
     })
     const outcome = await this.decide(req, session)
-    session.append('approval/decided', { id, outcome })
+    if (outcome === 'allowed-once' && req.operationId !== undefined && req.argsDigest !== undefined) {
+      this.grants.set({
+        operationId: req.operationId,
+        toolName: req.toolName,
+        callId: req.callId,
+        argsDigest: req.argsDigest,
+        sessionId: session.id,
+        taken: false,
+      }, true)
+    }
+    session.append('approval/decided', {
+      id,
+      outcome,
+      ...req.operationId !== undefined ? { operationId: req.operationId } : {},
+    })
     return outcome
+  }
+
+  /**
+   * Atomically consume the one-shot grant this service minted for an
+   * allowed-once decision (PR-2 port). The identity must match the recorded
+   * grant field-for-field — a substituted execution, tool, arguments digest,
+   * or session fails closed — and the grant is consumed exactly once.
+   * @param identity - the dispatch-time execution identity to verify.
+   * @returns true only for the first exact match.
+   */
+  takeGrant(identity: {
+    readonly operationId: string
+    readonly toolName: string
+    readonly callId: ToolCallId
+    readonly argsDigest: string
+  }): boolean {
+    for (const record of this.grants.keys()) {
+      if (record.operationId === identity.operationId
+        && record.toolName === identity.toolName
+        && record.argsDigest === identity.argsDigest
+        && (record.callId === undefined || record.callId === identity.callId)) {
+        this.grants.delete(record) // consumed exactly once
+        return true
+      }
+    }
+    return false
   }
 
   /**

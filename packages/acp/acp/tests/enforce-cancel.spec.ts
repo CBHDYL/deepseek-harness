@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import * as ActionPolicyGuard from '@deepseek-ai/dsh-action-policy-guard'
 import { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
@@ -16,8 +16,8 @@ import { makeBridgeHarness, textResponse } from './harness.ts'
 function toolCallResponse(id: string, name: string) {
   return [
     { type: 'block-start', index: 0, blockType: 'tool-call' },
-    { type: 'tool-call-delta', index: 0, id: CallId(id), name, argumentsDelta: '{}' },
-    { type: 'block-end', index: 0, block: { type: 'tool-call', id: CallId(id), name, arguments: '{}' } },
+    { type: 'tool-call-delta', index: 0, id: ToolCallId(id), name, argumentsDelta: '{}' },
+    { type: 'block-end', index: 0, block: { type: 'tool-call', id: ToolCallId(id), name, arguments: '{}' } },
     { type: 'usage', usage: { inputTokens: 5, outputTokens: 1 } },
     { type: 'finish', reason: { kind: 'tool-calls' } },
   ] as never

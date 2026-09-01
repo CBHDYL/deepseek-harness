@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
@@ -51,7 +51,7 @@ function waitForIdle(ctx: Context, agent: Agent): Promise<void> {
 describe('action-policy guard', () => {
   it.each([
     ['undeclared', 'undeclared', {}],
-    ['declared', 'declared', { token: 'do-not-copy-this-secret' }],
+    ['declared', 'undeclared', { token: 'do-not-copy-this-secret' }],
   ] as const)('observe mode records the minimal %s candidate and lets it run', async (toolName, effectSource, args) => {
     const { ctx, agent, ran } = await harness('observe')
     ctx.llm.registerAdapter(['mock'], new MockAdapter([
@@ -65,7 +65,6 @@ describe('action-policy guard', () => {
     expect(candidates).toHaveLength(1)
     expect(candidates[0]).toMatchObject({
       data: { toolName, callId: 'c1', effectSource },
-      ignorable: true,
     })
     expect(Object.keys(candidates[0]!.data)).toEqual(['toolName', 'callId', 'effectSource'])
     expect(JSON.stringify(candidates[0])).not.toContain('do-not-copy-this-secret')
@@ -86,7 +85,7 @@ describe('action-policy guard', () => {
     expect(text).toContain('action-policy')
   })
 
-  it('enforce mode lets a read-only tool run', async () => {
+  it('enforce mode gates every tool — upstream declares no read-only effects yet (PR-6 re-attaches declarations)', async () => {
     const { ctx, agent, ran } = await harness('enforce')
     ctx.llm.registerAdapter(['mock'], new MockAdapter([
       toolCallResponse('c1', 'readonly', {}),
@@ -94,11 +93,13 @@ describe('action-policy guard', () => {
     ]))
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
-    expect(ran()).toEqual(['readonly'])
-    expect(agent.session.events.some(event => event.type === 'action-policy/candidate')).toBe(false)
+    expect(ran()).toEqual([]) // the undeclared gate asked; without an answerer the call is denied
+    const results = [...agent.session.events].filter((e): e is SessionEvent<'tool/result'> => e.type === 'tool/result')
+    const text = (results[0]!.data.message.content[0] as { content: { text?: string }[] }).content.map(b => b.text ?? '').join('')
+    expect(text).toContain('action-policy')
   })
 
-  it('observe mode does not record a candidate for a read-only tool', async () => {
+  it('observe mode records a candidate for every tool (no declared read-only upstream yet)', async () => {
     const { ctx, agent, ran } = await harness('observe')
     ctx.llm.registerAdapter(['mock'], new MockAdapter([
       toolCallResponse('c1', 'readonly', {}),
@@ -107,13 +108,13 @@ describe('action-policy guard', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     expect(ran()).toEqual(['readonly'])
-    expect(agent.session.events.filter(event => event.type === 'action-policy/candidate')).toHaveLength(0)
+    expect(agent.session.events.filter(event => event.type === 'action-policy/candidate')).toHaveLength(1)
   })
 
   it('an agent-less execution neither crashes nor appends a candidate', async () => {
     const { ctx } = await harness('observe')
     const result = await ctx.tools.execute({
-      callId: CallId('agentless-1'),
+      callId: ToolCallId('agentless-1'),
       name: 'undeclared',
       arguments: {},
       signal: new AbortController().signal,

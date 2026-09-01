@@ -11,7 +11,8 @@ import type { ScopeKey, ScopeLayer, Scoped } from '@deepseek-ai/dsh-scope'
 import type { ToolCallId, ContentBlock, ToolSchema } from '@deepseek-ai/dsh-llm'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { UserMessage } from '@deepseek-ai/dsh-session'
+import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
+import { createHash } from 'node:crypto'
 import { assertNever, deepFreeze, snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { ToolProviderResult } from '@deepseek-ai/dsh-system-prompt'
 import type { CodeRuntime } from '@deepseek-ai/dsh-code-runtime'
@@ -91,7 +92,8 @@ export {
   type JsonSchemaScalar,
 } from './json-schema.ts'
 
-export type { PtcDispatchEventData, PtcDispatchStartEventData } from './types.ts'
+export type { OperationId, PtcDispatchEventData, PtcDispatchStartEventData } from './types.ts'
+import type { OperationId } from './types.ts'
 
 export { CodeRunFailedError, RUN_CODE_NAME } from './ptc.ts'
 export { jsonSchemaToTs, renderToolsSdk } from './ts-types.ts'
@@ -370,6 +372,14 @@ export interface PtcDispatchLog {
  * observers run.
  */
 export interface ToolExecution extends ToolExecutionInput {
+  /**
+   * Registry-minted identity of this execution attempt (PR-2 port): unique
+   * per session, seeded from the loaded log's high-water mark, carried on
+   * every durable row of the attempt's chain. Grants and terminal
+   * dispositions bind to it; it is never a capability.
+   */
+  readonly operationId: OperationId
+
   /** Root model-requested call, resolved for every root and nested execution. */
   readonly rootCallId: ToolCallId
   /** Registry-assigned identity shared with nested calls only as their opaque `parent` token. */
@@ -801,6 +811,12 @@ export class ToolRuntime extends Service {
   private cancellationStates = new WeakMap<ToolRunContext, ToolCancellationState>()
   /** Definition-owned final content transform snapshotted before policy begins. */
   private contentFinalizers = new WeakMap<ToolRunContext, ToolDefinition['finalizeContent']>()
+  /** Per-session operation-id high-water counters, seeded from the loaded log on first use (PR-2 port). */
+  private sessionOperationCounters = new WeakMap<Session, number>()
+  /** Process-local fallback counter for agentless executions (no durable session to scope them). */
+  private agentlessOperationCounter = 0
+  /** Executions whose policy stage asked and were answered allowed-once: dispatch must consume their grant. */
+  private grantRequired = new WeakSet<ToolExecution>()
   private readonly layers = new ScopedLayers(
     scope => new ToolLayer(scope),
     () => { this.ctx.emit('tools/change') },
@@ -1377,6 +1393,7 @@ export class ToolRuntime extends Service {
       rootCallId,
       name,
       signal,
+      operationId: this.mintOperationId(agent),
       ...agent !== undefined ? { agent } : {},
       ...parent !== undefined ? { parent } : {},
       deferContext(context: UserMessage): void {
@@ -1497,6 +1514,66 @@ export class ToolRuntime extends Service {
     }
   }
 
+  /**
+   * Mint the per-session operation id for one execution attempt (PR-2 port).
+   * The counter is seeded from the loaded log's high-water mark so a fresh
+   * registry after reload never re-mints an id the log already carries.
+   * @param agent - the caller agent; absent for agentless executions.
+   * @returns a per-session unique `op_<n>` identity.
+   */
+  private mintOperationId(agent: Agent | undefined): OperationId {
+    if (agent === undefined) {
+      this.agentlessOperationCounter += 1
+      return `op_x${this.agentlessOperationCounter}`
+    }
+    const session = agent.session
+    let counter = this.sessionOperationCounters.get(session)
+    if (counter === undefined) {
+      counter = 0
+      // Indexed scan: real logs are arrays, and stubbed sessions in consumer
+      // tests may expose an array-like (or nothing) rather than an iterable.
+      const events = session.events as unknown as { readonly length?: number; readonly [index: number]: unknown } | undefined
+      for (let i = 0; i < (events?.length ?? 0); i += 1) {
+        const event = events?.[i] as { readonly type?: string; readonly data?: { operationId?: string } } | undefined
+        if (event?.type !== 'tool/call' && event?.type !== 'tool/code-dispatch') continue
+        const id = event.data?.operationId
+        if (id === undefined || !id.startsWith('op_')) continue
+        const seq = Number(id.slice(3))
+        if (Number.isInteger(seq) && seq > counter) counter = seq
+      }
+      this.sessionOperationCounters.set(session, counter)
+    }
+    counter += 1
+    this.sessionOperationCounters.set(session, counter)
+    return `op_${counter}`
+  }
+
+  /** SHA-256 digest of the frozen argument snapshot — the exact-binding witness. */
+  private argsDigestOf(arguments_: unknown): string {
+    return createHash('sha256').update(JSON.stringify(arguments_)).digest('hex')
+  }
+
+  /**
+   * Atomically consume this attempt's authorization grant at the dispatch
+   * boundary (PR-2 port). A call whose policy stage asked must consume its
+   * grant exactly here — before any around-dispatch wrapper or tool body; a
+   * missing or substituted identity fails closed.
+   * @param exec - the execution about to dispatch.
+   * @returns true when no grant was required or the grant consumed exactly once.
+   */
+  private consumeGrant(exec: ToolExecution): boolean {
+    if (!this.grantRequired.has(exec)) return true
+    this.grantRequired.delete(exec)
+    const approval = this.ctx.get('approval')
+    if (approval === undefined) return false
+    return approval.takeGrant({
+      operationId: exec.operationId,
+      toolName: exec.name,
+      callId: exec.callId,
+      argsDigest: this.argsDigestOf(exec.arguments),
+    })
+  }
+
   /** Whether the original caller signal is currently aborted. */
   private callerCancelled(exec: ToolRunContext): boolean {
     const state = this.cancellationStates.get(exec)
@@ -1558,6 +1635,19 @@ export class ToolRuntime extends Service {
    * @internal
    */
   private async dispatchScheduledExecution(exec: ToolRunContext): Promise<ScheduledToolDispatch> {
+    // PR-2 port: the grant fence. A call that asked consumes its one-shot
+    // grant atomically here, before any around-dispatch wrapper or tool body;
+    // a substituted or missing grant denies the dispatch fail-closed.
+    if (!this.consumeGrant(exec)) {
+      return {
+        kind: 'final-result',
+        result: this.materializeFinalResult({
+          content: [{ type: 'text', text: 'Error: authorization grant missing or no longer matches this execution' }],
+          isError: true,
+          error: { message: 'authorization grant missing or no longer matches this execution' },
+        }),
+      }
+    }
     try {
       const mutableExec = exec as MutableToolRunContext
       const carrier = scopeTarget(this, exec.agent)
@@ -1698,11 +1788,15 @@ export class ToolRuntime extends Service {
       agent: exec.agent,
       toolName: exec.name,
       callId: exec.callId,
+      operationId: exec.operationId,
+      argsDigest: this.argsDigestOf(exec.arguments),
       ...ask.reason !== undefined ? { reason: ask.reason } : {},
       signal: exec.signal,
     })
     switch (outcome) {
-      case 'allowed-once': return { decision: { kind: 'allow' }, approvalCancelled: false }
+      case 'allowed-once':
+        this.grantRequired.add(exec)
+        return { decision: { kind: 'allow' }, approvalCancelled: false }
       case 'rejected': return {
         decision: { kind: 'deny', reason: `the user rejected tool "${exec.name}"` },
         approvalCancelled: false,

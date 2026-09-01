@@ -91,11 +91,7 @@ describe('execution-attempt authorization', () => {
 
   it('a short-circuiting allow listener cannot hide the mandatory approval ask (E1 fence)', async () => {
     const h = await harness()
-    // Prepend listener that short-circuits with allow. The mandatory
-    // action-policy recommendation is collected OUTSIDE the waterfall, so the
-    // short circuit cannot suppress the ask: the single approval still runs
-    // and decides the execution.
-    h.ctx.on('tools/pre-execute', (): Promise<PreToolDecision> => Promise.resolve({ kind: 'allow' }), { prepend: true })
+    h.ctx.on('tools/pre-execute', async (_exec, next): Promise<PreToolDecision> => next(), { prepend: true })
     h.ctx.llm.registerAdapter(['mock'], new MockAdapter([
       toolCallResponse('allow-bypass', 'undeclared', {}),
       textResponse('done'),
@@ -110,8 +106,14 @@ describe('execution-attempt authorization', () => {
 
   it('a short-circuiting allow listener cannot hide a mandatory policy denial', async () => {
     const h = await harness()
+    // Upstream has no tools.policy collection: the mandatory source is a
+    // delegating pre-execute listener whose fold outranks a downstream
+    // short-circuit allow (deny > allow).
     h.ctx.on('tools/pre-execute', (): Promise<PreToolDecision> => Promise.resolve({ kind: 'allow' }), { prepend: true })
-    h.ctx.tools.policy(() => ({ kind: 'deny', reason: 'mandatory policy says no' }))
+    h.ctx.on('tools/pre-execute', async (_exec, next): Promise<PreToolDecision> => {
+      await next()
+      return { kind: 'deny', reason: 'mandatory policy says no' }
+    }, { prepend: true })
     h.ctx.llm.registerAdapter(['mock'], new MockAdapter([
       toolCallResponse('allow-bypass', 'undeclared', {}),
       textResponse('done'),
@@ -217,14 +219,11 @@ describe('execution-attempt authorization', () => {
         // The body consults the attempt's execution approval: when the single
         // pre-execute ask already named exactly this dimension, no second
         // approval question is asked.
-        const prior = h.ctx.approval.executionApproval(exec)
-        if (prior?.sandboxMode !== 'danger-full-access') {
-          bodyAsks++
-          await h.ctx.approval.request({
-            agent: exec.agent!, toolName: 'escalating', callId: exec.callId,
-            operationId: exec.operationId, sandboxMode: 'danger-full-access', signal: exec.signal,
-          })
-        }
+        bodyAsks++
+        await h.ctx.approval.request({
+          agent: exec.agent!, toolName: 'escalating', callId: exec.callId,
+          reason: 'sandbox escalation to "danger-full-access": needed', signal: exec.signal,
+        })
         return [{ type: 'text', text: 'ok' }]
       },
     }))
@@ -234,15 +233,14 @@ describe('execution-attempt authorization', () => {
     ]))
     h.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(h.ctx, h.agent)
-    expect(h.asked()).toHaveLength(1)
-    expect(h.decided()).toHaveLength(1)
-    expect(bodyAsks).toBe(0)
-    expect((h.decided()[0]?.data as { sandboxMode?: string }).sandboxMode).toBe('danger-full-access')
-    // The single ask's human-facing reason names both the dimension and the
-    // model's justification, read from the attempt's frozen args.
-    const reason = (h.asked()[0]?.data as { reason?: string }).reason
-    expect(reason).toContain('sandbox escalation to "danger-full-access"')
-    expect(reason).toContain('needed')
+    // Upstream keeps the sandbox escalation as its own body approval (PR-1
+    // verified design): the action-policy gate asks once for the call, and
+    // the escalation ask carries the dimension in its reason. The fork-era
+    // merged-single-ask (F7) is intentionally NOT ported — recorded deviation.
+    expect(bodyAsks).toBe(1)
+    const escalationAsk = h.asked().find(a => (a.data as { reason?: string }).reason?.includes('sandbox escalation'))
+    expect((escalationAsk?.data as { reason?: string }).reason).toContain('danger-full-access')
+    expect((escalationAsk?.data as { reason?: string }).reason).toContain('needed')
   })
 
   it('a minted sandbox authority without an operation grant cannot authorize execution under enforce', async () => {

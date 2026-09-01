@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
-import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { createToolResultMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ToolExecution, ToolExecutionResult, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import * as ToolsInvariant from '@deepseek-ai/dsh-tools/invariant'
@@ -19,6 +19,7 @@ async function setup(): Promise<Context> {
 
 const execution = (overrides: Partial<ToolExecution> = {}): ToolExecution => ({
   token: Symbol('tool') as ToolExecutionToken,
+  operationId: 'op_1' as never,
   callId: ToolCallId('call-1'),
   name: 'echo',
   arguments: Object.freeze({ text: 'hi' }),
@@ -96,6 +97,7 @@ describe('tool-pipeline invariants', () => {
       rootCallId: ToolCallId('parent'),
       parentCallId: ToolCallId('parent'),
       subCallId: ToolCallId('child'),
+      operationId: 'op_1',
       name: 'echo',
       arguments: {},
     }
@@ -112,6 +114,7 @@ describe('tool-pipeline invariants', () => {
       rootCallId: ToolCallId('rejected-root'),
       parentCallId: ToolCallId('rejected-root'),
       subCallId: ToolCallId('reused-child'),
+      operationId: 'op_1',
       name: 'echo',
       arguments: {},
     })).toThrow(/outside any open turn/)
@@ -121,6 +124,7 @@ describe('tool-pipeline invariants', () => {
       rootCallId: ToolCallId('accepted-root'),
       parentCallId: ToolCallId('accepted-root'),
       subCallId: ToolCallId('reused-child'),
+      operationId: 'op_1',
       name: 'echo',
       arguments: {},
     })).not.toThrow()
@@ -134,6 +138,7 @@ describe('tool-pipeline invariants', () => {
       rootCallId: ToolCallId('root'),
       parentCallId: ToolCallId('root'),
       subCallId: ToolCallId('child'),
+      operationId: 'op_1',
       name: 'run_code',
       arguments: {},
     })
@@ -141,6 +146,7 @@ describe('tool-pipeline invariants', () => {
       rootCallId: ToolCallId('root'),
       parentCallId: ToolCallId('child'),
       subCallId: ToolCallId('grandchild'),
+      operationId: 'op_2',
       name: 'echo',
       arguments: {},
     })
@@ -149,6 +155,7 @@ describe('tool-pipeline invariants', () => {
       rootCallId: ToolCallId('another-root'),
       parentCallId: ToolCallId('child'),
       subCallId: ToolCallId('invalid-grandchild'),
+      operationId: 'op_1',
       name: 'echo',
       arguments: {},
     })).toThrow(/parentCallId child does not belong to rootCallId another-root/)
@@ -164,6 +171,7 @@ describe('tool-pipeline invariants', () => {
       rootCallId: ToolCallId(''),
       parentCallId: ToolCallId('root'),
       subCallId: ToolCallId('child'),
+      operationId: 'op_1',
       name: 'echo',
       arguments: {},
     })).toThrow(/must carry non-empty rootCallId/)
@@ -172,6 +180,7 @@ describe('tool-pipeline invariants', () => {
       rootCallId: ToolCallId('root'),
       parentCallId: ToolCallId('root'),
       subCallId: ToolCallId('child'),
+      operationId: 'op_1',
       name: 'echo',
       arguments: {},
     })
@@ -179,6 +188,7 @@ describe('tool-pipeline invariants', () => {
       rootCallId: ToolCallId('other-root'),
       parentCallId: ToolCallId('other-root'),
       subCallId: ToolCallId('child'),
+      operationId: 'op_1',
       name: 'echo',
       arguments: {},
     })).toThrow(/changed rootCallId for subCallId child/)
@@ -197,6 +207,7 @@ describe('tool-pipeline invariants', () => {
           rootCallId: ToolCallId('root'),
           parentCallId: ToolCallId('root'),
           subCallId: ToolCallId('child'),
+      operationId: 'op_1',
           name: 'echo',
           arguments: {},
         },
@@ -213,6 +224,7 @@ describe('tool-pipeline invariants', () => {
       rootCallId: ToolCallId('parent'),
       parentCallId: ToolCallId('parent'),
       subCallId: ToolCallId('child'),
+      operationId: 'op_1',
       name: 'echo',
       arguments: {},
       isError: false,
@@ -230,10 +242,64 @@ describe('tool-pipeline invariants', () => {
       rootCallId: ToolCallId('parent'),
       parentCallId: ToolCallId('parent'),
       subCallId: ToolCallId('child'),
+      operationId: 'op_1',
       name: 'echo',
       arguments: {},
     })
     await ctx.plugin(InvariantRegistry)
     await expect(ctx.plugin(ToolsInvariant).then(() => undefined)).rejects.toThrow(/outside any open turn/)
+  })
+
+  it('pairs tool calls and results on the same operation id', async () => {
+    const ctx = await setup()
+    const session = ctx.sessions.create()
+    session.append('turn/start', { turn: 1 })
+    session.append('tool/call', {
+      turn: 1, step: 1, callId: ToolCallId('call-1'), name: 'echo', arguments: '{}', operationId: 'op_1' as never,
+    })
+    session.append('tool/result', {
+      turn: 1, step: 1,
+      message: createToolResultMessage({ callId: ToolCallId('call-1'), content: [], isError: false }),
+      operationId: 'op_1' as never,
+    }, { surfaceOp: 'append' })
+    const call = session.events.find(event => event.type === 'tool/call')
+    const result = session.events.find(event => event.type === 'tool/result')
+    expect(call?.data.operationId).toBe(result?.data.operationId)
+  })
+
+  it('pairs approval asked and decided rows on the same operation id', async () => {
+    const ctx = await setup()
+    const session = ctx.sessions.create()
+    session.append('turn/start', { turn: 1 })
+    session.append('approval/asked', { id: 'approval-1' as never, toolName: 'echo', operationId: 'op_1' as never })
+    session.append('approval/decided', { id: 'approval-1' as never, outcome: 'rejected', operationId: 'op_1' as never })
+    const asked = session.events.find(event => event.type === 'approval/asked')
+    const decided = session.events.find(event => event.type === 'approval/decided')
+    expect(asked?.data.operationId).toBe(decided?.data.operationId)
+  })
+
+  it('rejects duplicate operation ids across opening rows in one session', async () => {
+    const ctx = await setup()
+    const session = ctx.sessions.create()
+    session.append('turn/start', { turn: 1 })
+    const call = (callId: string) => ({
+      turn: 1, step: 1, callId: ToolCallId(callId), name: 'echo', arguments: '{}', operationId: 'op_1' as never,
+    })
+    session.append('tool/call', call('call-1'))
+    expect(() => session.append('tool/call', call('call-2'))).toThrow(/duplicate durable operationId "op_1"/)
+  })
+
+  it('carries one operation id from code-dispatch start through settle', async () => {
+    const ctx = await setup()
+    const session = ctx.sessions.create()
+    session.append('turn/start', { turn: 1 })
+    const identity = {
+      rootCallId: ToolCallId('root'), parentCallId: ToolCallId('root'),
+      subCallId: ToolCallId('child'), name: 'echo', operationId: 'op_1' as never,
+    }
+    session.append('tool/code-dispatch-start', { ...identity, arguments: {} })
+    session.append('tool/code-dispatch', { ...identity, arguments: {}, isError: false, content: [] })
+    const rows = session.events.filter(event => event.type === 'tool/code-dispatch-start' || event.type === 'tool/code-dispatch')
+    expect(rows.map(row => row.data.operationId)).toEqual(['op_1', 'op_1'])
   })
 })

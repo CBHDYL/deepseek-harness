@@ -479,6 +479,9 @@ export function createRunCodeTool(registry: ToolRuntime, options: RunCodeBridgeO
         type DispatchOutcome = { isError: true; message: string } | { isError: false; value: JsonValue }
         const scheduler = registry[TOOL_RUNTIME_SCHEDULER]
         const outcome = await new Promise<DispatchOutcome>((resolve, reject) => {
+          // The sub-dispatch's own execution identity, captured at prepare for
+          // the durable rows below (PR-2 port).
+          let subOperationId = ''
           // Set by the dispatch stage (or start() for a pre-settled result): what commit() finalizes in submission order.
           let parked:
             | { kind: 'post-result' | 'final-result'; exec: ToolRunContext; result: ToolExecutionResult }
@@ -510,6 +513,7 @@ export function createRunCodeTool(registry: ToolRuntime, options: RunCodeBridgeO
                 rootCallId: exec.rootCallId,
                 parentCallId: exec.callId,
                 subCallId,
+                operationId: subOperationId,
                 name,
                 // The SIBLING parse of the dispatched value: byte-identical JSON,
                 // but a separate object — a tool mutating its args cannot desync
@@ -535,6 +539,7 @@ export function createRunCodeTool(registry: ToolRuntime, options: RunCodeBridgeO
                 rootCallId: exec.rootCallId,
                 parentCallId: exec.callId,
                 subCallId,
+                operationId: subOperationId,
                 name,
                 arguments: normalized.logged,
               })
@@ -542,6 +547,7 @@ export function createRunCodeTool(registry: ToolRuntime, options: RunCodeBridgeO
               // pre-execute waits for this resolution, as under the native
               // scheduler. Only the launched body below overlaps.
               const prepared = await scheduler.prepare(input)
+              subOperationId = prepared.exec.operationId
               if (prepared.kind === 'dispatch') {
                 this.flight = scheduler.dispatch(prepared.exec).then((dispatchOutcome) => {
                   parked = { kind: dispatchOutcome.kind, exec: prepared.exec, result: dispatchOutcome.result }

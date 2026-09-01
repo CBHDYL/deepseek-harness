@@ -159,7 +159,13 @@ export function apply(ctx: Context, config: AcpConfig): void {
     return record.drainUpdates().then(() => {
       const params: RequestPermissionRequest = {
         sessionId: record.agent.session.id,
-        toolCall: { toolCallId: callId },
+        // The ask reason (action-policy gate, escalation dimension +
+        // justification) rides the tool-call title so the ACP human payload
+        // carries WHY the permission is requested (PR-2 port).
+        toolCall: {
+          toolCallId: callId,
+          ...request.reason !== undefined ? { title: request.reason } : {},
+        },
         options: [
           { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
           { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },

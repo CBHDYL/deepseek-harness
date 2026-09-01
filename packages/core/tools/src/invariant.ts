@@ -53,7 +53,7 @@ const install: InvariantInstaller = Object.assign((ctx: Context, fail: Invariant
         : undefined
   const validateOperationId = (session: Session, operationId: string | undefined): void => {
     if (operationId === undefined) return
-    const seen = seenOperationIds.get(session) as Set<string>
+    const seen = seenOperationIds.get(session) ?? seedOperationIds(session).seen
     if (seen.has(operationId)) fail(`duplicate durable operationId ${JSON.stringify(operationId)} within one session log`)
     seen.add(operationId)
   }
@@ -68,7 +68,7 @@ const install: InvariantInstaller = Object.assign((ctx: Context, fail: Invariant
         pending.add(event.data.operationId)
       }
       if (event.type === 'tool/result' && event.data.operationId !== undefined) pending.delete(event.data.operationId)
-      if (event.type === 'tool/code-dispatch' && event.data.operationId !== undefined) pending.delete(event.data.operationId)
+      if (event.type === 'tool/code-dispatch') pending.delete(event.data.operationId)
     }
     pendingAllowed.set(session, pending)
     seenOperationIds.set(session, seen)
