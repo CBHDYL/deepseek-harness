@@ -120,14 +120,13 @@ export class SandboxedFileSystem extends LocalFileSystem {
    * and the escalation hint.
    */
   private async checkedTarget(target: FsTarget, sandboxPolicy?: SandboxExecutionPolicy): Promise<FsTarget> {
-    // Provenance boundary: a caller-supplied policy object must be minted by
-    // the policy owner. A forged object falls back to the owner's default so a
-    // partially-trusted plugin cannot self-supply a wider mode.
-    if (sandboxPolicy !== undefined && !this.ctx.sandboxPolicy.isMinted(sandboxPolicy)) {
-      this.ctx.logger.warn('fs-sandbox: ignoring a caller-supplied sandbox policy that was not minted by ctx.sandboxPolicy')
-      sandboxPolicy = undefined
-    }
-    const policy = sandboxPolicy ?? this.ctx.sandboxPolicy.resolve()
+    // Provenance boundary: only a policy minted by ctx.sandboxPolicy may
+    // select a mode; a caller-constructed object re-resolves to the
+    // deployment default (fail-closed, never a wider mode).
+    const supplied = sandboxPolicy
+    const policy = supplied === undefined || this.ctx.sandboxPolicy.isMinted(supplied)
+      ? supplied ?? this.ctx.sandboxPolicy.resolve()
+      : (this.ctx.logger.warn('fs-sandbox: ignoring a caller-supplied unminted sandbox policy; re-resolving the deployment default'), this.ctx.sandboxPolicy.resolve())
     const { mode } = policy
     if (mode === 'danger-full-access') return target
     if (mode === 'read-only') {

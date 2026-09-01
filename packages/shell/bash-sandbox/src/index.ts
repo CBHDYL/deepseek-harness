@@ -16,10 +16,10 @@ import type {
   ConfinedSandboxMode,
   RunnerFailureRule,
   SandboxEnforcement,
+  SandboxExecutionPolicy,
   SandboxMode,
   SandboxPolicy,
 } from '@deepseek-ai/dsh-sandbox'
-import { trustedAuthority } from '@deepseek-ai/dsh-sandbox-policy'
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import { LocalBashExecutor } from '@deepseek-ai/dsh-bash-local'
 import type { Config as LocalConfig } from '@deepseek-ai/dsh-bash-local'
@@ -79,23 +79,30 @@ export class SandboxBashExecutor extends LocalBashExecutor {
   /**
    * Stamp a complete per-call policy onto the spec. Tool calls supply the
    * calling session's resolved mode and root; lower-level callers fall back to
-   * the deployment policy.
+   * the deployment policy. A caller-supplied policy must be minted by
+   * `ctx.sandboxPolicy`; a forged object is ignored and re-resolves to the
+   * deployment default (fail-closed).
    */
   override resolve(request: ShellExecRequest): ShellExecSpec {
-    // Provenance boundary: a caller-supplied policy object must be minted by
-    // the policy owner; a forged object falls back to the owner's default.
-    const sandboxPolicy = trustedAuthority(
-      request.sandboxPolicy, this.ctx.sandboxPolicy, 'bash-sandbox', message => this.ctx.logger.warn(message),
-    ) ?? this.ctx.sandboxPolicy.resolve()
-    return { ...super.resolve(request), sandboxPolicy }
+    return { ...super.resolve(request), sandboxPolicy: this.trustedAuthority(request.sandboxPolicy) }
+  }
+
+  /**
+   * Accept only a minted authority, re-resolving to the deployment default
+   * otherwise. Checked at resolve AND at every consumption point so a spec
+   * swapped after resolve cannot smuggle a constructed policy into run/start.
+   * @param policy - candidate authority stamped on the spec.
+   * @returns the minted policy, or the deployment default.
+   */
+  private trustedAuthority(policy: SandboxExecutionPolicy | undefined): SandboxExecutionPolicy {
+    if (policy === undefined) return this.ctx.sandboxPolicy.resolve()
+    if (this.ctx.sandboxPolicy.isMinted(policy)) return policy
+    this.ctx.logger.warn('bash-sandbox: ignoring a caller-supplied unminted sandbox policy; re-resolving the deployment default')
+    return this.ctx.sandboxPolicy.resolve()
   }
 
   override async run(spec: ShellExecSpec): Promise<ShellRunResult> {
-    // Re-check at the execution consumption point: a spec whose policy was
-    // substituted after resolve() must not execute under the forged fields.
-    const policy = trustedAuthority(
-      spec.sandboxPolicy, this.ctx.sandboxPolicy, 'bash-sandbox', message => this.ctx.logger.warn(message),
-    ) ?? this.ctx.sandboxPolicy.resolve()
+    const policy = this.trustedAuthority(spec.sandboxPolicy)
     const { mode } = policy
     if (mode === 'danger-full-access') {
       const result = await super.run(spec)
@@ -123,10 +130,7 @@ export class SandboxBashExecutor extends LocalBashExecutor {
   }
 
   override start(spec: ShellExecSpec): ShellProcess {
-    // Re-check at the execution consumption point (see run()).
-    const policy = trustedAuthority(
-      spec.sandboxPolicy, this.ctx.sandboxPolicy, 'bash-sandbox', message => this.ctx.logger.warn(message),
-    ) ?? this.ctx.sandboxPolicy.resolve()
+    const policy = this.trustedAuthority(spec.sandboxPolicy)
     const { mode } = policy
     if (mode === 'danger-full-access') return super.start(spec)
     // Once startArgv returns, install facts synchronously; promise settlement

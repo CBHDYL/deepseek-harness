@@ -33,6 +33,31 @@ Depends on: `Stream` (`@agentclientprotocol/sdk`)
 
 Source: [`packages/acp/acp/src/index.ts:75`](../packages/acp/acp/src/index.ts)
 
+<a id="deepseek-aidsh-action-policy-guard"></a>
+
+## `@deepseek-ai/dsh-action-policy-guard`
+
+```ts config-catalog
+/** Plugin config, validated fail-loud in `apply`. */
+export interface Config {
+  /**
+   * `observe` (default) logs ungoverned side-effectful calls and delegates;
+   * `enforce` requires an `allowed-once` approval for every side-effectful
+   * call before it runs (fail-closed when no approval service is composed).
+   * Validated against `observe`/`enforce` at plugin load.
+   */
+  mode?: string
+  /**
+   * Treat tools without a declared `effects` as side-effectful (default
+   * true). `false` restricts the gate to tools that explicitly declare
+   * `effects: 'side-effectful'`.
+   */
+  treatUndeclaredAsSideEffectful?: boolean
+}
+```
+
+Source: [`packages/guard/action-policy-guard/src/index.ts:28`](../packages/guard/action-policy-guard/src/index.ts)
+
 <a id="deepseek-aidsh-agent-default-model"></a>
 
 ## `@deepseek-ai/dsh-agent-default-model`
@@ -95,6 +120,35 @@ export interface Config {
    * omission defaults to {@link DEFAULT_MAX_PARALLEL_TOOL_CALLS}.
    */
   maxParallelToolCalls?: number
+  /**
+   * Hard cap on model-request attempts per step, including retries. A faulty
+   * or hostile `agent/request-error` listener cannot retry forever; the step
+   * fails with `REQUEST_ATTEMPTS_EXCEEDED` at the cap. Default 16.
+   */
+  maxRequestAttempts?: number
+  /**
+   * Hard byte ceiling (UTF-8) on the final model-facing request
+   * representation. A request whose measured representation EXCEEDS it is
+   * never dispatched (strict predicate: exactly at the ceiling dispatches) —
+   * the normative hard boundary. Default
+   * {@link DEFAULT_MAX_REQUEST_BYTES}.
+   */
+  maxRequestBytes?: number
+  /**
+   * Optional earlier trigger: reject when the fixed-density heuristic token
+   * estimate of the final request exceeds this. Unset by default (the
+   * estimate is still computed and reported). The estimate is an ADVISORY,
+   * provider-agnostic heuristic (accepted design deviation, PR-6 F2) — it is
+   * never a provider token guarantee and never the only safety boundary;
+   * {@link Config.maxRequestBytes} is the normative enforcement.
+   */
+  maxEstimateTokens?: number | undefined
+  /**
+   * Recovery retries per step when a prompt-budget rejection is answered by
+   * an `agent/request-budget` listener (compaction). Default
+   * {@link DEFAULT_BUDGET_COMPACTION_RETRIES}.
+   */
+  budgetCompactionRetries?: number
   /** Agents created or resumed at plugin startup. */
   agents: (AgentOptions & {
     /** Stable config label used in logs and as the fresh combined-id prefix. */
@@ -111,7 +165,7 @@ export interface Config {
 
 Depends on: [`AgentOptions`](subsystems/core.md) · [`SessionId`](subsystems/core.md)
 
-Source: [`packages/core/agent-loop/src/index.ts:311`](../packages/core/agent-loop/src/index.ts)
+Source: [`packages/core/agent-loop/src/index.ts:359`](../packages/core/agent-loop/src/index.ts)
 
 <a id="deepseek-aidsh-agent-presets"></a>
 
@@ -406,6 +460,14 @@ export interface BasicCompactionConfig extends CompactionPolicyConfig {
   modelPolicies?: ModelCompactPolicyConfig[]
   /** Enable automatic step-boundary pressure and overflow-recovery listeners. Defaults to `true`. */
   auto?: boolean
+  /**
+   * Hard UTF-8 byte allowance on one summarizer request's model-facing
+   * representation (messages + system + tool schemas). Defaults to
+   * {@link DEFAULT_SUMMARIZATION_MAX_BYTES}. This is the compaction reserve
+   * that bounds the auxiliary dispatch: a region that does not fit is refused
+   * before any provider dispatch and fails the compaction transaction typed.
+   */
+  summarizationMaxBytes?: number
 }
 
 /** Policy fields shared by the default policy and exact model overrides. */
@@ -512,6 +574,35 @@ export interface Config {
 ```
 
 Source: [`packages/e2b/e2b/src/index.ts:43`](../packages/e2b/e2b/src/index.ts)
+
+<a id="deepseek-aidsh-escalation-hider"></a>
+
+## `@deepseek-ai/dsh-escalation-hider`
+
+```ts config-catalog
+/**
+ * Plugin config, validated by the same-named schemastery schema plus the
+ * load-time checks in `apply` (misconfiguration fails loud).
+ */
+export interface Config {
+  /**
+   * Hide escalation parameters when the effective sandbox mode is at least
+   * this wide (default `danger-full-access` — the widest mode, where escalation
+   * is never a strict widening). Validated against {@link SANDBOX_MODES} at
+   * plugin load.
+   */
+  hideAtOrAboveMode?: string
+  /**
+   * Hide when the session's approval policy is `never` (escalation can never be
+   * approved). Default true.
+   */
+  hideWhenApprovalNever?: boolean
+  /** Tool-name wildcard patterns whose escalation parameters are hidden. */
+  tools?: string[]
+}
+```
+
+Source: [`packages/guard/escalation-hider/src/index.ts:47`](../packages/guard/escalation-hider/src/index.ts)
 
 <a id="deepseek-aidsh-experimental-agent-team"></a>
 
@@ -774,10 +865,19 @@ export interface Config {
   defaultTimeoutMs?: number
   /** Character cap for the `hook/result` event's persisted stderr summary. */
   stderrSummaryMaxChars?: number
+  /**
+   * Hard budget of Stop-hook forced continuations within ONE turn. A blocking
+   * Stop hook steers another step each time it denies; without a cap an
+   * unconditional hook force-continues every step until it self-limits (or
+   * the budget/cost dies first). Once the budget is exhausted the turn is
+   * allowed to stop, and `stop_hook_active` is reported `true` so a
+   * cooperative hook can see the ceiling. Default 8.
+   */
+  stopContinuationLimit?: number
 }
 ```
 
-Source: [`packages/hooks/hooks-codex/src/index.ts:45`](../packages/hooks/hooks-codex/src/index.ts)
+Source: [`packages/hooks/hooks-codex/src/index.ts:48`](../packages/hooks/hooks-codex/src/index.ts)
 
 <a id="deepseek-aidsh-host-directory-picker-browse"></a>
 
@@ -1375,6 +1475,16 @@ export interface StdioConfig {
   cwd: string
   /** Per-tool-call timeout in milliseconds. */
   toolCallTimeoutMs: number
+  /** Maximum tools/list pages to drain before aborting (default 50). */
+  maxSyncPages?: number
+  /** Maximum tools per server before aborting the sync (default 2000). */
+  maxToolsPerServer?: number
+  /** Whole-sync deadline in ms (default 30000). */
+  syncTimeoutMs?: number
+  /** Maximum UTF-8 bytes of one tool's description before exclusion (default 4096). */
+  maxToolDescriptionBytes?: number
+  /** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion (default 65536). */
+  maxToolSchemaBytes?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -1397,6 +1507,16 @@ export interface StreamableHttpConfig {
   headers: Record<string, string>
   /** Per-tool-call timeout in milliseconds. */
   toolCallTimeoutMs: number
+  /** Maximum tools/list pages to drain before aborting (default 50). */
+  maxSyncPages?: number
+  /** Maximum tools per server before aborting the sync (default 2000). */
+  maxToolsPerServer?: number
+  /** Whole-sync deadline in ms (default 30000). */
+  syncTimeoutMs?: number
+  /** Maximum UTF-8 bytes of one tool's description before exclusion (default 4096). */
+  maxToolDescriptionBytes?: number
+  /** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion (default 65536). */
+  maxToolSchemaBytes?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -1416,7 +1536,7 @@ export interface ReconnectConfig {
 }
 ```
 
-Source: [`packages/mcp/mcp-client/src/index.ts:98`](../packages/mcp/mcp-client/src/index.ts)
+Source: [`packages/mcp/mcp-client/src/index.ts:139`](../packages/mcp/mcp-client/src/index.ts)
 
 <a id="deepseek-aidsh-message-feedback"></a>
 
@@ -1433,6 +1553,32 @@ export interface Config {
 ```
 
 Source: [`packages/feedback/message-feedback/src/index.ts:49`](../packages/feedback/message-feedback/src/index.ts)
+
+<a id="deepseek-aidsh-output-repetition-guard"></a>
+
+## `@deepseek-ai/dsh-output-repetition-guard`
+
+```ts config-catalog
+/** Detector options, validated fail-loud in `apply` and at construction. */
+export interface Config {
+  /** Minimum section length in characters before a repeat is reportable (default 400). */
+  minSectionChars?: number
+  /** Minimum occurrence count of the section before a repeat is reportable (default 2). */
+  minRepeat?: number
+  /** Maximum detections emitted per agent step (default 1). */
+  emitLimit?: number
+  /**
+   * When a repeat is detected, cancel the streaming agent turn (cause
+   * `{kind:'hook'}`) so the degenerate output stops being generated live; the
+   * already-streamed prefix is preserved as an interrupted assistant message.
+   * Default false — telemetry only, so the safe order (observe first) is the
+   * default.
+   */
+  abortStream?: boolean
+}
+```
+
+Source: [`packages/guard/output-repetition-guard/src/index.ts:44`](../packages/guard/output-repetition-guard/src/index.ts)
 
 <a id="deepseek-aidsh-permission-presets"></a>
 
@@ -1613,6 +1759,14 @@ export interface Config {
    * always compares the FULL canonical string).
    */
   argumentsPreviewChars?: number
+  /**
+   * Optional circuit breaker: after this many consecutive identical calls —
+   * or consecutive calls failing with the same failure fingerprint, even when
+   * arguments differ — the guard DENIES the call before dispatch (identical
+   * arguments) or blocks its result with breaker feedback (same-failure run).
+   * Default undefined = advisory reminders only (fully backward compatible).
+   */
+  vetoAt?: number
 }
 ```
 
@@ -1668,6 +1822,12 @@ export interface Config {
   /** File-sandbox mode a session starts from (default: `read-only`). */
   mode?: SandboxMode
   /**
+   * Hard deployment ceiling (default: `danger-full-access`, preserving the
+   * historical semantics where an approved escalation may reach the widest
+   * mode). No session override or approved escalation resolves above it.
+   */
+  maxMode?: SandboxMode
+  /**
    * Fallback root for agentless calls and sessions without a cwd (default:
    * `process.cwd()`). Normal agent calls use their session cwd instead.
    */
@@ -1677,7 +1837,7 @@ export interface Config {
 
 Depends on: [`SandboxMode`](subsystems/sandbox.md)
 
-Source: [`packages/sandbox/sandbox-policy/src/index.ts:70`](../packages/sandbox/sandbox-policy/src/index.ts)
+Source: [`packages/sandbox/sandbox-policy/src/index.ts:74`](../packages/sandbox/sandbox-policy/src/index.ts)
 
 <a id="deepseek-aidsh-sdk-app"></a>
 
@@ -1927,7 +2087,7 @@ export enum SessionTelemetryMode {
 
 Depends on: `BatchLogRecordProcessorOptions` (`@opentelemetry/sdk-logs`) · `OTLPExporterNodeConfigBase` (`@opentelemetry/otlp-exporter-base`)
 
-Source: [`packages/session/session-telemetry-otel/src/index.ts:91`](../packages/session/session-telemetry-otel/src/index.ts)
+Source: [`packages/session/session-telemetry-otel/src/index.ts:92`](../packages/session/session-telemetry-otel/src/index.ts)
 
 <a id="deepseek-aidsh-session-title"></a>
 
@@ -2585,6 +2745,26 @@ export interface Config {
 
 Source: [`packages/shell/tool-bash-persistent/src/index.ts:432`](../packages/shell/tool-bash-persistent/src/index.ts)
 
+<a id="deepseek-aidsh-tool-browser"></a>
+
+## `@deepseek-ai/dsh-tool-browser`
+
+Requires: `tools` · `systemPrompt`
+
+```ts config-catalog
+/** Plugin config. */
+export interface Config {
+  /** Directory for screenshots (default: OS temp dir). */
+  screenshotDir?: string
+  /** `goto` navigation timeout in ms (default 30000). */
+  gotoTimeoutMs?: number
+  /** CSS selector action (`click`/`fill`/`read_text`) timeout in ms (default 10000). */
+  actionTimeoutMs?: number
+}
+```
+
+Source: [`packages/extensions/tool-browser/src/index.ts:26`](../packages/extensions/tool-browser/src/index.ts)
+
 <a id="deepseek-aidsh-tool-fs"></a>
 
 ## `@deepseek-ai/dsh-tool-fs`
@@ -2605,7 +2785,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/fs/tool-fs/src/index.ts:25`](../packages/fs/tool-fs/src/index.ts)
+Source: [`packages/fs/tool-fs/src/index.ts:26`](../packages/fs/tool-fs/src/index.ts)
 
 <a id="deepseek-aidsh-tool-fs-search"></a>
 
@@ -2771,6 +2951,22 @@ export interface Config {
 ```
 
 Source: [`packages/workflow/tool-ralph/src/index.ts:21`](../packages/workflow/tool-ralph/src/index.ts)
+
+<a id="deepseek-aidsh-tool-service"></a>
+
+## `@deepseek-ai/dsh-tool-service`
+
+Requires: `tools` · `systemPrompt`
+
+```ts config-catalog
+/** Plugin config; currently no tunables, kept for forward compatibility. */
+export interface Config {
+  /** Maximum log lines returned by a `logs` call (default 200). */
+  maxLogLines?: number
+}
+```
+
+Source: [`packages/extensions/tool-service/src/index.ts:23`](../packages/extensions/tool-service/src/index.ts)
 
 <a id="deepseek-aidsh-tool-session-query"></a>
 
@@ -3152,6 +3348,11 @@ export interface Config {
   maxRedirects?: number
   /** `User-Agent` header sent on every request. */
   userAgent?: string
+  /**
+   * Resolve every hostname and refuse loopback/private/link-local/multicast
+   * targets (SSRF protection). Default true.
+   */
+  blockPrivateAddresses?: boolean
 }
 ```
 

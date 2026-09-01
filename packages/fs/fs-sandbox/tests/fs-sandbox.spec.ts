@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join, parse } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { FsError, FsTargetKey } from '@deepseek-ai/dsh-fs'
@@ -42,7 +42,10 @@ beforeEach(async () => {
   // would be legitimately writable. Sibling dirs under HOME are outside every
   // grant, so containment failures are real denials. (The bwrap e2e roots its
   // workspaces under HOME for the same reason.)
-  base = await mkdtemp(join(homedir(), '.dsh-fssbx-'))
+  // Repo-local tmp keeps the same containment semantics as a HOME base (neither
+  // is inside the workspace grant) while working under a confined test host.
+  await mkdir(join(process.cwd(), 'tmp'), { recursive: true })
+  base = await mkdtemp(join(process.cwd(), 'tmp', 'fssbx-'))
   workspace = join(base, 'ws')
   outside = join(base, 'out')
   await mkdir(workspace)
@@ -202,7 +205,7 @@ describe('the per-call policy override (escalation)', () => {
     await boot('read-only')
     const path = join(workspace, 'escalated.txt')
     // Default read-only would deny; the per-call workspace-write policy allows it (contained).
-    await fs.writeText(await target(path), 'granted', undefined, undefined, { mode: 'workspace-write', workspaceRoot: workspace })
+    await fs.writeText(await target(path), 'granted', undefined, undefined, ctx.sandboxPolicy.resolve({ mode: 'workspace-write' }))
     expect(await readFile(path, 'utf8')).toBe('granted')
     // A neighboring plain call still runs under the read-only default.
     await expect(fs.writeText(await target(join(workspace, 'plain.txt')), 'x'))
@@ -212,7 +215,7 @@ describe('the per-call policy override (escalation)', () => {
   it('a danger-full-access stamp bypasses the fence for that call', async () => {
     await boot('read-only')
     const path = join(outside, 'granted-full.txt')
-    await fs.writeText(await target(path), 'full', undefined, undefined, { mode: 'danger-full-access', workspaceRoot: workspace })
+    await fs.writeText(await target(path), 'full', undefined, undefined, ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }))
     expect(await readFile(path, 'utf8')).toBe('full')
   })
 })
@@ -235,5 +238,28 @@ describe('FsError identity', () => {
     const error = await fs.writeText(await target(join(workspace, 'x.txt')), 'x').catch((e: unknown) => e)
     expect(error).toBeInstanceOf(FsError)
     expect((error as FsError).code).toBe('FS_SANDBOX_DENIED')
+  })
+})
+
+describe('PR-1 port: authority provenance', () => {
+  beforeEach(() => boot('workspace-write'))
+
+  it('ignores a forged per-call policy and confines by the deployment default', async () => {
+    const forged = { mode: 'danger-full-access' as const, workspaceRoot: workspace }
+    const path = join(outside, 'forged.txt')
+    await expect(fs.writeText(await target(path), 'x', undefined, undefined, forged))
+      .rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' })
+    expect(existsSync(path)).toBe(false)
+    // The legal standing mode still works: a workspace-internal write succeeds.
+    await fs.writeText(await target(join(workspace, 'legal.txt')), 'ok')
+    expect(existsSync(join(workspace, 'legal.txt'))).toBe(true)
+  })
+
+  it('honors an owner-minted escalated policy', async () => {
+    const minted = ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' })
+    expect(ctx.sandboxPolicy.isMinted(minted)).toBe(true)
+    const path = join(outside, 'minted.txt')
+    await fs.writeText(await target(path), 'x', undefined, undefined, minted)
+    expect(existsSync(path)).toBe(true)
   })
 })

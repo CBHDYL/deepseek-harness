@@ -62,6 +62,44 @@ describe('SandboxPolicyService', () => {
     })
   })
 
+  it('PR-1 port: caps an approved escalation at the deployment maxMode ceiling', async () => {
+    const ctx = await mounted({ mode: 'workspace-write', workspaceRoot: '/fallback', maxMode: 'workspace-write' })
+    const active = session('sess-capped', '/projects/capped')
+    expect(ctx.sandboxPolicy.resolve({ session: active, mode: 'danger-full-access' })).toEqual({
+      mode: 'workspace-write',
+      workspaceRoot: resolve('/projects/capped'),
+      sessionId: 'sess-capped',
+    })
+  })
+
+  it('PR-1 port: caps a session override at the deployment maxMode ceiling', async () => {
+    const ctx = await mounted({ mode: 'read-only', workspaceRoot: '/fallback', maxMode: 'workspace-write' })
+    const active = session('sess-capped-override', '/projects/override')
+    setSandboxMode(active, 'danger-full-access')
+    expect(ctx.sandboxPolicy.resolve({ session: active })).toEqual({
+      mode: 'workspace-write',
+      workspaceRoot: resolve('/projects/override'),
+      sessionId: 'sess-capped-override',
+    })
+  })
+
+  it('PR-1 port: fails load when the deployment default exceeds the maxMode ceiling', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionProjectionRegistry)
+    await expect(ctx.plugin(SandboxPolicyService, { mode: 'danger-full-access', maxMode: 'workspace-write' }))
+      .rejects.toThrow(/exceeds the configured maxMode ceiling/)
+  })
+
+  it('PR-1 port: mints every resolved policy so the enforcing backends can verify provenance', async () => {
+    const ctx = await mounted({ mode: 'workspace-write', workspaceRoot: '/fallback' })
+    const resolved = ctx.sandboxPolicy.resolve()
+    expect(ctx.sandboxPolicy.isMinted(resolved)).toBe(true)
+    expect(ctx.sandboxPolicy.isMinted({ mode: 'danger-full-access', workspaceRoot: '/fallback' })).toBe(false)
+    expect(ctx.sandboxPolicy.isMinted({ ...resolved })).toBe(false)
+    expect(ctx.sandboxPolicy.isMinted(null)).toBe(false)
+    expect(ctx.sandboxPolicy.isMinted('danger-full-access')).toBe(false)
+  })
+
   it('resolves each session mode and cwd together without changing the fallback', async () => {
     const ctx = await mounted({ mode: 'workspace-write', workspaceRoot: '/fallback' })
     const first = session('sess-first', '/projects/first')
@@ -107,35 +145,6 @@ describe('SandboxPolicyService', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
-  })
-
-  it('caps an approved escalation at the deployment maxMode ceiling', async () => {
-    const ctx = await mounted({ mode: 'workspace-write', workspaceRoot: '/fallback', maxMode: 'workspace-write' })
-    const active = session('sess-capped', '/projects/capped')
-    expect(ctx.sandboxPolicy.resolve({ session: active, mode: 'danger-full-access' })).toEqual({
-      mode: 'workspace-write',
-      workspaceRoot: resolve('/projects/capped'),
-      sessionId: 'sess-capped',
-    })
-  })
-
-  it('caps a session override at the deployment maxMode ceiling', async () => {
-    const ctx = await mounted({ mode: 'read-only', workspaceRoot: '/fallback', maxMode: 'workspace-write' })
-    const active = session('sess-capped-override', '/projects/override')
-    setSandboxMode(active, 'danger-full-access')
-    expect(ctx.sandboxPolicy.resolve({ session: active })).toEqual({
-      mode: 'workspace-write',
-      workspaceRoot: resolve('/projects/override'),
-      sessionId: 'sess-capped-override',
-    })
-  })
-
-  it('mints every resolved policy so the enforcing backends can verify provenance', async () => {
-    const ctx = await mounted({ mode: 'workspace-write', workspaceRoot: '/fallback' })
-    const resolved = ctx.sandboxPolicy.resolve()
-    expect(ctx.sandboxPolicy.isMinted(resolved)).toBe(true)
-    expect(ctx.sandboxPolicy.isMinted({ mode: 'danger-full-access', workspaceRoot: '/fallback' })).toBe(false)
-    expect(ctx.sandboxPolicy.isMinted({ ...resolved })).toBe(false)
   })
 
   it('lets an approved mode outrank the session mode while retaining its root', async () => {

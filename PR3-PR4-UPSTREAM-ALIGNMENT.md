@@ -121,6 +121,11 @@ The single-flight tail wraps the existing `write()` entry inside `session-projec
 
 ## DECISION
 
+**PR-3 direction decision (human-decided 2026-08-31):**
+- (a) Keep upstream fail-loud semantics for committed-region corruption; do NOT port the old E13 recovery-with-loss behavior. "Refusing corrupted history" satisfies the "no silent truncation" objective (upstream's refusal is the accepted, more conservative security semantics).
+- (b) Keep the upstream two-step `commitRepair` seam; do NOT re-introduce rename-replace atomic replacement this round. The crash window across the truncate+append sequence is recorded as a residual risk / future hardening item: "repair persistence is durable but not crash-atomic across the full truncate+append sequence" — re-evaluate only after the upstream persistence format stabilizes.
+- Do NOT touch format-migration / seq-range encoding.
+
 PR-3: **ADAPT**
 Upstream already owns: torn-tail repair (persisted, two-step), fail-loud committed corruption (closes E27's silent-shortening), version refusal, and the coordinator/backend seam split. The port adds, on the upstream seam: the `SessionInspection` integrity provenance (complete or drop the baseline's auto-merged type), and the durable `session/repaired` diagnostic on the repair path. Two open direction choices for the human (recommendation in parentheses): (a) middle corruption — keep upstream fail-loud (recommended; E13 recovery is then not ported); (b) atomicity — accept the upstream two-step seam and document the crash window (recommended) instead of re-introducing rename-replace. SQLite changes are obsolete (backend removed).
 
