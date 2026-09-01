@@ -659,6 +659,11 @@ describe('tool-call scheduler: failure quiescence', () => {
     // The interrupted call is marked outcome-unknown, not silently missing.
     const interrupted = results.find(r => r.data.message.source.callId === CallId('c1'))
     expect(interrupted?.data.error?.code).toBe('TOOL_OUTCOME_UNKNOWN')
+    // The failure-path terminal disposition still closes the operation audit
+    // chain: every started call's result carries its call's operation id.
+    const interruptedCall = calls.find(c => c.data.callId === CallId('c1'))
+    expect(interruptedCall?.data.operationId).toBeTruthy()
+    expect(interrupted?.data.operationId).toBe(interruptedCall?.data.operationId)
   })
 
   it('stops new dispatches and drains started bodies before surfacing the first failure', async () => {

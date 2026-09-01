@@ -1,9 +1,13 @@
 import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
-import BasicCompactionEngine from '@deepseek-ai/dsh-compaction-basic'
+import BasicCompactionEngine, { DEFAULT_SUMMARIZATION_MAX_BYTES } from '@deepseek-ai/dsh-compaction-basic'
 import type { BasicCompactionConfig } from '@deepseek-ai/dsh-compaction-basic'
 import { selectCompactableRange } from '@deepseek-ai/dsh-compaction-basic/src/region.ts'
+import {
+  COMPACTION_BUDGET_EXCEEDED_CODE,
+  summarizeWithLlm,
+} from '@deepseek-ai/dsh-compaction-basic/src/summarizer.ts'
 import type { SummarizationInput, SummaryResult } from '@deepseek-ai/dsh-compaction-basic/src/summarizer.ts'
 import { CompactionId, toolPairingBalancedAfter, toolPairingBalancedBefore } from '@deepseek-ai/dsh-compaction'
 import {
@@ -294,6 +298,7 @@ describe('compact configuration and defaults', () => {
       summarizationProvider: '',
       summarizationModel: '',
       maxTokens: 8192,
+      summarizationMaxBytes: DEFAULT_SUMMARIZATION_MAX_BYTES,
       compactionRetries: 1,
       maxOverflowRetries: 1,
       modelPolicies: [],
@@ -1458,6 +1463,20 @@ describe('automatic listener and loader composition', () => {
     ).then(action => action?.kind === 'retry')
   }
 
+  /** Dispatch the PR-6 prompt-budget recovery event; resolves the resulting action. */
+  function recoverBudget(
+    ctx: Context,
+    owner: Agent,
+    next: () => Promise<{ kind: 'retry' } | { kind: 'reject' }> = () => Promise.resolve({ kind: 'reject' }),
+  ): Promise<{ kind: 'retry' } | { kind: 'reject' }> {
+    const turn = owner.session.events.findLast(event => event.type === 'turn/start')?.data.turn ?? 1
+    return agentEvents(ctx, owner).waterfall(
+      'agent/request-budget',
+      { turn, step: 1, provider: 'test', bytes: 999_999_999, estimateTokens: 999_999_999, signal: SIGNAL },
+      next,
+    )
+  }
+
   function overflow(message = 'provider overflow'): Error & { code: string } {
     return Object.assign(new Error(message), { code: CONTEXT_WINDOW_EXCEEDED_CODE })
   }
@@ -1568,6 +1587,162 @@ describe('automatic listener and loader composition', () => {
     expect(session.surface.replaceGeneration).toBe(beforeGeneration + 1)
     expect(session.events.some(event => event.type === 'compaction/summary')).toBe(true)
     expect(session.surface.nodes).toContain(retainedSeq)
+  })
+
+  it('PR-6: the prompt-budget recovery listener force-compacts and retries only after the surface changed', async () => {
+    const ctx = createContext(10_000)
+    const compact = new TestCompactionEngine(ctx, {
+      thresholdRatio: 1,
+      retainTokens: 900,
+    })
+    const session = conversation(3)
+    const beforeGeneration = session.surface.replaceGeneration
+
+    expect(await recoverBudget(ctx, agent(session, 'unconfigured-agent-fallback'))).toEqual({ kind: 'retry' })
+    expect(session.surface.replaceGeneration).toBe(beforeGeneration + 1)
+    expect(session.events.some(event => event.type === 'compaction/summary')).toBe(true)
+    expect(compact.calls).toHaveLength(1)
+  })
+
+  it('PR-6: a budget recovery that cannot reduce the surface delegates to the reject default (no retry)', async () => {
+    const ctx = createContext(10_000)
+    void new TestCompactionEngine(ctx, {
+      thresholdRatio: 1,
+      retainTokens: 900,
+    })
+    const session = conversation(1) // nothing useful to compact
+    const beforeGeneration = session.surface.replaceGeneration
+
+    expect(await recoverBudget(ctx, agent(session, 'unconfigured-agent-fallback'))).toEqual({ kind: 'reject' })
+    expect(session.surface.replaceGeneration).toBe(beforeGeneration)
+  })
+
+  describe('PR-6 F1 remediation: compaction summarizer reserve', () => {
+    /** The production bounded representation over an intercepted dispatched envelope. */
+    const envelopeBytes = (
+      messages: readonly unknown[],
+      system?: string,
+      tools?: readonly unknown[],
+    ): number => new TextEncoder().encode(JSON.stringify({
+      messages,
+      ...system === undefined ? {} : { system },
+      ...tools === undefined || tools.length === 0 ? {} : { tools },
+    })).length
+
+    /** Drive one summarizer call under a given allowance; report dispatch, bytes, and the failure code. */
+    async function probeSummary(
+      ctx: Context,
+      allowance: number,
+      input: SummarizationInput,
+      subject: Agent,
+    ): Promise<{ dispatched: boolean; bytes: number; code: string | undefined }> {
+      const spy = vi.spyOn(ctx.llm, 'stream').mockImplementation(async function* () {
+        yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
+      })
+      let code: string | undefined
+      try {
+        await summarizeWithLlm(ctx, {
+          summarizationProvider: '',
+          summarizationModel: '',
+          maxTokens: 8192,
+          summarizationMaxBytes: allowance,
+        }, input, subject, SIGNAL)
+      } catch (error: unknown) {
+        code = (error as { code?: string }).code
+      }
+      const options = spy.mock.calls[0]?.[0]
+      const dispatched = spy.mock.calls.length > 0
+      const bytes = options === undefined
+        ? 0
+        : envelopeBytes(options.messages, options.system, options.tools)
+      spy.mockRestore()
+      return { dispatched, bytes, code }
+    }
+
+    it('refuses an over-allowance summarizer request before dispatch: zero provider calls, typed code', async () => {
+      const ctx = createContext()
+      const subject = agent(conversation(1), MODEL)
+      const input = promptInput('y'.repeat(4096))
+
+      const over = await probeSummary(ctx, 512, input, subject)
+      expect(over.dispatched).toBe(false)
+      expect(over.code).toBe(COMPACTION_BUDGET_EXCEEDED_CODE)
+    })
+
+    it('self-calibrated exact boundary: exactly at the allowance dispatches, one byte above refuses (strict >)', async () => {
+      const ctx = createContext()
+      const subject = agent(conversation(1), MODEL)
+      const input = promptInput('z'.repeat(2048))
+
+      const calibrated = await probeSummary(ctx, 1_000_000, input, subject)
+      expect(calibrated.dispatched).toBe(true)
+      const B = calibrated.bytes
+      expect(B).toBeGreaterThan(2048)
+
+      const exact = await probeSummary(ctx, B, input, subject)
+      expect(exact.dispatched).toBe(true)
+
+      const above = await probeSummary(ctx, B - 1, input, subject)
+      expect(above.dispatched).toBe(false)
+      expect(above.code).toBe(COMPACTION_BUDGET_EXCEEDED_CODE)
+    })
+
+    it('multibyte UTF-8 boundary: the allowance counts bytes, not code units', async () => {
+      const ctx = createContext()
+      const subject = agent(conversation(1), MODEL)
+      const input = promptInput('界'.repeat(4096)) // 12288 bytes, 4096 code units
+
+      const calibrated = await probeSummary(ctx, 1_000_000, input, subject)
+      expect(calibrated.dispatched).toBe(true)
+      const B = calibrated.bytes
+      expect(B).toBeGreaterThan(4096 * 2) // bytes far exceed the code-unit length
+
+      const exact = await probeSummary(ctx, B, input, subject)
+      expect(exact.dispatched).toBe(true)
+
+      const above = await probeSummary(ctx, B - 1, input, subject)
+      expect(above.dispatched).toBe(false)
+      expect(above.code).toBe(COMPACTION_BUDGET_EXCEEDED_CODE)
+    })
+
+    it('budget recovery refuses a region over the allowance: surface unchanged, zero dispatches, bounded reject', async () => {
+      const ctx = createContext(10_000)
+      const warnings: string[] = []
+      ctx.logger.warn = ((message: string) => void warnings.push(message)) as typeof ctx.logger.warn
+      const stream = vi.spyOn(ctx.llm, 'stream')
+      void new BasicCompactionEngine(ctx, {
+        thresholdRatio: 1,
+        retainTokens: 900,
+        summarizationMaxBytes: 64, // far below any conversation region
+      })
+      const session = conversation(3)
+      const beforeGeneration = session.surface.replaceGeneration
+
+      expect(await recoverBudget(ctx, agent(session, 'unconfigured-agent-fallback'))).toEqual({ kind: 'reject' })
+      expect(session.surface.replaceGeneration).toBe(beforeGeneration)
+      expect(stream).not.toHaveBeenCalled()
+      expect(warnings.some(message => message.includes(COMPACTION_BUDGET_EXCEEDED_CODE))).toBe(false)
+      expect(warnings.some(message => message.includes('refusing to dispatch'))).toBe(true)
+      stream.mockRestore()
+    })
+
+    it('config: summarizationMaxBytes validates as a positive safe integer and defaults to the documented reserve', () => {
+      expect(resolveConfig({}).summarizationMaxBytes).toBe(DEFAULT_SUMMARIZATION_MAX_BYTES)
+      expect(resolveConfig({ summarizationMaxBytes: 4096 }).summarizationMaxBytes).toBe(4096)
+      for (const invalid of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+        expect(() => resolveConfig({ summarizationMaxBytes: invalid }))
+          .toThrow('summarizationMaxBytes must be a positive safe integer')
+      }
+    })
+
+    it('the allowance is deployment-wide: exact-target overrides cannot change it', () => {
+      const resolved = resolveConfig({
+        summarizationMaxBytes: 1234,
+        modelPolicies: [{ provider: 'x', model: 'y' }],
+      })
+      const policy = resolveTargetPolicy(resolved, { provider: 'x', model: 'y' })
+      expect(policy.summarizationMaxBytes).toBe(1234)
+    })
   })
 
   it('authorizes overflow retry when pruning alone advances an indivisible surface', async () => {

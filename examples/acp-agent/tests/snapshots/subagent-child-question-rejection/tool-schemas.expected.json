@@ -1,6 +1,38 @@
 {
   "initial": [
     {
+      "name": "apply_patch",
+      "description": "Apply a single-file unified diff to an existing file. The diff must start with `--- a/<path>` and `+++ b/<path>` headers followed by `@@ -l,c +l,c @@` hunks (space = context, `-` = removed, `+` = added). Every context and removed line is verified against the file; the first mismatch fails the call with the hunk and line number. Multi-file diffs are rejected.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "patch": {
+            "type": "string",
+            "description": "The unified diff to apply, with `--- a/<path>` and `+++ b/<path>` headers."
+          },
+          "file_path": {
+            "type": "string",
+            "description": "Optional explicit target path; defaults to the `+++ b/` header path."
+          },
+          "sandbox_permissions": {
+            "type": "string",
+            "description": "The wider sandbox mode this file operation needs. Only valid as a one-shot retry of an operation the sandbox just denied; requires justification and user approval.",
+            "enum": [
+              "workspace-write",
+              "danger-full-access"
+            ]
+          },
+          "justification": {
+            "type": "string",
+            "description": "Required with sandbox_permissions: one sentence for the user explaining why this exact file operation needs the wider access."
+          }
+        },
+        "required": [
+          "patch"
+        ]
+      }
+    },
+    {
       "name": "ask_user_question",
       "description": "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Send one or more questions, each with a stable id that will be echoed in the answer.",
       "parameters": {

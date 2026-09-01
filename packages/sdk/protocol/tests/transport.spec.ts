@@ -304,4 +304,72 @@ describe('JsonRpcLineTransport', () => {
 
     b.close()
   })
+
+  it('E25: malformed and unmatched frames emit nothing and never desync later valid frames', async () => {
+    // Final Convergence Audit E25: malformed lines, non-object frames, and
+    // unmatched responses are silently dropped (JSON-RPC allows ignoring
+    // unlinkable frames), partial frames stay buffered, and the stream does
+    // NOT desync — the next valid request is answered with exactly one frame
+    // in order. Pins the accepted contract end to end.
+    const { b, aToB, bToA } = transportPair()
+    const notifications: string[] = []
+    b.onNotification((method) => { notifications.push(method) })
+    b.onRequest(async (method, params) => ({ method, params }))
+    b.start()
+
+    aToB.write('not json\n')
+    aToB.write('\n')
+    aToB.write('null\n')
+    aToB.write('{"jsonrpc":"2.0","id":"unknown","result":{"ignored":true}}\n')
+    aToB.write('{"jsonrpc":"2.0","method":"tick"}\n')
+    // Split across writes: the buffered second half must rejoin the frame.
+    aToB.write('{"jsonrpc":"2.0","id":7,"method":"ec')
+    aToB.write('ho","params":{"x":1}}\n')
+
+    const response = (await once(bToA, 'data'))[0] as Buffer | string
+    const frame = JSON.parse(String(response)) as { id: number; result: { method: string; params: { x: number } } }
+    // Exactly one frame came back, the id:7 result: the malformed lines and
+    // the unmatched response produced nothing, and buffering kept the split
+    // request intact.
+    expect(frame.id).toBe(7)
+    expect(frame.result).toEqual({ method: 'echo', params: { x: 1 } })
+    expect(notifications).toEqual(['tick'])
+    b.close()
+  })
+
+  it('PR-6: a throwing or rejecting notification handler is contained — no unhandled rejection, no error frame, later frames continue', async () => {
+    // PR-5 finding disposition: notifications carry no id, so no error frame
+    // exists for them; a throwing handler previously escaped as an unhandled
+    // rejection. The transport now contains both sync throws and async
+    // rejections locally.
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const { b, aToB, bToA } = transportPair()
+      const seen: string[] = []
+      // oxlint-disable-next-line typescript/no-misused-promises -- deliberate rejection proves notification containment
+      b.onNotification((method) => {
+        seen.push(method)
+        if (method === 'boom-sync') throw new Error('sync boom')
+        if (method === 'boom-async') return Promise.reject(new Error('async boom'))
+      })
+      b.onRequest(async (method, params) => ({ method, params }))
+      b.start()
+
+      aToB.write('{"jsonrpc":"2.0","method":"boom-sync"}\n')
+      aToB.write('{"jsonrpc":"2.0","method":"boom-async"}\n')
+      aToB.write('{"jsonrpc":"2.0","id":9,"method":"echo","params":{"x":2}}\n')
+      const response = (await once(bToA, 'data'))[0] as Buffer | string
+      const frame = JSON.parse(String(response)) as { id: number; result: { method: string; params: { x: number } } }
+      expect(frame.id).toBe(9) // exactly the valid response — no fabricated error frame
+      expect(frame.result).toEqual({ method: 'echo', params: { x: 2 } })
+      expect(seen).toEqual(['boom-sync', 'boom-async'])
+      b.close()
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled)
+    }
+  })
 })

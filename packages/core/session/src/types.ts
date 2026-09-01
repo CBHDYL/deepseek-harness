@@ -18,6 +18,15 @@ import type { JsonValue } from './json.ts'
 // `ctx.sessions` (a Host-only SessionStore) into every consumer's program.
 export type { JsonValue } from './json.ts'
 
+/**
+ * Registry-minted per-execution-attempt correlation identity: the durable
+ * join key across `approval/asked` → `approval/decided` → `tool/call` →
+ * `tool/result`. Branded so callers cannot invent one; the tool registry is
+ * the only minter.
+ */
+declare const operationIdBrand: unique symbol
+export type OperationId = string & { readonly [operationIdBrand]: true }
+
 /** Identifies one session in the store (and its persistence artifacts). */
 export type SessionId = Branded<'SessionId'>
 
@@ -34,8 +43,14 @@ export function SessionId(id: string): SessionId {
  * The on-disk session format version, stamped into every newly-written {@link SessionHeader}
  * and enforced by every persistence backend on load. The single source of truth for the
  * version — write sites and the load-time check all read it.
- * While the harness is unreleased it is pinned at `0`: no compatibility is
- * implied, incompatible logs are rejected, and no migration is provided.
+ * v1 marks the atomic-repair semantics: a repaired log carries the
+ * required-on-read `session/repaired` diagnostic and its header is stamped v1
+ * at the repair commit. A v0 log is a legacy artifact this build still reads
+ * (its completeness cannot be proven, so it inspects as integrity `unknown`);
+ * it upgrades to v1 exactly when a repair commit rewrites it. Builds that do
+ * not know `session/repaired` refuse repaired logs via required-on-read, and
+ * builds without the v1 range refuse the version explicitly — no silent
+ * downgrade. No migration beyond that repair-time rewrite is provided.
  *
  * The version is a single monotonic integer with no major/minor split. Whether
  * a bump is needed is decided by what the WRITER emits, never by what a newer
@@ -53,7 +68,9 @@ export function SessionId(id: string): SessionId {
  * recorded in the session-log-version-mechanism Agent Note
  * (`.agents/notes/implemented/architecture/2026-08-10-session-log-version-mechanism.md`).
  */
-export const SESSION_FORMAT_VERSION = 0
+export const SESSION_FORMAT_VERSION = 1
+/** Format versions this build can read (current plus the legacy v0 it can still interpret safely). */
+export const SUPPORTED_SESSION_FORMAT_VERSIONS: readonly number[] = [0, 1]
 
 /**
  * Immutable validated storage metadata, kept outside the conversation event log.
@@ -280,7 +297,15 @@ export interface SessionEventMap {
    * JSON string exactly as the model produced it (unparsed). `callId` pairs the
    * call with its `tool/result`.
    */
-  'tool/call': { turn: number; step: number; callId: CallId; name: string; arguments: string }
+  'tool/call': {
+    turn: number
+    step: number
+    callId: CallId
+    name: string
+    arguments: string
+    /** Registry-minted attempt correlation (absent only on legacy or synthetic rows). */
+    operationId?: OperationId
+  }
   /**
    * A completed tool call's model-facing result, optional internal failure
    * identity, and optional tool-private `meta` presentation payload. `meta` is
@@ -298,6 +323,27 @@ export interface SessionEventMap {
     message: ToolResultMessage
     error?: { name: string; code: string }
     meta?: JsonValue
+    /** The matching `tool/call` attempt correlation (absent only on legacy or synthetic rows). */
+    operationId?: OperationId
+  }
+  /**
+   * A crash-recovery transaction committed durably: the model-facing notice
+   * that part of the session history was lost or synthesized, plus the
+   * recovery provenance. Surface event: the notice enters the model history
+   * so a resumed session knows its past is incomplete. Required-on-read —
+   * builds that do not know this event refuse the log instead of silently
+   * reconstructing a shorter history (the format-version boundary).
+   */
+  'session/repaired': {
+    message: UserMessage
+    /** Recovery category, e.g. 'torn-tail' or 'corrupted-records'. */
+    reason: string
+    /** Complete records past the valid prefix that were lost. */
+    lostLines: number
+    /** Complete records recovered from a torn tail and re-committed. */
+    recoveredEvents: number
+    /** Synthetic terminal closers the repair added. */
+    synthesizedClosers: number
   }
   /** Whole-list snapshot; latest write wins on replay. Log-only UI state; never derived history. */
   'todo/write': { todos: TodoItem[] }
@@ -379,6 +425,7 @@ export type SurfaceEventType =
   | 'user/message'
   | 'assistant/message'
   | 'tool/result'
+  | 'session/repaired'
 
 /**
  * A {@link SessionEvent} that is **on** the ordered surface — its

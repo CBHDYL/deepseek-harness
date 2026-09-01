@@ -470,6 +470,12 @@ export function createRunCodeTool(registry: ToolRuntime, options: RunCodeBridgeO
         const normalized = jsonNormalizeArgs(rawArgs)
         const n = ++dispatches
         const subCallId = CallId(`${String(exec.callId)}:code:${n}`)
+        // Mint BEFORE the durable start row: the sub-dispatch's terminal
+        // disposition joins the outer run's audit chain on this id. The mint
+        // channel is the internal scheduler seam, never the public service.
+        const operationId = exec.agent?.session === undefined
+          ? undefined
+          : registry[TOOL_RUNTIME_SCHEDULER].mintOperationId(exec.agent.session)
         const input = {
           callId: subCallId,
           rootCallId: exec.rootCallId,
@@ -478,6 +484,7 @@ export function createRunCodeTool(registry: ToolRuntime, options: RunCodeBridgeO
           ...exec.agent ? { agent: exec.agent } : {},
           parent: exec.token,
           signal: runController.signal,
+          ...operationId !== undefined ? { operationId } : {},
         }
         type DispatchOutcome = { isError: true; message: string } | { isError: false; value: JsonValue }
         const scheduler = registry[TOOL_RUNTIME_SCHEDULER]
@@ -520,6 +527,7 @@ export function createRunCodeTool(registry: ToolRuntime, options: RunCodeBridgeO
                 arguments: normalized.logged,
                 isError: result.isError,
                 content: logged,
+                ...operationId !== undefined ? { operationId } : {},
               })
             })().finally(() => { logWork.delete(task) })
             logWork.add(task)
@@ -531,6 +539,11 @@ export function createRunCodeTool(registry: ToolRuntime, options: RunCodeBridgeO
             // declared; fail-closed exclusive when undeclared/invalid.
             classify: () => registry.executionMode(input).kind,
             abandon: () => {
+              // A minted-but-never-prepared id is released so no unclaimed
+              // identity lingers after run settlement.
+              if (operationId !== undefined && exec.agent?.session !== undefined) {
+                scheduler.releaseOperationId(exec.agent.session, operationId)
+              }
               reject(new Error(`run_code run is over (${String(runController.signal.reason)}); ${name} tool call abandoned`))
             },
             async start(): Promise<void> {
@@ -540,6 +553,7 @@ export function createRunCodeTool(registry: ToolRuntime, options: RunCodeBridgeO
                 subCallId,
                 name,
                 arguments: normalized.logged,
+                ...operationId !== undefined ? { operationId } : {},
               })
               // Ordered prepare runs INSIDE the driver lane: the next entry's
               // pre-execute waits for this resolution, as under the native

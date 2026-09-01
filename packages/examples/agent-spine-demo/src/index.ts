@@ -94,6 +94,14 @@ export interface Config {
   agents?: AgentLoopConfig['agents']
   /** Agent-loop concurrency cap; `1` is serial. */
   maxParallelToolCalls?: AgentLoopConfig['maxParallelToolCalls']
+  /** Agent-loop per-step request-attempt cap (see dsh-agent-loop's `Config`). */
+  maxRequestAttempts?: AgentLoopConfig['maxRequestAttempts']
+  /** Agent-loop hard UTF-8 byte ceiling on one request's model-facing representation. */
+  maxRequestBytes?: AgentLoopConfig['maxRequestBytes']
+  /** Agent-loop optional advisory heuristic estimate trigger; unset by default. */
+  maxEstimateTokens?: AgentLoopConfig['maxEstimateTokens']
+  /** Agent-loop per-step budget-recovery retry cap. */
+  budgetCompactionRetries?: AgentLoopConfig['budgetCompactionRetries']
   /** Whether the system prompt includes the fixed Harness identity (default true). */
   includeHarnessIdentity?: SystemPromptConfig['includeHarnessIdentity']
   /** Whether model history includes dynamic runtime-context snapshots (default true). */
@@ -182,6 +190,10 @@ export const Config = z.intersect([
 export function pickSpineConfig(config: Omit<Config, 'agents'>): Omit<Config, 'agents'> {
   return {
     ...config.maxParallelToolCalls !== undefined ? { maxParallelToolCalls: config.maxParallelToolCalls } : {},
+    ...config.maxRequestAttempts !== undefined ? { maxRequestAttempts: config.maxRequestAttempts } : {},
+    ...config.maxRequestBytes !== undefined ? { maxRequestBytes: config.maxRequestBytes } : {},
+    ...config.maxEstimateTokens !== undefined ? { maxEstimateTokens: config.maxEstimateTokens } : {},
+    ...config.budgetCompactionRetries !== undefined ? { budgetCompactionRetries: config.budgetCompactionRetries } : {},
     ...config.includeHarnessIdentity !== undefined ? { includeHarnessIdentity: config.includeHarnessIdentity } : {},
     ...config.includeRuntimeContext !== undefined ? { includeRuntimeContext: config.includeRuntimeContext } : {},
     ...config.persona !== undefined ? { persona: config.persona } : {},
@@ -261,5 +273,9 @@ export function apply(ctx: Context, config: Config): void {
   ctx.plugin(AgentLoop, {
     agents: config.agents ?? [],
     ...config.maxParallelToolCalls !== undefined ? { maxParallelToolCalls: config.maxParallelToolCalls } : {},
+    ...config.maxRequestAttempts !== undefined ? { maxRequestAttempts: config.maxRequestAttempts } : {},
+    ...config.maxRequestBytes !== undefined ? { maxRequestBytes: config.maxRequestBytes } : {},
+    ...config.maxEstimateTokens !== undefined ? { maxEstimateTokens: config.maxEstimateTokens } : {},
+    ...config.budgetCompactionRetries !== undefined ? { budgetCompactionRetries: config.budgetCompactionRetries } : {},
   })
 }

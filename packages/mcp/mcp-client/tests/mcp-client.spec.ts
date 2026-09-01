@@ -150,6 +150,8 @@ const defaultOpts: ToolBridgeOptions = {
   maxSyncPages: 50,
   maxToolsPerServer: 2000,
   syncTimeoutMs: 30_000,
+  maxToolDescriptionBytes: 4096,
+  maxToolSchemaBytes: 65536,
 }
 
 // ---- Tests ----
@@ -204,6 +206,98 @@ describe('syncTools', () => {
     // Raw names are NOT registered.
     expect(ctx.tools.get('greet')).toBeUndefined()
     expect(ctx.tools.get('add')).toBeUndefined()
+  })
+
+  it('E28: server-advertised effects/readOnlyHint claims are never copied into the registered definition', async () => {
+    // Final Convergence Audit E28/E29: an MCP server's own safety
+    // classification is a hint, never a trust boundary. The bridge reads only
+    // name/description/inputSchema/outputSchema/taskSupport; any effects or
+    // annotations the server sends are dropped. The registered definition
+    // therefore carries NO `effects`, which is exactly the "undeclared" state
+    // the action-policy guard's enforce mode gates (E29) — a server cannot
+    // classify its own tools read-only.
+    const client = createMockClient([
+      {
+        name: 'classified',
+        description: 'claims to be read-only',
+        inputSchema: { type: 'object' },
+        // The real SDK Tool type carries these; the bridge must ignore them.
+        ...{ annotations: { readOnlyHint: true, destructiveHint: false }, effects: 'read-only' },
+      },
+    ])
+
+    await syncTools(client as never, ctx, defaultOpts, new Map())
+
+    const definition = ctx.tools.get('mcp__srv__classified') as { effects?: unknown } | undefined
+    expect(definition).toBeDefined()
+    expect(definition!.effects).toBeUndefined()
+  })
+
+  describe('PR-6 source bounds (L7-1)', () => {
+    const schemaOf = (pad: number): Record<string, unknown> => ({
+      type: 'object',
+      properties: { pad: { type: 'string', description: 'p'.repeat(pad) } },
+    })
+
+    it('a description exactly at the limit registers; one byte above is excluded', async () => {
+      const at = createMockClient([{ name: 'at', description: 'd'.repeat(defaultOpts.maxToolDescriptionBytes), inputSchema: { type: 'object' } }])
+      const atDisposers = await syncTools(at as never, ctx, defaultOpts, new Map())
+      expect(atDisposers.has('mcp__srv__at')).toBe(true)
+
+      const over = createMockClient([{ name: 'over', description: 'd'.repeat(defaultOpts.maxToolDescriptionBytes + 1), inputSchema: { type: 'object' } }])
+      const overDisposers = await syncTools(over as never, ctx, { ...defaultOpts, serverName: 'over' }, new Map())
+      expect(overDisposers.has('mcp__over__over')).toBe(false)
+      expect(ctx.tools.get('mcp__over__over')).toBeUndefined() // never silently registered
+      expect(ctx.tools.get('mcp__srv__at')).toBeDefined() // the legal sibling survives
+    })
+
+    it('multibyte UTF-8 boundaries count bytes, not code units', async () => {
+      // 3 bytes per char: a description of 1366 CJK chars is 4098 bytes —
+      // under the 4096-byte limit in code units would be nonsense, so the
+      // byte-accurate bound excludes it.
+      const client = createMockClient([
+        { name: 'wide', description: '界'.repeat(defaultOpts.maxToolDescriptionBytes + 2), inputSchema: { type: 'object' } },
+        { name: 'fit', description: '界'.repeat(1000), inputSchema: { type: 'object' } }, // 3000 bytes, legal
+      ])
+      const disposers = await syncTools(client as never, ctx, defaultOpts, new Map())
+      expect(disposers.has('mcp__srv__wide')).toBe(false)
+      expect(disposers.has('mcp__srv__fit')).toBe(true)
+    })
+
+    it('an oversized schema is excluded without corrupting siblings (deterministic rejection, never truncation)', async () => {
+      const client = createMockClient([
+        { name: 'huge', inputSchema: schemaOf(defaultOpts.maxToolSchemaBytes) },
+        { name: 'ok', inputSchema: { type: 'object', properties: { a: { type: 'string' } } } },
+      ])
+      const disposers = await syncTools(client as never, ctx, defaultOpts, new Map())
+      expect(disposers.has('mcp__srv__huge')).toBe(false)
+      expect(disposers.has('mcp__srv__ok')).toBe(true)
+      // The rejected tool's schema never reached the registry in ANY form.
+      expect(ctx.tools.get('mcp__srv__huge')).toBeUndefined()
+    })
+
+    it('a maliciously nested schema that serializes over the bound is excluded whole', async () => {
+      let deep: Record<string, unknown> = { type: 'string' }
+      for (let i = 0; i < 2000; i++) deep = { type: 'object', properties: { child: deep } }
+      const client = createMockClient([
+        { name: 'nested', inputSchema: deep },
+        { name: 'plain', inputSchema: { type: 'object' } },
+      ])
+      const disposers = await syncTools(client as never, ctx, defaultOpts, new Map())
+      expect(disposers.has('mcp__srv__nested')).toBe(false)
+      expect(disposers.has('mcp__srv__plain')).toBe(true)
+    })
+
+    it('many individually legal tools all register (no per-sync aggregate cap beyond maxToolsPerServer)', async () => {
+      const tools = Array.from({ length: 20 }, (_, i) => ({
+        name: `t${i}`,
+        description: 'd'.repeat(200),
+        inputSchema: { type: 'object', properties: { a: { type: 'string' } } },
+      }))
+      const disposers = await syncTools(createMockClient(tools) as never, ctx, defaultOpts, new Map())
+      expect(disposers.size).toBe(20)
+      for (const dispose of disposers.values()) dispose()
+    })
   })
 
   it('lets two servers publish the same raw name side by side', async () => {

@@ -129,6 +129,8 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     maxSyncPages: config.maxSyncPages ?? 50,
     maxToolsPerServer: config.maxToolsPerServer ?? 2000,
     syncTimeoutMs: config.syncTimeoutMs ?? 30_000,
+    maxToolDescriptionBytes: config.maxToolDescriptionBytes ?? 4096,
+    maxToolSchemaBytes: config.maxToolSchemaBytes ?? 65536,
   }
   // The initial sync uses 'throw' when failOnStartupError is configured, so
   // a registration conflict propagates to the startup-await path. Re-syncs

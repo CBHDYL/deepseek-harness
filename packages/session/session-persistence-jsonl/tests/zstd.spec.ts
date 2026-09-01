@@ -542,7 +542,6 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
     await ctx.sessionPersistence.create(header)
     await ctx.sessionPersistence.append(header.id, oneTurnLog())
     const path = logPath(root, header.cwd, header.id, 'zstd')
-    const committed = await readFile(path)
     const openTurn = [
       { type: 'turn/start', seq: 6, time: 7, data: { turn: 2 } },
       { type: 'step/start', seq: 7, time: 8, data: { turn: 2, step: 1 } },
@@ -556,17 +555,23 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
     await appendFile(path, partial)
 
     const loaded = await ctx.sessionPersistence.load(header.id)
-    expect(loaded.events.map(event => event.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+    expect(loaded.events.map(event => event.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     expect(loaded.events[6]).toEqual(openTurn[0])
     expect(loaded.events[7]).toEqual(openTurn[1])
     expect(loaded.events.some(event => event.type === 'assistant/chunk' && event.seq === 8)).toBe(false)
     expect(loaded.events[8]?.type).toBe('step/end')
     expect(loaded.events[9]?.type).toBe('turn/end')
+    const repairedRow = loaded.events[10]
+    expect(repairedRow?.type === 'session/repaired' && repairedRow.data).toMatchObject({
+      reason: 'torn-tail', recoveredEvents: 2, synthesizedClosers: 2,
+    })
+    expect(loaded.integrity).toBe('repaired')
 
-    const repaired = await readFile(path)
-    expect(repaired.subarray(0, committed.length)).toEqual(committed)
-    expect(scanZstdFrames(repaired).tornStart).toBeUndefined()
-    expect(scanLog(await decodeCompleteFrames(repaired)).events).toEqual(loaded.events)
+    // The atomic rebuild re-encodes the whole artifact (new header version and
+    // frame boundaries); the committed events round-trip identically.
+    const rebuilt = await readFile(path)
+    expect(scanZstdFrames(rebuilt).tornStart).toBeUndefined()
+    expect(scanLog(await decodeCompleteFrames(rebuilt)).events).toEqual(loaded.events)
   })
 
   it('drops a frame torn in its header before it has produced plaintext', async () => {
@@ -576,11 +581,16 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
     await ctx.sessionPersistence.create(header)
     await ctx.sessionPersistence.append(header.id, oneTurnLog())
     const path = logPath(root, header.cwd, header.id, 'zstd')
-    const committed = await readFile(path)
     await appendFile(path, MAGIC.subarray(0, 2))
 
-    expect((await ctx.sessionPersistence.load(header.id)).events).toEqual(oneTurnLog())
-    expect(await readFile(path)).toEqual(committed)
+    const loaded = await ctx.sessionPersistence.load(header.id)
+    expect(loaded.events.slice(0, -1)).toEqual(oneTurnLog())
+    expect(loaded.events.at(-1)?.type).toBe('session/repaired')
+    expect(loaded.integrity).toBe('repaired')
+    // The atomic rebuild re-encodes the artifact (v1 header + diagnostic);
+    // the torn tail is gone from the rebuilt file.
+    const rebuilt = await readFile(path)
+    expect(scanZstdFrames(rebuilt).tornStart).toBeUndefined()
   })
 
   it('recovers complete events when EOF tears only the final frame checksum', async () => {
@@ -598,7 +608,9 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
     await appendFile(path, frame.subarray(0, -1))
 
     const loaded = await ctx.sessionPersistence.load(header.id)
-    expect(loaded.events).toEqual([...oneTurnLog(), ...secondTurn])
+    expect(loaded.events.slice(0, -1)).toEqual([...oneTurnLog(), ...secondTurn])
+    expect(loaded.events.at(-1)?.type).toBe('session/repaired')
+    expect(loaded.integrity).toBe('repaired')
     const repaired = await readFile(path)
     expect(scanZstdFrames(repaired).tornStart).toBeUndefined()
     expect(scanLog(await decodeCompleteFrames(repaired)).events).toEqual(loaded.events)

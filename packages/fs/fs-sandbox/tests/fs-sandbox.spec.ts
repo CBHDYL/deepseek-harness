@@ -11,12 +11,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join, parse } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { FsError, FsTargetKey } from '@deepseek-ai/dsh-fs'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
-import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
+import SandboxPolicyService, { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import { SandboxedFileSystem } from '@deepseek-ai/dsh-fs-sandbox'
 
@@ -35,12 +36,13 @@ async function boot(mode: SandboxMode): Promise<void> {
 }
 
 beforeEach(async () => {
-  // Base under HOME, deliberately NOT tmpdir: `workspace-write` grants /tmp and
-  // os.tmpdir() (parity with the bash runner), so an "outside" dir under tmpdir
-  // would be legitimately writable. Sibling dirs under HOME are outside every
-  // grant, so containment failures are real denials. (The bwrap e2e roots its
-  // workspaces under HOME for the same reason.)
-  base = await mkdtemp(join(homedir(), '.dsh-fssbx-'))
+  // Base under the repo-local gitignored tmp/ (not tmpdir): `workspace-write`
+  // grants /tmp and os.tmpdir() (parity with the bash runner), so an "outside"
+  // dir under tmpdir would be legitimately writable. A repo-local sibling is
+  // outside every grant while remaining writable on test hosts that confine
+  // writes outside the workspace (HOME is denied on such hosts). (The bwrap
+  // e2e roots its workspaces under HOME for the same reason.)
+  base = await mkdtemp(join(process.cwd(), 'tmp', 'fs-sbx-'))
   workspace = join(base, 'ws')
   outside = join(base, 'out')
   await mkdir(workspace)
@@ -60,6 +62,52 @@ describe('the capability fact', () => {
   it('reports the deployment default mode (what the tool layer advertises against)', async () => {
     await boot('workspace-write')
     expect(fs.sandboxMode).toBe('workspace-write')
+  })
+})
+
+describe('authority provenance', () => {
+  // PR-1/PR-2 boundary documentation: a forged authority is IGNORED (its
+  // fields never apply), but the fallback is the deployment default — which
+  // can be WIDER than a session's narrowed standing mode. This test pins the
+  // current semantics so nobody later re-claims that forged fallback preserves
+  // session restriction; the session-bound closure is PR-2's required-param
+  // change, not PR-1.
+  it('documents that the forged fallback is the deployment default, not the session narrowing', async () => {
+    await boot('danger-full-access')
+    const session = Session.create(SessionId('narrowed-fallback'), undefined, {
+      version: 0, id: SessionId('narrowed-fallback'), createdAt: 0, cwd: workspace,
+    })
+    setSandboxMode(session, 'workspace-write')
+    expect(ctx.sandboxPolicy.resolve({ session }).mode).toBe('workspace-write')
+    const path = join(outside, 'fallback-boundary.txt')
+    await fs.writeText(await target(path), 'probe', undefined, undefined, {
+      mode: 'danger-full-access', workspaceRoot: workspace,
+    })
+    expect(await readFile(path, 'utf8')).toBe('probe')
+  })
+
+  beforeEach(() => boot('read-only'))
+
+  it('ignores a forged per-call policy and confines by the deployment default', async () => {
+    // A partially-trusted caller cannot self-supply authority: an object it
+    // constructed is not owner-minted, so the backend falls back to the
+    // owner's default (read-only) and the outside write is denied.
+    const path = join(outside, 'forged.txt')
+    await expect(fs.writeText(
+      await target(path),
+      'forged',
+      undefined,
+      undefined,
+      { mode: 'danger-full-access', workspaceRoot: workspace },
+    )).rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' })
+    expect(existsSync(path)).toBe(false)
+  })
+
+  it('honors an owner-minted escalated policy', async () => {
+    const policy = ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' })
+    const path = join(outside, 'minted.txt')
+    await expect(fs.writeText(await target(path), 'minted', undefined, undefined, policy)).resolves.toBeTruthy()
+    expect(await readFile(path, 'utf8')).toBe('minted')
   })
 })
 
@@ -195,21 +243,21 @@ describe('danger-full-access', () => {
 })
 
 describe('the per-call policy override (escalation)', () => {
-  it('a workspace-write stamp on a read-only default lets a contained write land for that call only', async () => {
+  it('an owner-minted workspace-write stamp on a read-only default lets a contained write land for that call only', async () => {
     await boot('read-only')
     const path = join(workspace, 'escalated.txt')
-    // Default read-only would deny; the per-call workspace-write policy allows it (contained).
-    await fs.writeText(await target(path), 'granted', undefined, undefined, { mode: 'workspace-write', workspaceRoot: workspace })
+    // Default read-only would deny; the per-call minted workspace-write policy allows it (contained).
+    await fs.writeText(await target(path), 'granted', undefined, undefined, ctx.sandboxPolicy.resolve({ mode: 'workspace-write' }))
     expect(await readFile(path, 'utf8')).toBe('granted')
     // A neighboring plain call still runs under the read-only default.
     await expect(fs.writeText(await target(join(workspace, 'plain.txt')), 'x'))
       .rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' })
   })
 
-  it('a danger-full-access stamp bypasses the fence for that call', async () => {
+  it('an owner-minted danger-full-access stamp bypasses the fence for that call', async () => {
     await boot('read-only')
     const path = join(outside, 'granted-full.txt')
-    await fs.writeText(await target(path), 'full', undefined, undefined, { mode: 'danger-full-access', workspaceRoot: workspace })
+    await fs.writeText(await target(path), 'full', undefined, undefined, ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }))
     expect(await readFile(path, 'utf8')).toBe('full')
   })
 })

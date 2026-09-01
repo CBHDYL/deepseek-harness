@@ -19,6 +19,7 @@ import {
   PersistenceCoordinator,
   SessionPersistence,
   type SessionInspection,
+  type SessionIntegrity,
   type SessionLocation,
   type SessionPersistenceSnapshot,
 } from '@deepseek-ai/dsh-session-persistence'
@@ -118,7 +119,7 @@ export class SqliteSessionPersistence extends SessionPersistence {
     id: SessionId,
     fromSeq: number,
     signal?: AbortSignal,
-  ): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  ): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
     return this.coordinator.readFrom(id, fromSeq, signal)
   }
 

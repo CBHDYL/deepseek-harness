@@ -219,7 +219,15 @@ export class JsonRpcLineTransport implements JsonRpcTransportPeer {
       return
     }
     if (typeof method === 'string') {
-      this.notificationHandler?.(method, objectParams(frame.params))
+      // Notifications carry no id: no error frame can be fabricated for them,
+      // and a throwing or rejecting handler must not escape as an unhandled
+      // rejection (PR-6 wire hardening — the contained contract pinned by the
+      // E25 permanent test).
+      try {
+        void Promise.resolve(this.notificationHandler?.(method, objectParams(frame.params))).catch(() => {})
+      } catch {
+        // Synchronous throw: contained locally, later frames continue.
+      }
     }
   }
 

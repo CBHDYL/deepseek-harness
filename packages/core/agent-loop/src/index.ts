@@ -147,6 +147,24 @@ function resolveMaxRequestAttempts(value: number | undefined): number {
   return maxRequestAttempts
 }
 
+/** Validate the hard prompt byte ceiling (the fail-safe beneath token estimation). */
+function resolveMaxRequestBytes(value: number | undefined): number {
+  const maxRequestBytes = value ?? DEFAULT_MAX_REQUEST_BYTES
+  if (!Number.isSafeInteger(maxRequestBytes) || maxRequestBytes < 1) {
+    throw new Error('maxRequestBytes must be a positive safe integer')
+  }
+  return maxRequestBytes
+}
+
+/** Validate the per-step budget-recovery retry cap. */
+function resolveBudgetCompactionRetries(value: number | undefined): number {
+  const budgetCompactionRetries = value ?? DEFAULT_BUDGET_COMPACTION_RETRIES
+  if (!Number.isInteger(budgetCompactionRetries) || budgetCompactionRetries < 0 || budgetCompactionRetries > 16) {
+    throw new Error('budgetCompactionRetries must be an integer from 0 through 16')
+  }
+  return budgetCompactionRetries
+}
+
 /** Reject an output-token cap that cannot be represented exactly on the request wire. */
 function assertAgentOptions(options: AgentOptions): void {
   if (options.maxTokens !== undefined
@@ -195,6 +213,21 @@ declare module '@deepseek-ai/cordis' {
 
 /** Default hard cap on model-request attempts per step (see {@link Config.maxRequestAttempts}). */
 export const DEFAULT_MAX_REQUEST_ATTEMPTS = 16
+
+/**
+ * Default hard byte ceiling on one model request's final model-facing
+ * representation (messages + system + tool schemas, UTF-8). A request whose
+ * measured representation EXCEEDS this ceiling is never dispatched (the
+ * predicate is strict: exactly at the ceiling dispatches). Deliberately well
+ * above realistic usage so the ceiling bounds abuse, not ordinary long
+ * sessions; deployments may lower it via {@link Config.maxRequestBytes}.
+ * PR-6 product constant — the Design Review prescribes the mechanism, not the
+ * number.
+ */
+export const DEFAULT_MAX_REQUEST_BYTES = 4 * 1024 * 1024
+
+/** Default recovery retries per step when a budget rejection is answered by compaction. */
+export const DEFAULT_BUDGET_COMPACTION_RETRIES = 1
 
 export { DEFAULT_MAX_PARALLEL_TOOL_CALLS }
 
@@ -279,6 +312,29 @@ export interface Config {
    * fails with `REQUEST_ATTEMPTS_EXCEEDED` at the cap. Default 16.
    */
   maxRequestAttempts?: number
+  /**
+   * Hard byte ceiling (UTF-8) on the final model-facing request
+   * representation. A request whose measured representation EXCEEDS it is
+   * never dispatched (strict predicate: exactly at the ceiling dispatches) —
+   * the normative hard boundary. Default
+   * {@link DEFAULT_MAX_REQUEST_BYTES}.
+   */
+  maxRequestBytes?: number
+  /**
+   * Optional earlier trigger: reject when the fixed-density heuristic token
+   * estimate of the final request exceeds this. Unset by default (the
+   * estimate is still computed and reported). The estimate is an ADVISORY,
+   * provider-agnostic heuristic (accepted design deviation, PR-6 F2) — it is
+   * never a provider token guarantee and never the only safety boundary;
+   * {@link Config.maxRequestBytes} is the normative enforcement.
+   */
+  maxEstimateTokens?: number | undefined
+  /**
+   * Recovery retries per step when a prompt-budget rejection is answered by
+   * an `agent/request-budget` listener (compaction). Default
+   * {@link DEFAULT_BUDGET_COMPACTION_RETRIES}.
+   */
+  budgetCompactionRetries?: number
   /** Agents created or resumed at plugin startup. */
   agents: (AgentOptions & {
     /** Stable config label used in logs and as the fresh combined-id prefix. */
@@ -293,7 +349,13 @@ export interface Config {
 }
 
 /** Agent-loop configuration after defaults and load-time validation. */
-type ResolvedConfig = Config & { maxParallelToolCalls: number; maxRequestAttempts: number }
+type ResolvedConfig = Config & {
+  maxParallelToolCalls: number
+  maxRequestAttempts: number
+  maxRequestBytes: number
+  maxEstimateTokens: number | undefined
+  budgetCompactionRetries: number
+}
 
 /** Reject self-contained identity conflicts before any configured agent starts. */
 function validateConfiguredAgents(agents: Config['agents']): void {
@@ -320,6 +382,10 @@ export class AgentLoop extends Service implements AgentFactory {
   /** Runtime schema for declarative agents. */
   static Config = z.object({
     maxParallelToolCalls: z.number().step(1).min(1).default(DEFAULT_MAX_PARALLEL_TOOL_CALLS),
+    maxRequestAttempts: z.number().step(1).min(1).default(DEFAULT_MAX_REQUEST_ATTEMPTS),
+    maxRequestBytes: z.number().step(1).min(1).default(DEFAULT_MAX_REQUEST_BYTES),
+    maxEstimateTokens: z.number().step(1).min(1),
+    budgetCompactionRetries: z.number().step(1).min(0).max(16).default(DEFAULT_BUDGET_COMPACTION_RETRIES),
     agents: z.array(z.object({
       id: z.string().required(),
       sessionId: z.string().min(1),
@@ -347,6 +413,9 @@ export class AgentLoop extends Service implements AgentFactory {
     this.config = {
       ...config,
       agents: applyLauncherIdentities(config.agents, ctx.get(CONFIGURED_AGENT_IDENTITIES_KEY)),
+      maxRequestBytes: resolveMaxRequestBytes(config.maxRequestBytes),
+      maxEstimateTokens: config.maxEstimateTokens,
+      budgetCompactionRetries: resolveBudgetCompactionRetries(config.budgetCompactionRetries),
       // Read through on every scheduler decision: `tool-calls.ts` destructures
       // this at the start of each group, so a committed change caps the next
       // group without disturbing the one in flight.

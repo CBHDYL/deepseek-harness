@@ -330,6 +330,12 @@ export function normalizeSessionLog(
       const data = record.data as Record<string, unknown>
       if ('durationMs' in data) data.durationMs = 0
     }
+    // Background-job terminal timestamps are wall-clock volatile; zero them so
+    // job/end rows compare across runs (the event's time envelope is zeroed above).
+    if (record.type === 'job/end' && record.data !== null && typeof record.data === 'object') {
+      const data = record.data as Record<string, unknown>
+      if ('finishedAt' in data) data.finishedAt = 0
+    }
     return scrubValue(record, ctx, cwdPathMode) as Record<string, unknown>
   })
   return records.map(r => JSON.stringify(r)).join('\n') + '\n'

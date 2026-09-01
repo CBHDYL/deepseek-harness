@@ -5,7 +5,6 @@ import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { copyFile, mkdir, utimes, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { homedir } from 'node:os'
 import { expect, it } from 'vitest'
 import {
   defineAcpSnapshotSuite,
@@ -677,6 +676,10 @@ const SCENARIOS: Scenario[] = [
   // roots that workspace-write always grants. The overlay points the
   // deployment fallback at /tmp, so a successful relative write proves the
   // assembled app replaced that process-level fallback with SessionHeader.cwd.
+  // The generated cwd lives under the git-ignored repo-local `tmp/` instead of
+  // the home directory: a confined test host denies writes under home, and a
+  // repo-local parent stays outside the platform temp roots, preserving the
+  // scenario's semantic.
   {
     name: 'session-sandbox-root',
     hasModelTurn: true,
@@ -685,7 +688,7 @@ const SCENARIOS: Scenario[] = [
     headerClass: 'sandbox',
     configPath: SESSION_SANDBOX_ROOT_CONFIG,
     env: { DSH_PERMISSION_MODE: 'workspace-write' },
-    workspaceParent: homedir(),
+    workspaceParent: join(dirname(fileURLToPath(import.meta.url)), '../../../tmp', 'acp-sandbox-root-parent'),
   },
 ]
 

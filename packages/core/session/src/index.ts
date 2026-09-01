@@ -12,7 +12,7 @@ import { deepFreeze } from '@deepseek-ai/dsh-llm'
 import { scopeOf, scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { Scoped } from '@deepseek-ai/dsh-scope'
 import type { Message } from '@deepseek-ai/dsh-llm'
-import { SESSION_FORMAT_VERSION, SessionId } from './types.ts'
+import { SESSION_FORMAT_VERSION, SUPPORTED_SESSION_FORMAT_VERSIONS, SessionId } from './types.ts'
 import type { TypertLookup } from '@deepseek-ai/dsh-typert-protocol'
 import type { CreateSessionOptions, EpochHeader, LogEventIntent, PrepareSessionOptions, RequestContext, SessionEvent, SessionEventMap, SessionEventType, SessionHeader, SurfaceIntent, SurfaceEventType } from './types.ts'
 import { snapshotJsonValue } from './json.ts'
@@ -98,8 +98,8 @@ function validateSessionHeader(id: SessionId, input: unknown): SessionHeader {
     throw new Error('session header is not a plain JSON record')
   }
   const record = input as Record<string, unknown>
-  if (record.version !== SESSION_FORMAT_VERSION) {
-    throw new Error(`session header version must be ${SESSION_FORMAT_VERSION}, got ${String(record.version)}`)
+  if (typeof record.version !== 'number' || !SUPPORTED_SESSION_FORMAT_VERSIONS.includes(record.version)) {
+    throw new Error(`session header version must be one of ${SUPPORTED_SESSION_FORMAT_VERSIONS.join(', ')}, got ${String(record.version)}`)
   }
   if (record.id !== id) {
     throw new Error(`session header id "${String(record.id)}" does not match session id "${id}"`)

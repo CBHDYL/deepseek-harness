@@ -200,11 +200,13 @@ export class SqliteStore implements PersistenceBackend<number> {
 
   async commitRepair(
     meta: SessionHeader,
+    _events: readonly SessionEvent[],
     tornMarker: number | undefined,
     closers: readonly SessionEvent[],
+    repairedEvent: SessionEvent | undefined,
   ): Promise<void> {
     await this.open()
-    if (tornMarker === undefined && closers.length === 0) return
+    if (tornMarker === undefined && closers.length === 0 && repairedEvent === undefined) return
     this.db.exec(sql('begin-immediate'))
     try {
       validateSchemaForMutation(this.databaseConstructor, this.db, this.databasePath)
@@ -221,15 +223,16 @@ export class SqliteStore implements PersistenceBackend<number> {
       } else if (current.tornFrom !== undefined) {
         throw new Error(`session ${meta.id} repair omitted current torn tail at seq ${current.tornFrom}`)
       }
-      if (closers.length > 0) {
+      const repairBatch = [...closers, ...repairedEvent !== undefined ? [repairedEvent] : []]
+      if (repairBatch.length > 0) {
         const expected = current.preserved.at(-1)?.seq === undefined
           ? 0
           : (current.preserved.at(-1) as SessionEvent).seq + 1
-        if (closers[0]?.seq !== expected) {
-          throw new Error(`session ${meta.id} repair is stale: closer starts at seq ${closers[0]?.seq}, stored next seq is ${expected}`)
+        if (repairBatch[0]?.seq !== expected) {
+          throw new Error(`session ${meta.id} repair is stale: repair batch starts at seq ${repairBatch[0]?.seq}, stored next seq is ${expected}`)
         }
         const insert = this.insertStatement()
-        for (const closer of closers) this.insertRecord(insert, meta.id, bindRecord(closer))
+        for (const closer of repairBatch) this.insertRecord(insert, meta.id, bindRecord(closer))
       }
       this.incrementRevision(meta.id)
       this.db.exec(sql('commit'))

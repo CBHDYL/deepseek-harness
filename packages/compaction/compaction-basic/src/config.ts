@@ -22,6 +22,16 @@ const DEFAULT_THRESHOLD_RATIO = 0.8
 /** Default verbatim-tail fraction for every routed model. */
 const DEFAULT_RETAIN_RATIO = 0.16
 
+/**
+ * Default hard UTF-8 byte allowance on one summarizer request (PR-6 F1
+ * remediation constant). The compaction reserve must exceed the agent-loop
+ * default request ceiling (4 MiB) so a surface the request path has just
+ * refused can still be compacted; deployments that change the request ceiling
+ * should set this allowance so the largest surface they expect automatic
+ * recovery to compact still fits.
+ */
+export const DEFAULT_SUMMARIZATION_MAX_BYTES = 8 * 1024 * 1024
+
 /** Fields shared by top-level defaults and exact-target overrides. */
 const POLICY_CONFIG_KEYS = [
   'thresholdRatio',
@@ -39,6 +49,7 @@ const BASIC_COMPACT_CONFIG_KEYS: ReadonlySet<string> = new Set([
   ...POLICY_CONFIG_KEYS,
   'modelPolicies',
   'auto',
+  'summarizationMaxBytes',
 ])
 
 /** Complete exact-target override key set. */
@@ -74,6 +85,10 @@ export function resolveConfig(config: BasicCompactionConfig = {}): ResolvedConfi
   const thresholdRatio = config.thresholdRatio ?? DEFAULT_THRESHOLD_RATIO
   const retention = resolveRetention(config, { retainRatio: DEFAULT_RETAIN_RATIO })
   validateRatioRetention(thresholdRatio, retention, 'BasicCompactionConfig')
+  const summarizationMaxBytes = config.summarizationMaxBytes ?? DEFAULT_SUMMARIZATION_MAX_BYTES
+  if (!Number.isSafeInteger(summarizationMaxBytes) || summarizationMaxBytes < 1) {
+    throw new Error('BasicCompactionConfig: summarizationMaxBytes must be a positive safe integer')
+  }
   const modelPolicies = resolveModelPolicies(config.modelPolicies)
   for (const [index, policy] of modelPolicies.entries()) {
     validateRatioRetention(
@@ -89,6 +104,7 @@ export function resolveConfig(config: BasicCompactionConfig = {}): ResolvedConfi
     summarizationProvider: config.summarizationProvider ?? '',
     summarizationModel: config.summarizationModel ?? '',
     maxTokens: config.maxTokens ?? 8192,
+    summarizationMaxBytes,
     compactionRetries: config.compactionRetries ?? 1,
     maxOverflowRetries: config.maxOverflowRetries ?? 1,
     modelPolicies,
@@ -119,6 +135,7 @@ export function resolveTargetPolicy(
     summarizationProvider: override?.summarizationProvider ?? config.summarizationProvider,
     summarizationModel: override?.summarizationModel ?? config.summarizationModel,
     maxTokens: override?.maxTokens ?? config.maxTokens,
+    summarizationMaxBytes: config.summarizationMaxBytes,
     compactionRetries: override?.compactionRetries ?? config.compactionRetries,
     maxOverflowRetries: override?.maxOverflowRetries ?? config.maxOverflowRetries,
   })
@@ -161,6 +178,7 @@ export function resolveCompactSpec(
     summarizationProvider: policy.summarizationProvider,
     summarizationModel: policy.summarizationModel,
     maxTokens: policy.maxTokens,
+    summarizationMaxBytes: policy.summarizationMaxBytes,
     compactionRetries: policy.compactionRetries,
     maxOverflowRetries: policy.maxOverflowRetries,
   })

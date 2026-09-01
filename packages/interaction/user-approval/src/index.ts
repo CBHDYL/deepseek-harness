@@ -11,7 +11,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type CallId } from '@deepseek-ai/dsh-llm'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { Scoped } from '@deepseek-ai/dsh-scope'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type { OperationId, Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 
 declare module '@deepseek-ai/cordis' {
@@ -45,6 +45,12 @@ declare module '@deepseek-ai/dsh-session/types' {
       id: ApprovalRequestId
       toolName: string
       callId?: CallId
+      /** Registry-minted attempt correlation when the asker is the tool scheduler or an escalating tool body. */
+      operationId?: OperationId
+      /** Canonical arguments digest of the attempt being decided (audit binding). */
+      argsDigest?: string
+      /** Requested sandbox dimension when the ask covers a sandbox escalation. */
+      sandboxMode?: string
       reason?: string
     }
     /**
@@ -55,6 +61,10 @@ declare module '@deepseek-ai/dsh-session/types' {
     'approval/decided': {
       id: ApprovalRequestId
       outcome: ApprovalOutcome
+      /** The asked attempt correlation, mirroring `approval/asked`. */
+      operationId?: OperationId
+      /** The sandbox dimension this decision covered, mirroring `approval/asked`. */
+      sandboxMode?: string
     }
     /**
      * The session's approval policy was switched — log-only, durable,
@@ -164,6 +174,30 @@ export interface ApprovalRequest {
    * attach the prompt to the tool call it already streamed.
    */
   readonly callId?: CallId
+  /**
+   * Registry-minted attempt correlation from the tool scheduler. An allowed
+   * decision mints the one-shot authorization grant keyed by this identity;
+   * the scheduler consumes it at the last pre-body fence.
+   */
+  readonly operationId?: OperationId
+  /** Canonical digest of the frozen attempt arguments — recorded for audit, never for matching. */
+  readonly argsDigest?: string
+  /**
+   * The exact registry-created execution this ask authorizes. When present,
+   * an allowed-once decision mints the one-shot grant keyed by this object's
+   * identity (WeakMap provenance — a caller cannot substitute another object);
+   * the scheduler takes the grant atomically at the dispatch boundary. The
+   * sandbox escalation ask passes no subject: it records a decision on the
+   * same attempt's audit chain without minting a second execution grant.
+   */
+  readonly authorizationSubject?: object
+  /**
+   * The sandbox dimension this ask covers, when the ask is a sandbox
+   * escalation or an execution whose frozen arguments already requested one.
+   * Recorded on the audit pair; the exact vocabulary and ceiling stay owned
+   * by the sandbox policy service and the escalating tool body.
+   */
+  readonly sandboxMode?: string
   /** The asker's human-readable explanation of WHY it is asking. */
   readonly reason?: string
   /**
@@ -193,6 +227,16 @@ export class ApprovalService extends Service {
   static Config: z<Config> = z.object({
     policy: z.union(['ask', 'never'] as const).default('ask'),
   })
+
+  /**
+   * One-shot grants keyed by the exact registry-created execution object:
+   * minted on an allowed-once decision whose request carried an
+   * authorization subject, taken atomically by the scheduler at the dispatch
+   * boundary, revoked at the attempt's terminal transition. WeakMap keys are
+   * unreachable objects — a captured operation id, a forged object, or a
+   * mutated live execution can never address another attempt's grant.
+   */
+  private readonly grants = new WeakMap<object, { available: boolean; sandboxMode?: string }>()
 
   constructor(ctx: Context, public config: Config) {
     super(ctx, 'approval')
@@ -268,11 +312,80 @@ export class ApprovalService extends Service {
       id,
       toolName: req.toolName,
       ...req.callId !== undefined ? { callId: req.callId } : {},
+      ...req.operationId !== undefined ? { operationId: req.operationId } : {},
+      ...req.argsDigest !== undefined ? { argsDigest: req.argsDigest } : {},
+      ...req.sandboxMode !== undefined ? { sandboxMode: req.sandboxMode } : {},
       ...req.reason !== undefined ? { reason: req.reason } : {},
     })
     const outcome = await this.decide(req, session)
-    session.append('approval/decided', { id, outcome })
+    session.append('approval/decided', {
+      id,
+      outcome,
+      ...req.operationId !== undefined ? { operationId: req.operationId } : {},
+      ...req.sandboxMode !== undefined ? { sandboxMode: req.sandboxMode } : {},
+    })
+    // Only an execution-authorization ask (one carrying the exact registry
+    // execution) mints a grant; correlation-only asks never do.
+    if (outcome === 'allowed-once' && req.authorizationSubject !== undefined) {
+      this.grants.set(req.authorizationSubject, {
+        available: true,
+        ...req.sandboxMode !== undefined ? { sandboxMode: req.sandboxMode } : {},
+      })
+    }
     return outcome
+  }
+
+  /**
+   * Whether an unconsumed grant authorizes this exact execution object. The
+   * action guard's monotonic deny fence reads this; the scheduler takes the
+   * grant atomically at the dispatch boundary. Only a request that carried
+   * this same object minted the grant, so no other attempt can satisfy it.
+   * @param subject - the exact registry-created execution object.
+   * @returns true only while an allowed-once grant for this object is untaken.
+   */
+  isAuthorized(subject: object): boolean {
+    return this.grants.get(subject)?.available === true
+  }
+
+  /**
+   * Atomically take the one-shot grant for an exact execution object at the
+   * dispatch boundary: the first take succeeds and spends the grant; every
+   * later take fails. Idempotent after the first success.
+   * @param subject - the exact registry-created execution object.
+   * @returns true exactly once per minted grant.
+   */
+  take(subject: object): boolean {
+    const grant = this.grants.get(subject)
+    if (grant === undefined || !grant.available) return false
+    grant.available = false
+    return true
+  }
+
+  /**
+   * Revoke any grant for an exact execution object when its attempt reaches a
+   * terminal disposition (cancelled, denied, executed): no live authorization
+   * may outlive the execution lifecycle.
+   * @param subject - the exact registry-created execution object.
+   */
+  revoke(subject: object): void {
+    this.grants.delete(subject)
+  }
+
+  /**
+   * The authorization record for an exact execution object, for tool bodies
+   * that must consult the attempt's decision mid-execution (sandbox
+   * escalation reuse). Survives the take (the record stays until revoked at
+   * the terminal transition); `available` reports the untaken state.
+   * @param subject - the exact registry-created execution object.
+   * @returns the record, or undefined for an object without one.
+   */
+  executionApproval(subject: object): { readonly available: boolean; readonly sandboxMode?: string } | undefined {
+    const grant = this.grants.get(subject)
+    if (grant === undefined) return undefined
+    return {
+      available: grant.available,
+      ...grant.sandboxMode !== undefined ? { sandboxMode: grant.sandboxMode } : {},
+    }
   }
 
   /**

@@ -14,7 +14,7 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SandboxPolicyService, { SANDBOX_MODES, effectiveSandboxMode, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import SystemPrompt, { renderContextSnapshot, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 
-async function mounted(config: { mode?: 'read-only' | 'workspace-write' | 'danger-full-access'; workspaceRoot?: string } = {}) {
+async function mounted(config: { mode?: 'read-only' | 'workspace-write' | 'danger-full-access'; maxMode?: 'read-only' | 'workspace-write' | 'danger-full-access'; workspaceRoot?: string } = {}) {
   const ctx = new Context()
   await ctx.plugin(SandboxPolicyService, config)
   return ctx
@@ -105,6 +105,35 @@ describe('SandboxPolicyService', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+
+  it('caps an approved escalation at the deployment maxMode ceiling', async () => {
+    const ctx = await mounted({ mode: 'workspace-write', workspaceRoot: '/fallback', maxMode: 'workspace-write' })
+    const active = session('sess-capped', '/projects/capped')
+    expect(ctx.sandboxPolicy.resolve({ session: active, mode: 'danger-full-access' })).toEqual({
+      mode: 'workspace-write',
+      workspaceRoot: resolve('/projects/capped'),
+      sessionId: 'sess-capped',
+    })
+  })
+
+  it('caps a session override at the deployment maxMode ceiling', async () => {
+    const ctx = await mounted({ mode: 'read-only', workspaceRoot: '/fallback', maxMode: 'workspace-write' })
+    const active = session('sess-capped-override', '/projects/override')
+    setSandboxMode(active, 'danger-full-access')
+    expect(ctx.sandboxPolicy.resolve({ session: active })).toEqual({
+      mode: 'workspace-write',
+      workspaceRoot: resolve('/projects/override'),
+      sessionId: 'sess-capped-override',
+    })
+  })
+
+  it('mints every resolved policy so the enforcing backends can verify provenance', async () => {
+    const ctx = await mounted({ mode: 'workspace-write', workspaceRoot: '/fallback' })
+    const resolved = ctx.sandboxPolicy.resolve()
+    expect(ctx.sandboxPolicy.isMinted(resolved)).toBe(true)
+    expect(ctx.sandboxPolicy.isMinted({ mode: 'danger-full-access', workspaceRoot: '/fallback' })).toBe(false)
+    expect(ctx.sandboxPolicy.isMinted({ ...resolved })).toBe(false)
   })
 
   it('lets an approved mode outrank the session mode while retaining its root', async () => {

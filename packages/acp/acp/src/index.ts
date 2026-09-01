@@ -271,11 +271,18 @@ export function apply(ctx: Context, config: AcpConfig): void {
   ctx.on('approval/request', (request, next) => {
     const record = ownedRecord(request.agent)
     if (record === undefined || request.callId === undefined) return next()
+    // The single merged execution approval must present exactly what it
+    // covers: a sandbox escalation ask threads its requested dimension and
+    // the asker's justification into the human-readable option label, so the
+    // human decides with the escalation visible (never a silent widening).
+    const escalationLabel = request.sandboxMode !== undefined
+      ? `${request.reason ?? `sandbox escalation to "${request.sandboxMode}"`}`
+      : 'Allow once'
     return conn.requestPermission({
       sessionId: record.agent.session.id,
       toolCall: { toolCallId: request.callId },
       options: [
-        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'allow-once', name: request.sandboxMode !== undefined ? `Allow once — ${escalationLabel}` : escalationLabel, kind: 'allow_once' },
         { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
       ],
     }).then(({ outcome }) => {

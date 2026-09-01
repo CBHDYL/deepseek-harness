@@ -13,7 +13,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { assertNever, createToolResultMessage, type ToolCallBlock } from '@deepseek-ai/dsh-llm'
-import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
+import type { OperationId, Session, UserMessage } from '@deepseek-ai/dsh-session'
 import { TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER, type ToolExecutionInput, type ToolExecutionMode, type ToolExecutionResult, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 
 /** One tool call after argument parsing, ready to schedule. */
@@ -130,8 +130,10 @@ async function runGroup(
   const { session } = ctx.agents.requireInitiator()
   const { maxParallelToolCalls } = ctx.agentLoop.config
   const slots: (Slot | undefined)[] = group.map(() => undefined)
-  // Started slots retain their `tool/call` seq so the result can cite it.
+  // Started slots retain their `tool/call` seq so the result can cite it, and
+  // their registry-minted operation id so the result closes the audit chain.
   const callSeqs: number[] = group.map(() => -1)
+  const operationIds: (OperationId | undefined)[] = group.map(() => undefined)
   let nextToStart = 0
   let committed = 0
   let started = 0
@@ -152,7 +154,7 @@ async function runGroup(
         ? await ctx.tools[TOOL_RUNTIME_SCHEDULER].finalize(slot.exec, slot.result)
         : ctx.tools[TOOL_RUNTIME_SCHEDULER].finish(slot.exec, slot.result)
       // oxlint-disable-next-line typescript/no-non-null-assertion -- bounded index
-      appendToolResult(session, turn, step, call!.block, result, callSeqs[committed]!)
+      appendToolResult(session, turn, step, call!.block, result, callSeqs[committed]!, operationIds[committed])
       for (const context of result.additionalContexts ?? []) acceptContext(context)
       concluded ||= result.concludesTurn === true
       committed++
@@ -164,7 +166,13 @@ async function runGroup(
   const startCall = async (index: number): Promise<void> => {
     // oxlint-disable-next-line typescript/no-non-null-assertion -- bounded index
     const call = group[index]!
-    callSeqs[index] = appendToolCall(session, turn, step, call.block)
+    // Mint BEFORE the durable tool/call: the operation id is the join key for
+    // the approval audit chain and the terminal disposition. Per-session
+    // minting keeps ids unique within one session log across restarts.
+    const operationId = ctx.tools[TOOL_RUNTIME_SCHEDULER].mintOperationId(session)
+    operationIds[index] = operationId
+    call.exec.operationId = operationId
+    callSeqs[index] = appendToolCall(session, turn, step, call.block, operationId)
     started++
     const prepared = await ctx.tools[TOOL_RUNTIME_SCHEDULER].prepare(call.exec)
     throwSchedulerFailure()
@@ -246,13 +254,13 @@ async function runGroup(
           const result = slot.needsPost
             ? await ctx.tools[TOOL_RUNTIME_SCHEDULER].finalize(slot.exec, slot.result)
             : ctx.tools[TOOL_RUNTIME_SCHEDULER].finish(slot.exec, slot.result)
-          appendToolResult(session, turn, step, call.block, result, callSeq)
+          appendToolResult(session, turn, step, call.block, result, callSeq, operationIds[index])
           continue
         } catch {
           // Fall through to the explicit unknown marker.
         }
       }
-      appendOutcomeUnknown(session, turn, step, call.block, callSeq)
+      appendOutcomeUnknown(session, turn, step, call.block, callSeq, operationIds[index])
     }
     throw schedulerFailure.error
   }
@@ -287,7 +295,9 @@ function appendSkippedToolCall(session: Session, turn: number, step: number, blo
  * is not recoverable from the broken scheduler. Keeping a result — even an
  * unknown one — preserves the durable call/result pairing contract.
  */
-function appendOutcomeUnknown(session: Session, turn: number, step: number, block: ToolCallBlock, callSeq: number): void {
+function appendOutcomeUnknown(
+  session: Session, turn: number, step: number, block: ToolCallBlock, callSeq: number, operationId?: OperationId,
+): void {
   appendToolResult(session, turn, step, block, {
     content: [{ type: 'text', text: 'Error: tool call outcome unknown (scheduler failure interrupted execution)' }],
     isError: true,
@@ -295,12 +305,17 @@ function appendOutcomeUnknown(session: Session, turn: number, step: number, bloc
       message: 'tool call outcome unknown (scheduler failure interrupted execution)',
       info: { name: 'ToolOutcomeUnknown', code: 'TOOL_OUTCOME_UNKNOWN' },
     },
-  }, callSeq)
+  }, callSeq, operationId)
 }
 
 /** Append a started call and return the event seq that its result must cite. */
-function appendToolCall(session: Session, turn: number, step: number, block: ToolCallBlock): number {
-  const event = session.append('tool/call', { turn, step, callId: block.id, name: block.name, arguments: block.arguments })
+function appendToolCall(
+  session: Session, turn: number, step: number, block: ToolCallBlock, operationId?: OperationId,
+): number {
+  const event = session.append('tool/call', {
+    turn, step, callId: block.id, name: block.name, arguments: block.arguments,
+    ...operationId !== undefined ? { operationId } : {},
+  })
   return event.seq
 }
 
@@ -312,6 +327,7 @@ function appendToolResult(
   block: ToolCallBlock,
   result: ToolExecutionResult,
   callSeq: number,
+  operationId?: OperationId,
 ): void {
   const message = createToolResultMessage({
     callId: block.id,
@@ -325,5 +341,6 @@ function appendToolResult(
     // The tool's private presentation payload (e.g. a result-time diff),
     // persisted so a UI bridge reproduces the card on replay.
     ...result.meta !== undefined ? { meta: result.meta } : {},
+    ...operationId !== undefined ? { operationId } : {},
   }, { surfaceOp: 'append', sourceEventSeqs: [callSeq] })
 }

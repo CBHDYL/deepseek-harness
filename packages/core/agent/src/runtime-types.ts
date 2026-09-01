@@ -57,6 +57,9 @@ export type PreStepDecision =
 /** Action returned by a listener that owns model-request recovery. */
 export type RequestErrorAction = { kind: 'retry' } | undefined
 
+/** Action returned by a listener that owns prompt-budget recovery (typically compaction). */
+export type RequestBudgetAction = { kind: 'retry' } | { kind: 'reject' }
+
 /** Why a session lifecycle began; seeded creates are `startup`, while persisted loads are `resume`. */
 export type SessionStartSource = 'startup' | 'resume' | 'clear' | 'compact'
 
@@ -271,6 +274,25 @@ declare module '@deepseek-ai/cordis' {
      * @mode waterfall
      */
     'agent/request-error'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; failure: LlmFailure; retryPolicy: ResolvedRetryPolicy | undefined; signal: AbortSignal }, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction>
+    /**
+     * Handle one prompt-budget rejection BEFORE any provider dispatch. The
+     * request exceeded the final byte ceiling or the configured estimate
+     * ceiling and was never sent. A listener returns `{ kind: 'retry' }`
+     * without calling `next()` when it owns recovery (compaction reduces the
+     * surface, then the loop rebuilds and re-checks), or calls `next()` to
+     * delegate; the default `{ kind: 'reject' }` fails the step loud with
+     * `PROMPT_BUDGET_EXCEEDED`. The loop bounds recovery retries per step.
+     * @param payload.agent - the agent whose request was rejected.
+     * @param payload.turn - the turn containing the rejected request.
+     * @param payload.step - the step whose request was rejected.
+     * @param payload.provider - the provider selected for the rejected request.
+     * @param payload.bytes - UTF-8 bytes of the final model-facing request representation.
+     * @param payload.estimateTokens - the fixed-density heuristic token estimate of that representation.
+     * @param payload.signal - the turn abort signal.
+     * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+     * @mode waterfall
+     */
+    'agent/request-budget'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; bytes: number; estimateTokens: number; signal: AbortSignal }, next: () => Promise<RequestBudgetAction>): Promise<RequestBudgetAction>
     /**
      * The turn is about to close: the model owes no response (no live tool
      * calls, no fresh steering). Awaited before the boundary commits — a

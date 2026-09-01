@@ -512,3 +512,72 @@ describe('approval policy (the approval/policy fold)', () => {
     expect(await contextFor()).toBeUndefined()
   })
 })
+
+
+describe('one-shot authorization grants', () => {
+  const op = 'op-1' as never
+
+  it('mints an untaken grant on allowed-once and takes it atomically exactly once', async () => {
+    const ctx = await mounted()
+    const { agent } = fakeAgent()
+    const execution = {}
+    ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('allowed-once'))
+    await ctx.approval.request({ agent, toolName: 'echo', operationId: op, authorizationSubject: execution })
+    expect(ctx.approval.isAuthorized(execution)).toBe(true)
+    expect(ctx.approval.take(execution)).toBe(true)
+    expect(ctx.approval.isAuthorized(execution)).toBe(false)
+    expect(ctx.approval.take(execution)).toBe(false)
+    expect(ctx.approval.executionApproval(execution)).toEqual({ available: false })
+  })
+
+  it('revokes the grant so nothing outlives the execution lifecycle', async () => {
+    const ctx = await mounted()
+    const { agent } = fakeAgent()
+    const execution = {}
+    ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('allowed-once'))
+    await ctx.approval.request({ agent, toolName: 'echo', operationId: op, authorizationSubject: execution })
+    ctx.approval.revoke(execution)
+    expect(ctx.approval.isAuthorized(execution)).toBe(false)
+    expect(ctx.approval.take(execution)).toBe(false)
+    expect(ctx.approval.executionApproval(execution)).toBeUndefined()
+  })
+
+  it('never mints a grant for rejected or cancelled decisions', async () => {
+    const rejected = await mounted()
+    const a1 = fakeAgent()
+    const execution = {}
+    rejected.on('approval/request', () => Promise.resolve<ApprovalOutcome>('rejected'))
+    await rejected.approval.request({ agent: a1.agent, toolName: 'echo', operationId: op, authorizationSubject: execution })
+    expect(rejected.approval.isAuthorized(execution)).toBe(false)
+
+    const cancelled = await mounted()
+    const a2 = fakeAgent()
+    const execution2 = {}
+    const controller = new AbortController()
+    cancelled.on('approval/request', () => new Promise<ApprovalOutcome>(() => {}))
+    const pending = cancelled.approval.request({ agent: a2.agent, toolName: 'echo', operationId: op, authorizationSubject: execution2, signal: controller.signal })
+    controller.abort()
+    expect(await pending).toBe('cancelled')
+    expect(cancelled.approval.isAuthorized(execution2)).toBe(false)
+  })
+
+  it('a correlation-only ask (no authorization subject) never mints a grant', async () => {
+    const ctx = await mounted()
+    const { agent } = fakeAgent()
+    ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('allowed-once'))
+    await ctx.approval.request({ agent, toolName: 'echo', operationId: op })
+    expect(ctx.approval.isAuthorized({})).toBe(false)
+    expect(ctx.approval.take({})).toBe(false)
+  })
+
+  it('records the operation identity and sandbox dimension on the asked/decided audit pair', async () => {
+    const ctx = await mounted()
+    const { agent, appended } = fakeAgent()
+    ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('allowed-once'))
+    await ctx.approval.request({ agent, toolName: 'echo', operationId: op, argsDigest: 'd1', sandboxMode: 'workspace-write' })
+    const asked = appended.find(e => e.type === 'approval/asked')
+    const decided = appended.find(e => e.type === 'approval/decided')
+    expect(asked?.data).toMatchObject({ operationId: op, argsDigest: 'd1', sandboxMode: 'workspace-write' })
+    expect(decided?.data).toMatchObject({ operationId: op, outcome: 'allowed-once', sandboxMode: 'workspace-write' })
+  })
+})

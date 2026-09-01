@@ -38,6 +38,13 @@ The optional `@deepseek-ai/dsh-agent-loop/invariant` companion registers request
 ```ts
 interface Config {
   maxParallelToolCalls?: number // default 10; 1 is serial
+  maxRequestBytes?: number      // hard UTF-8 byte ceiling on one request's model-facing
+                                // representation; default 4194304 (4 MiB); strict:
+                                // exactly at the ceiling dispatches
+  maxEstimateTokens?: number    // optional early heuristic trigger; unset by default;
+                                // advisory, provider-agnostic — never a provider guarantee
+  budgetCompactionRetries?: number // recovery retries per step after a budget rejection
+                                   // answered by compaction; default 1, integer 0–16
   agents: Array<{
     id: string                 // required
     provider?: string
@@ -49,7 +56,7 @@ interface Config {
 }
 ```
 
-Configured agents start automatically. A model call requires both `provider` and `model`; `agent/request` may supply a missing pair before dispatch. An optional positive `maxTokens` seeds each conversation request's output cap and is logged in its request header. `maxParallelToolCalls` bounds every agent's rolling pool for parallel-safe calls and defaults to `10`; it is also the whole of the `agent-loop` Settings section, so a user layer over this entry caps the next tool group without a restart, and a value that is not a positive integer is refused at the write rather than at that group. `agents` is deliberately absent from that section — it is consumed once when the service starts, so a stored change could only look like it had an effect. `cwd` applies only to fresh sessions, while `resumeSessionId` retains persisted metadata. Configured agents use the deployment persona, and programmatic setup can shadow it per agent. This plugin supplies the per-agent `provider`, `model`, and `cwd` prompt variables; harness identity and deployment persona belong to `dsh-system-prompt`.
+Configured agents start automatically. A model call requires both `provider` and `model`; `agent/request` may supply a missing pair before dispatch. An optional positive `maxTokens` seeds each conversation request's output cap and is logged in its request header. `maxParallelToolCalls` bounds every agent's rolling pool for parallel-safe calls and defaults to `10`; it is also the whole of the `agent-loop` Settings section, so a user layer over this entry caps the next tool group without a restart, and a value that is not a positive integer is refused at the write rather than at that group. `maxRequestBytes` is the normative hard boundary: a request whose measured UTF-8 representation (messages + system + tool schemas) exceeds it is rejected with `PROMPT_BUDGET_EXCEEDED` before any durable header or provider dispatch, and each rejection gets at most `budgetCompactionRetries` recovery opportunities per step before failing loud. `maxEstimateTokens` is an optional earlier trigger over the advisory fixed-density heuristic estimate (accepted design deviation: it is provider-agnostic and never a provider token guarantee; the byte ceiling remains the enforcement boundary). `agents` is deliberately absent from the Settings section — it is consumed once when the service starts, so a stored change could only look like it had an effect. `cwd` applies only to fresh sessions, while `resumeSessionId` retains persisted metadata. Configured agents use the deployment persona, and programmatic setup can shadow it per agent. This plugin supplies the per-agent `provider`, `model`, and `cwd` prompt variables; harness identity and deployment persona belong to `dsh-system-prompt`.
 
 ### Internal concrete driver
 

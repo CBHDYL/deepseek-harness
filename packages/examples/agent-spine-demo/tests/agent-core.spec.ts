@@ -605,6 +605,8 @@ describe('dsh-agent-spine-demo bundle', () => {
     const execution: ToolExecution = {
       signal: testToolSignal,
       token: Symbol('agent-core-dsh-home-test') as ToolExecution['token'],
+      operationId: 'agent-core-op' as ToolExecution['operationId'],
+      argsDigest: 'agent-core-digest',
       callId: CallId('agent-core-dsh-home'),
       rootCallId: CallId('agent-core-dsh-home'),
       name: 'bash',

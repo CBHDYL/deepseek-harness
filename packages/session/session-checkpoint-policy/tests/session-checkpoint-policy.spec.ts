@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import type { SessionIntegrity } from '@deepseek-ai/dsh-session-persistence'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
@@ -18,13 +19,13 @@ class TestPersistence extends SessionPersistence {
   locate(_meta: SessionHeader): undefined { return undefined }
   create(_meta: SessionHeader): Promise<void> { return Promise.resolve() }
   append(_id: SessionId, _events: readonly SessionEvent[]): Promise<void> { return Promise.resolve() }
-  load(_id: SessionId): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  load(_id: SessionId): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
     return Promise.reject(new Error('not used'))
   }
-  inspect(_id: SessionId): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  inspect(_id: SessionId): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
     return Promise.reject(new Error('not used'))
   }
-  readFrom(_id: SessionId, _fromSeq: number): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  readFrom(_id: SessionId, _fromSeq: number): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
     return Promise.reject(new Error('not used'))
   }
   list(): Promise<SessionHeader[]> { return Promise.resolve([]) }

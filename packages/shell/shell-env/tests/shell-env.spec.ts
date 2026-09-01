@@ -22,6 +22,8 @@ function execution(sessionId?: string): ToolExecution {
   return {
     signal: testToolSignal,
     token: Symbol('bash-env-test') as ToolExecution['token'],
+    operationId: 'test-op' as ToolExecution['operationId'],
+    argsDigest: 'test-digest',
     callId: CallId('bash-env-call'),
     rootCallId: CallId('bash-env-call'),
     name: 'bash',

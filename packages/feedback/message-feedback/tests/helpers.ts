@@ -135,7 +135,7 @@ class TestPersistence extends SessionPersistence {
     const explicit = this.logical.get(id)
     if (explicit !== undefined) return Promise.resolve(explicit)
     const live = this.ctx.sessions.get(id)
-    if (live !== undefined) return Promise.resolve({ meta: live.header, events: live.events })
+    if (live !== undefined) return Promise.resolve({ meta: live.header, events: live.events, integrity: 'unknown' as const })
     const stored = this.durable.get(id)
     return stored === undefined
       ? Promise.reject(new Error(`test persistence: session '${id}' not found`))
@@ -145,13 +145,13 @@ class TestPersistence extends SessionPersistence {
   async readFrom(
     id: SessionId,
     fromSeq: number,
-  ): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  ): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: 'intact' | 'repaired' | 'unknown' }> {
     this.readFromCalls += 1
     await this.onReadFrom?.()
     const stored = this.durable.get(id)
     return stored === undefined
       ? Promise.reject(new Error(`test persistence: session '${id}' not found`))
-      : { meta: stored.meta, events: stored.events.filter(event => event.seq >= fromSeq) }
+      : { meta: stored.meta, events: stored.events.filter(event => event.seq >= fromSeq), integrity: 'unknown' as const }
   }
 
   list(): Promise<SessionHeader[]> {
@@ -167,7 +167,7 @@ class TestPersistence extends SessionPersistence {
   }
 
   persist(session: Session): void {
-    this.durable.set(session.id, { meta: session.header, events: session.events })
+    this.durable.set(session.id, { meta: session.header, events: session.events, integrity: 'unknown' as const })
   }
 
   setDurable(inspection: SessionInspection): void {

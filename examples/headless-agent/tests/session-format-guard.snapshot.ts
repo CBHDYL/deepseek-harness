@@ -69,7 +69,7 @@ describe('session format guard through the assembled app', () => {
       },
     })
     expect(result.stderr).toContain(
-      `session "${sessionId}" uses log format v${SESSION_FORMAT_VERSION + 99}, but this harness reads only v${SESSION_FORMAT_VERSION}: the log was written by a newer harness — upgrade the harness to open it`,
+      `session "${sessionId}" uses log format v${SESSION_FORMAT_VERSION + 99}, but this harness reads only up to v${SESSION_FORMAT_VERSION}: the log was written by a newer harness — upgrade the harness to open it`,
     )
     // macOS reports the temp dir via the /private symlink parent; assert the
     // stable path suffix instead of the realpath-dependent prefix.

@@ -5,7 +5,7 @@ import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import {
   DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS, MAX_WRITE_BATCH_DELAY_MS,
   SessionPersistence, SessionPersistenceRevision, PersistenceCoordinator,
-  type PersistenceBackend, type SessionPersistenceSnapshot, type StoredPrefix, type StoredSuffix,
+  type PersistenceBackend, type SessionInspection, type SessionIntegrity, type SessionPersistenceSnapshot, type StoredPrefix, type StoredSuffix,
 } from '../src/index.ts'
 import { runPersistenceContract, meta, oneTurnLog } from './contract.ts'
 import { runCoordinatorContract, type CoordinatorFixture } from './coordinator-contract.ts'
@@ -105,16 +105,16 @@ class MemoryPersistence extends SessionPersistence implements PersistenceBackend
     return this.coordinator.prepare(id, signal)
   }
 
-  load(id: SessionId): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
-    return this.coordinator.load(id).then(loaded => ({ meta: loaded.meta, events: [...loaded.events] }))
+  load(id: SessionId): Promise<SessionInspection> {
+    return this.coordinator.load(id).then(loaded => ({ meta: loaded.meta, events: [...loaded.events], integrity: loaded.integrity }))
   }
 
-  inspect(id: SessionId, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  inspect(id: SessionId, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
     return this.coordinator.inspect(id, signal)
-      .then(loaded => ({ meta: loaded.meta, events: [...loaded.events] }))
+      .then(loaded => ({ meta: loaded.meta, events: [...loaded.events], integrity: loaded.integrity }))
   }
 
-  readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
     return this.coordinator.readFrom(id, fromSeq, signal)
   }
 
@@ -151,14 +151,22 @@ class MemoryPersistence extends SessionPersistence implements PersistenceBackend
     }
   }
 
-  async commitRepair(m: SessionHeader, _tornMarker: undefined, closers: readonly SessionEvent[]): Promise<void> {
-    // No torn tails in a Map store, so `_tornMarker` is always undefined; only the
-    // synthetic closers are appended (the same DELETE+INSERT a DB backend does,
-    // minus the truncate).
+  async commitRepair(
+    m: SessionHeader,
+    _events: readonly SessionEvent[],
+    _tornMarker: undefined,
+    closers: readonly SessionEvent[],
+    repairedEvent: SessionEvent,
+  ): Promise<void> {
+    // No torn tails in a Map store, so `_tornMarker` is always undefined; the
+    // synthetic closers plus the repair diagnostic are appended (the same
+    // DELETE+INSERT a DB backend does, minus the truncate).
     const entry = this.store.get(m.id)
     /* v8 ignore next -- commitRepair only runs for a materialized (stored) session */
     if (!entry) return
-    if (closers.length > 0) entry.events.push(...structuredClone(closers) as SessionEvent[])
+    if (closers.length > 0 || repairedEvent.seq > 0) {
+      entry.events.push(...structuredClone([...closers, repairedEvent]) as SessionEvent[])
+    }
   }
 
   async list(signal?: AbortSignal): Promise<SessionHeader[]> {
@@ -224,10 +232,16 @@ class ControlledBackend implements PersistenceBackend<never> {
     }
   }
 
-  async commitRepair(m: SessionHeader, _tornMarker: undefined, closers: readonly SessionEvent[]): Promise<void> {
+  async commitRepair(
+    m: SessionHeader,
+    _events: readonly SessionEvent[],
+    _tornMarker: undefined,
+    closers: readonly SessionEvent[],
+    repairedEvent: SessionEvent,
+  ): Promise<void> {
     this.repairAttempts += 1
     const entry = this.store.get(m.id)
-    if (entry !== undefined) entry.events.push(...structuredClone(closers) as SessionEvent[])
+    if (entry !== undefined) entry.events.push(...structuredClone([...closers, repairedEvent]) as SessionEvent[])
   }
 
   async list(): Promise<SessionHeader[]> {
@@ -480,7 +494,7 @@ describe('PersistenceCoordinator stored identity', () => {
 
       loadGate.resolve(true)
       const loaded = await loading
-      expect(loaded.events.map(event => event.type)).toEqual(['turn/start', 'turn/end'])
+      expect(loaded.events.map(event => event.type)).toEqual(['turn/start', 'turn/end', 'session/repaired'])
 
       const resumed = ctx.sessions.create(id, { seed: loaded.events, meta: loaded.meta })
       await expect(ctx.sessions.flush(resumed)).resolves.toBe(true)
@@ -1012,7 +1026,7 @@ describe('PersistenceCoordinator session preparations', () => {
 
       first = await coordinator.prepare(id)
       expect(backend.repairAttempts).toBe(1)
-      expect(backend.store.get(id)?.events.map(event => event.type)).toEqual(['turn/start', 'turn/end'])
+      expect(backend.store.get(id)?.events.map(event => event.type)).toEqual(['turn/start', 'turn/end', 'session/repaired'])
       first[Symbol.dispose]()
 
       second = await coordinator.prepare(id)
@@ -1037,8 +1051,8 @@ describe('PersistenceCoordinator session preparations', () => {
       events: [{ type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } }],
     })
     const commitRepair = backend.commitRepair.bind(backend)
-    vi.spyOn(backend, 'commitRepair').mockImplementation(async (header, tornMarker, closers) => {
-      await commitRepair(header, tornMarker, closers)
+    vi.spyOn(backend, 'commitRepair').mockImplementation(async (header, events, tornMarker, closers, repairedEvent) => {
+      await commitRepair(header, events, tornMarker, closers, repairedEvent)
       const entry = backend.store.get(id)
       if (entry === undefined) throw new Error('test repair must keep storage materialized')
       const seq = entry.events.length
@@ -1059,6 +1073,7 @@ describe('PersistenceCoordinator session preparations', () => {
       expect(preparation.session.events.map(event => event.type)).toEqual([
         'turn/start',
         'turn/end',
+        'session/repaired',
         'turn/start',
         'turn/end',
         'session/end-seed',
@@ -1082,8 +1097,8 @@ describe('PersistenceCoordinator session preparations', () => {
       events: [{ type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } }],
     })
     const commitRepair = backend.commitRepair.bind(backend)
-    vi.spyOn(backend, 'commitRepair').mockImplementation(async (header, tornMarker, closers) => {
-      await commitRepair(header, tornMarker, closers)
+    vi.spyOn(backend, 'commitRepair').mockImplementation(async (header, events, tornMarker, closers, repairedEvent) => {
+      await commitRepair(header, events, tornMarker, closers, repairedEvent)
       backend.store.delete(id)
     })
     let coordinator!: PersistenceCoordinator<never>

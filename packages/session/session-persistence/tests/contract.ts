@@ -148,20 +148,35 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
         expect(afterRepair).not.toBe(beforeRepair)
         expect(loaded.events.map(e => e.type)).toEqual([
           'turn/start', 'user/message', 'step/start', 'assistant/message', 'step/end', 'turn/end', // turn 1
-          'turn/start', 'step/start', 'step/end', 'turn/end', // turn 2: real events + synthetic closers
+          'turn/start', 'step/start', 'step/end', 'turn/end', 'session/repaired', // turn 2: real events + synthetic closers + diagnostic
         ])
-        expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
-        const last = loaded.events.at(-1)!
+        expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        const last = loaded.events.at(-2)!
         expect(last.type === 'turn/end' && last.data.reason).toEqual({ kind: 'interrupted' })
+        const repaired = loaded.events.at(-1)!
+        expect(repaired?.type === 'session/repaired' && repaired.data).toMatchObject({
+          reason: 'torn-tail', synthesizedClosers: 2,
+        })
+        // The diagnostic joins the ordered surface through the standard
+        // envelope contract: durable surfaceOp survives the round-trip and the
+        // repair notice reaches the model through deriveMessages().
+        expect(repaired?.type === 'session/repaired' && repaired.surfaceOp).toBe('append')
+        const resumed = Session.create(m.id, loaded.events, loaded.meta)
+        const notices = resumed.deriveMessages().filter(message =>
+          message.content.some(block => block.type === 'text' && block.text.includes('damaged and has been repaired')))
+        expect(notices).toHaveLength(1)
+        expect(loaded.integrity).toBe('repaired')
+        expect(inspected.integrity).toBe('unknown')
 
         // The closed log is durable and continuable: a fresh append continues at
-        // the balanced length (seq 10), and a reload round-trips identically.
+        // the balanced length (seq 11), and a reload round-trips identically.
         await persistence.append(m.id, [
-          { type: 'turn/start', seq: 10, time: 9, data: { turn: 3 } },
-          { type: 'turn/end', seq: 11, time: 10, data: { turn: 3, reason: { kind: 'completed' } } },
+          { type: 'turn/start', seq: 11, time: 9, data: { turn: 3 } },
+          { type: 'turn/end', seq: 12, time: 10, data: { turn: 3, reason: { kind: 'completed' } } },
         ])
         const reloaded = await persistence.load(m.id)
-        expect(reloaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+        expect(reloaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+        expect(reloaded.integrity).toBe('repaired')
       } finally {
         await dispose()
       }
@@ -200,8 +215,9 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
         // and a resumed session derives a valid transcript (no dangling call).
         expect(loaded.events.map(e => e.type)).toEqual([
           'turn/start', 'user/message', 'step/start', 'assistant/message', 'step/end', 'turn/end', // turn 1
-          'turn/start', 'step/start', 'assistant/message', 'tool/result', 'step/end', 'turn/end', // turn 2
+          'turn/start', 'step/start', 'assistant/message', 'tool/result', 'step/end', 'turn/end', 'session/repaired', // turn 2
         ])
+        expect(loaded.integrity).toBe('repaired')
         const synthetic = loaded.events.find(e => e.type === 'tool/result')
         expect(synthetic?.type === 'tool/result' && synthetic.data).toMatchObject({
           message: {

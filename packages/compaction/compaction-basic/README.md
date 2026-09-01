@@ -35,12 +35,13 @@ Every setting is optional. Top-level policy fields are defaults for every routed
 | `summarizationProvider` | no (default `''`) | Set together with `summarizationModel`; an empty pair resolves the latest logged request target, then the `AgentOptions` pair. |
 | `summarizationModel` | no (default `''`) | Set together with `summarizationProvider`; an empty pair resolves the latest logged request target, then the `AgentOptions` pair. |
 | `maxTokens` | no (default `8192`) | Provider generation cap for the summarization call; may include reasoning tokens. |
+| `summarizationMaxBytes` | no (default `8388608`) | Hard UTF-8 byte allowance on one summarizer request's model-facing representation (messages + system + tool schemas). A region that exceeds it is refused BEFORE any provider dispatch and the compaction transaction fails typed (`COMPACTION_BUDGET_EXCEEDED`); the predicate is strict, so exactly at the allowance dispatches. This is the compaction reserve that bounds the auxiliary dispatch — recovery can never re-dispatch content the request ceiling refused without this explicit bound. Keep it at or above the largest surface automatic recovery must compact (the default sits above the agent-loop request ceiling so a surface the request path just refused can still be compressed). |
 | `compactionRetries` | no (default `1`) | Extra attempts after the first when pressure remains above threshold. |
 | `maxOverflowRetries` | no (default `1`) | Maximum retries after canonical context-window overflow; `0` disables recovery only. |
 | `modelPolicies` | no (default `[]`) | Exact `{ provider, model, ...partialPolicy }` overrides; matching uses both fields and does not depend on `listModels()`. |
 | `auto` | no (default `true`) | Register step-boundary pressure and overflow-recovery listeners. Set `false` for manual-only. |
 
-Every `modelPolicies` entry accepts the policy fields above except `auto` and `modelPolicies` itself. If an entry supplies either retention field, it replaces the default policy's retention choice; otherwise retention is inherited. Summarization provider/model remain a pair inside each entry.
+Every `modelPolicies` entry accepts the policy fields above except `auto`, `modelPolicies`, and the deployment-wide `summarizationMaxBytes`. If an entry supplies either retention field, it replaces the default policy's retention choice; otherwise retention is inherited. Summarization provider/model remain a pair inside each entry.
 
 An adapter may return no capacity for a valid dynamic route, and resolved capacity may expose an invalid absolute retention budget. Manual pressure checks then throw a target-specific configuration error; the automatic listener warns once for that exact target and continues with full history. Unrelated operational failures remain independently visible. Canonical provider overflow still attempts recovery because the provider has already established that compaction is necessary.
 

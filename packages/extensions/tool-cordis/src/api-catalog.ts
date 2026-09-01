@@ -413,6 +413,29 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         throws: ['when no turn is open or either audit event fails before the session append commit point.'],
       },
       {
+        signature: 'isAuthorized(subject: object): boolean',
+        description: 'Whether an unconsumed grant authorizes this exact execution object. The action guard\'s monotonic deny fence reads this; the scheduler takes the grant atomically at the dispatch boundary. Only a request that carried this same object minted the grant, so no other attempt can satisfy it.',
+        parameters: [{ name: 'subject', description: 'the exact registry-created execution object.' }],
+        returns: 'true only while an allowed-once grant for this object is untaken.',
+      },
+      {
+        signature: 'take(subject: object): boolean',
+        description: 'Atomically take the one-shot grant for an exact execution object at the dispatch boundary: the first take succeeds and spends the grant; every later take fails. Idempotent after the first success.',
+        parameters: [{ name: 'subject', description: 'the exact registry-created execution object.' }],
+        returns: 'true exactly once per minted grant.',
+      },
+      {
+        signature: 'revoke(subject: object): void',
+        description: 'Revoke any grant for an exact execution object when its attempt reaches a terminal disposition (cancelled, denied, executed): no live authorization may outlive the execution lifecycle.',
+        parameters: [{ name: 'subject', description: 'the exact registry-created execution object.' }],
+      },
+      {
+        signature: 'executionApproval(subject: object): { readonly available: boolean; readonly sandboxMode?: string } | undefined',
+        description: 'The authorization record for an exact execution object, for tool bodies that must consult the attempt\'s decision mid-execution (sandbox escalation reuse). Survives the take (the record stays until revoked at the terminal transition); `available` reports the untaken state.',
+        parameters: [{ name: 'subject', description: 'the exact registry-created execution object.' }],
+        returns: 'the record, or undefined for an object without one.',
+      },
+      {
         signature: 'overrideOf(session: Session): ApprovalPolicy | undefined',
         description: 'Read the session override without applying the configured default.',
         parameters: [{ name: 'session', description: 'session whose log supplies the override.' }],
@@ -1158,6 +1181,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [],
       },
       {
+        signature: 'readonly maxMode: SandboxMode',
+        description: 'The hard ceiling no resolution exceeds — the security cap for session overrides and escalations.',
+        parameters: [],
+      },
+      {
         signature: 'readonly workspaceRoot: string',
         description: 'The absolute `workspace-write` fallback root for calls without a session cwd.',
         parameters: [],
@@ -1167,6 +1195,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Resolve the complete policy for one capability call. An approved explicit mode outranks the session\'s last `sandbox/mode` event, which outranks the deployment default. A session cwd is its workspace-write boundary; the configured root is the fallback for agentless calls and sessions without a cwd.',
         parameters: [{ name: 'request', description: 'optional session and approved mode override.' }],
         returns: 'the fully resolved per-call mode and absolute workspace root.',
+      },
+      {
+        signature: 'isMinted(authority: SandboxExecutionPolicy): boolean',
+        description: 'Whether this owner minted the authority. Enforcing backends accept only minted authorities; a caller-constructed object is ignored and the owner\'s default applies. TypeScript cannot forge the brand, and this runtime check stops structurally forged objects from partially-trusted in-process code. It is not a malicious-code boundary: a plugin that can patch the service or reach an unrestricted capability is out of scope.',
+        parameters: [{ name: 'authority', description: 'the policy object a capability call carries.' }],
+        returns: 'true only for an authority this service returned from `resolve`.',
       },
       {
         signature: 'overrideOf(session: Session): SandboxMode | undefined',
@@ -1228,7 +1262,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the validated header and current logical event log.',
       },
       {
-        signature: 'abstract readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }>',
+        signature: 'abstract readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }>',
         description: 'Read the stored events from `fromSeq` onward — the read-from-seq primitive for read models that resume from a watermark (e.g. a persisted projection cache folding only the tail past its checkpoint). Unlike inspect, it is a detached physical suffix read: no preparation cache, torn-tail truncation, synthetic closers, or coordinator-state publication. Only events from the valid contiguous stored prefix are returned, so a torn fragment never reaches the caller. `fromSeq` at or beyond the stored prefix returns an empty event list (never an error). Backends whose medium can seek by seq (SQLite) read only the suffix; sequential media (JSONL, both encodings) still parse the whole artifact and skip forward — the primitive bounds what is RETURNED and refolded, not every backend\'s physical read.',
         parameters: [{ name: 'id', description: 'the persisted session to read.' }, { name: 'fromSeq', description: 'first event seq to include; a non-negative safe integer.' }, { name: 'signal', description: 'optional cancellation for queued and backend read work.' }],
         returns: 'the header and the stored events with `seq >= fromSeq`.',
@@ -1259,9 +1293,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the cut (`asOfSeq` = lowest served-row watermark), or `undefined` when no usable row exists for this lifecycle.',
       },
       {
-        signature: 'async write(session: Session): Promise<void>',
+        signature: 'async write(session: Session, _trigger?: string, final: boolean = false, captured?: ProjectionCheckpoint): Promise<void>',
         description: 'Durably checkpoint one live session NOW (both mandatory points call this; tests and carriers may too). The registry cut is snapshotted at this boundary (states are live references), then the whole record is replaced. NOT fail-soft — callers on the fail-soft paths contain it.',
-        parameters: [{ name: 'session', description: 'the live session to checkpoint.' }],
+        parameters: [{ name: 'session', description: 'the live session to checkpoint.' }, { name: '_trigger', description: 'the trigger name for diagnostics (unused by this method: the enqueueing caller owns the failure log).' }, { name: 'final', description: 'the ordered detach task: skips the post-flush lifecycle recheck (the session is already detached; the last cut must land).' }, { name: 'captured', description: 'a cut snapshotted at detach time (the disposal cascade unregisters projection units while the task is queued).' }],
         returns: 'resolution after durability and event emission.',
       },
       {
@@ -1272,7 +1306,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'dirtyStats(session: Session): { pending: number; failures: number; retriesLeft: number }',
-        description: 'Write-behind health for one live session: pending count (0 = clean), consecutive failures, and remaining automatic retries.',
+        description: 'Write-behind health for one live session: pending count (0 = clean), consecutive failures, and remaining automatic retries. A nonzero `failures` with `pending > 0` means a checkpoint is stale and being retried.',
         parameters: [{ name: 'session', description: 'the live session to inspect.' }],
         returns: 'the write-behind health for that session.',
       },
@@ -2116,6 +2150,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the exact disposer that unregisters the guard.',
       },
       {
+        signature: 'policy(policy: ToolPolicy): () => void',
+        description: 'Register a MANDATORY security recommendation. Every policy is evaluated for every execution attempt — no policy can short-circuit another — and all recommendations aggregate under deny > ask > allow before the single scheduler approval point. A plain-context policy applies globally; one registered through `agent.ctx` applies only to that agent. A throwing policy denies the attempt.',
+        parameters: [{ name: 'policy', description: 'mandatory recommendation returning a {@link PreToolDecision} (or nothing for allow).' }],
+        returns: 'the exact disposer that unregisters the policy.',
+      },
+      {
+        signature: 'identityOf(execution: Readonly<ToolExecution>): ToolExecutionIdentity | undefined',
+        description: 'The frozen identity record for one registry-created execution, or undefined for an object the registry never created. Enforcement reads this record, never the mutable live object.',
+        parameters: [{ name: 'execution', description: 'the execution whose identity is requested.' }],
+        returns: 'the frozen record for a recognized execution.',
+      },
+      {
         signature: 'get(name: string, scope?: ScopeKey): ToolDefinition | undefined',
         description: 'Look up a tool as one scope sees it (scoped shadows global; a restricted-away global reads as absent). Presenters pass the calling agent so the rendered card matches the definition that actually executed.',
         parameters: [{ name: 'name', description: 'the tool name as registered.' }, { name: 'scope', description: 'the viewing scope (the agent); omitted = the global view.' }],
@@ -2450,6 +2496,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     summary: 'Replace the frozen call configuration.',
     description: 'Replace the frozen call configuration. `await next()` yields the config the machine would use (agent options on the first request, the logged header afterwards); return a replacement to switch. Model-visible content must use logged channels; this waterfall cannot mutate messages.',
     parameters: [{ name: 'payload', description: '.signal - the current turn\'s explicit abort signal. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
+  },
+  {
+    name: 'agent/request-budget',
+    mode: 'waterfall',
+    signature: '\'agent/request-budget\'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; bytes: number; estimateTokens: number; signal: AbortSignal }, next: () => Promise<RequestBudgetAction>): Promise<RequestBudgetAction>',
+    summary: 'Handle one prompt-budget rejection BEFORE any provider dispatch.',
+    description: 'Handle one prompt-budget rejection BEFORE any provider dispatch. The request exceeded the final byte ceiling or the configured estimate ceiling and was never sent. A listener returns `{ kind: \'retry\' }` without calling `next()` when it owns recovery (compaction reduces the surface, then the loop rebuilds and re-checks), or calls `next()` to delegate; the default `{ kind: \'reject\' }` fails the step loud with `PROMPT_BUDGET_EXCEEDED`. The loop bounds recovery retries per step.',
+    parameters: [{ name: 'payload', description: '.signal - the turn abort signal. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
   },
   {
     name: 'agent/request-error',
@@ -2917,11 +2971,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ApprovalRequest',
-    declaration: 'export interface ApprovalRequest {\n    readonly agent: Agent;\n    readonly toolName: string;\n    readonly callId?: CallId;\n    readonly reason?: string;\n    readonly signal?: AbortSignal;\n}',
+    declaration: 'export interface ApprovalRequest {\n    readonly agent: Agent;\n    readonly toolName: string;\n    readonly callId?: CallId;\n    readonly operationId?: OperationId;\n    readonly argsDigest?: string;\n    readonly authorizationSubject?: object;\n    readonly sandboxMode?: string;\n    readonly reason?: string;\n    readonly signal?: AbortSignal;\n}',
   },
   {
     name: 'ApprovalService',
-    declaration: 'export class ApprovalService extends Service {\n    static Config: z<Config>;\n    constructor(ctx: Context, public config: Config);\n    setPolicy(agent: Agent, policy: ApprovalPolicy): void;\n    async request(req: ApprovalRequest): Promise<ApprovalOutcome>;\n    overrideOf(session: Session): ApprovalPolicy | undefined;\n}',
+    declaration: 'export class ApprovalService extends Service {\n    static Config: z<Config>;\n    constructor(ctx: Context, public config: Config);\n    setPolicy(agent: Agent, policy: ApprovalPolicy): void;\n    async request(req: ApprovalRequest): Promise<ApprovalOutcome>;\n    isAuthorized(subject: object): boolean;\n    take(subject: object): boolean;\n    revoke(subject: object): void;\n    executionApproval(subject: object): {\n        readonly available: boolean;\n        readonly sandboxMode?: string;\n    } | undefined;\n    overrideOf(session: Session): ApprovalPolicy | undefined;\n}',
   },
   {
     name: 'AskUserQuestionAnswer',
@@ -3828,6 +3882,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface OneShotSubagentDescriptorData extends SubagentDescriptorBase {\n    readonly mode: \'one-shot\';\n    readonly label?: string;\n}',
   },
   {
+    name: 'OperationId',
+    declaration: 'export type OperationId = string & {\n    readonly [operationIdBrand]: true;\n};',
+  },
+  {
     name: 'PermissionSelect',
     declaration: 'export interface PermissionSelect {\n    options: PresetOption[];\n    currentValue: string;\n}',
   },
@@ -3938,6 +3996,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ReplayEnvelope',
     declaration: 'export interface ReplayEnvelope {\n    response: unknown;\n    blocks?: readonly unknown[];\n}',
+  },
+  {
+    name: 'RequestBudgetAction',
+    declaration: 'export type RequestBudgetAction = {\n    kind: \'retry\';\n} | {\n    kind: \'reject\';\n};',
   },
   {
     name: 'RequestContext',
@@ -4105,7 +4167,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionEventMap',
-    declaration: 'export interface SessionEventMap {\n    \'turn/start\': {\n        turn: number;\n    };\n    \'turn/end\': {\n        turn: number;\n        reason: TurnEndReason;\n    };\n    \'step/start\': {\n        turn: number;\n        step: number;\n    };\n    \'step/end\': {\n        turn: number;\n        step: number;\n    };\n    \'user/message\': UserMessage;\n    \'assistant/chunk\': {\n        turn: number;\n        step: number;\n        chunk: StreamChunk;\n    };\n    \'assistant/message\': {\n        turn: number;\n        step: number;\n        message: AssistantMessage;\n        usage?: TokenUsage;\n        interrupted?: true;\n    };\n    \'tool/call\': {\n        turn: number;\n        step: number;\n        callId: CallId;\n        name: string;\n        arguments: string;\n    };\n    \'tool/result\': {\n        turn: number;\n        step: number;\n        message: ToolResultMessage;\n        error?: {\n            name: string;\n            code: string;\n        };\n        meta?: JsonValue;\n    };\n    \'todo/write\': {\n        todos: TodoItem[];\n    };\n    \'request/header\': {\n        header: EpochHeader;\n        reason: RequestHeaderReason;\n    };\n    \'request/context\': RequestContext;\n    \'request/attempt-start\': {\n        turn: number;\n        step: number;\n        attempt: number;\n        provider: string;\n        model: string;\n    };\n    \'request/attempt-end\': {\n        turn: number;\n        step: number;\n        attempt: number;\n        outcome: \'ok\' | \'throw\' | \'retry\' | \'retry-exhausted\';\n        failure?: LlmFailur /* …truncated — full shape in source */',
+    declaration: 'export interface SessionEventMap {\n    \'turn/start\': {\n        turn: number;\n    };\n    \'turn/end\': {\n        turn: number;\n        reason: TurnEndReason;\n    };\n    \'step/start\': {\n        turn: number;\n        step: number;\n    };\n    \'step/end\': {\n        turn: number;\n        step: number;\n    };\n    \'user/message\': UserMessage;\n    \'assistant/chunk\': {\n        turn: number;\n        step: number;\n        chunk: StreamChunk;\n    };\n    \'assistant/message\': {\n        turn: number;\n        step: number;\n        message: AssistantMessage;\n        usage?: TokenUsage;\n        interrupted?: true;\n    };\n    \'tool/call\': {\n        turn: number;\n        step: number;\n        callId: CallId;\n        name: string;\n        arguments: string;\n        operationId?: OperationId;\n    };\n    \'tool/result\': {\n        turn: number;\n        step: number;\n        message: ToolResultMessage;\n        error?: {\n            name: string;\n            code: string;\n        };\n        meta?: JsonValue;\n        operationId?: OperationId;\n    };\n    \'session/repaired\': {\n        message: UserMessage;\n        reason: string;\n        lostLines: number;\n        recoveredEvents: number;\n        synthesizedClosers: number;\n    };\n    \'todo/write\': {\n        todos: TodoItem[];\n    };\n    \'request/header\': {\n        header: EpochHeader;\n        reason: RequestHeaderReason;\n    };\n    \'request/context\': RequestContext;\n    \'request/attempt-start\': {\n        turn: number;\n        step: number;\n        attempt: /* …truncated — full shape in source */',
   },
   {
     name: 'SessionEventMetadataFilter',
@@ -4177,7 +4239,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionInspection',
-    declaration: 'export interface SessionInspection {\n    readonly meta: SessionHeader;\n    readonly events: readonly SessionEvent[];\n}',
+    declaration: 'export interface SessionInspection {\n    readonly meta: SessionHeader;\n    readonly events: readonly SessionEvent[];\n    readonly integrity: SessionIntegrity;\n}',
+  },
+  {
+    name: 'SessionIntegrity',
+    declaration: 'export type SessionIntegrity = \'intact\' | \'repaired\' | \'unknown\';',
   },
   {
     name: 'SessionLineageNode',
@@ -4613,7 +4679,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SurfaceEventType',
-    declaration: 'export type SurfaceEventType = \'user/message\' | \'assistant/message\' | \'tool/result\';',
+    declaration: 'export type SurfaceEventType = \'user/message\' | \'assistant/message\' | \'tool/result\' | \'session/repaired\';',
   },
   {
     name: 'SurfaceOp',
@@ -4793,15 +4859,19 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolExecution',
-    declaration: 'export interface ToolExecution extends ToolExecutionInput {\n    readonly rootCallId: CallId;\n    readonly token: ToolExecutionToken;\n}',
+    declaration: 'export interface ToolExecution extends ToolExecutionInput {\n    readonly rootCallId: CallId;\n    readonly token: ToolExecutionToken;\n    readonly operationId: OperationId;\n    readonly argsDigest?: string;\n}',
   },
   {
     name: 'ToolExecutionFailure',
     declaration: 'export interface ToolExecutionFailure {\n    readonly isError: true;\n    readonly error: ToolFailure;\n    readonly value?: never;\n    readonly content: ContentBlock[];\n    readonly meta?: JsonValue;\n    readonly additionalContexts?: UserMessage[];\n    readonly concludesTurn?: never;\n}',
   },
   {
+    name: 'ToolExecutionIdentity',
+    declaration: 'export interface ToolExecutionIdentity {\n    readonly token: ToolExecutionToken;\n    readonly operationId: OperationId;\n    readonly callId: CallId;\n    readonly rootCallId: CallId;\n    readonly name: string;\n    readonly agent?: Agent;\n    readonly parent?: ToolExecutionToken;\n    readonly session?: Session;\n    readonly scope?: ScopeKey;\n    readonly argsDigest?: string;\n}',
+  },
+  {
     name: 'ToolExecutionInput',
-    declaration: 'export interface ToolExecutionInput {\n    readonly callId: CallId;\n    readonly rootCallId?: CallId;\n    readonly name: string;\n    readonly arguments: unknown;\n    readonly agent?: Agent;\n    readonly parent?: ToolExecutionToken;\n    readonly signal: AbortSignal;\n}',
+    declaration: 'export interface ToolExecutionInput {\n    readonly callId: CallId;\n    readonly rootCallId?: CallId;\n    readonly name: string;\n    readonly arguments: unknown;\n    readonly agent?: Agent;\n    readonly parent?: ToolExecutionToken;\n    readonly signal: AbortSignal;\n    operationId?: OperationId;\n}',
   },
   {
     name: 'ToolExecutionMode',
@@ -4834,6 +4904,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ToolOutputDefinition',
     declaration: 'export interface ToolOutputDefinition {\n    readonly schema: JsonSchemaNode;\n    render(args: unknown, value: JsonValue): ContentBlock[];\n    presentationMeta?(args: unknown, value: JsonValue): JsonValue;\n}',
+  },
+  {
+    name: 'ToolPolicy',
+    declaration: 'export type ToolPolicy = (execution: Readonly<ToolExecution>) => PreToolDecision | void;',
   },
   {
     name: 'ToolPresentationMode',
@@ -4869,11 +4943,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolRuntime',
-    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
+    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    policy(policy: ToolPolicy): () => void;\n    identityOf(execution: Readonly<ToolExecution>): ToolExecutionIdentity | undefined;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
   },
   {
     name: 'ToolRuntimeScheduler',
-    declaration: 'export interface ToolRuntimeScheduler {\n    prepare(exec: ToolExecutionInput): Promise<ScheduledToolPreparation>;\n    dispatch(exec: ToolRunContext): Promise<ScheduledToolDispatch>;\n    finalize(exec: ToolRunContext, result: ToolExecutionResult): Promise<ToolExecutionResult>;\n    finish(exec: ToolRunContext, result: ToolExecutionResult): ToolExecutionResult;\n}',
+    declaration: 'export interface ToolRuntimeScheduler {\n    prepare(exec: ToolExecutionInput): Promise<ScheduledToolPreparation>;\n    dispatch(exec: ToolRunContext): Promise<ScheduledToolDispatch>;\n    finalize(exec: ToolRunContext, result: ToolExecutionResult): Promise<ToolExecutionResult>;\n    finish(exec: ToolRunContext, result: ToolExecutionResult): ToolExecutionResult;\n    mintOperationId(session: Session): OperationId;\n    releaseOperationId(session: Session, operationId: OperationId): void;\n}',
   },
   {
     name: 'ToolSchema',

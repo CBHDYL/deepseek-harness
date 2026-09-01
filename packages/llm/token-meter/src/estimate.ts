@@ -85,3 +85,35 @@ export function estimateToolsTokens(header: EpochHeader | undefined): number {
 export function estimateHeader(header: EpochHeader | undefined): number {
   return estimateSystemTokens(header) + estimateToolsTokens(header)
 }
+
+/** The final assembled request fields priced by {@link estimateRequest}. */
+export interface RequestEnvelope {
+  /** The exact messages about to be dispatched, in order. */
+  messages: readonly Message[]
+  /** The rendered system prompt, when present. */
+  system?: string
+  /** The model-facing tool schemas, when present. */
+  tools?: readonly unknown[]
+}
+
+/**
+ * Price the complete final request at the provider boundary: every message
+ * under the fixed-density heuristic plus the system-prompt and tool-schema
+ * parts of the envelope. This is an ADVISORY, provider-agnostic heuristic
+ * (accepted design deviation, PR-6 F2): no provider/model identity
+ * participates in pricing, so the number is never a provider token guarantee.
+ * Callers that enforce a hard safety boundary measure UTF-8 bytes separately
+ * (the agent-loop byte ceiling is the normative enforcement; the optional
+ * estimate ceiling is an early heuristic trigger only).
+ * @param envelope - the assembled request fields.
+ * @returns heuristic tokens for the complete request.
+ */
+export function estimateRequest(envelope: RequestEnvelope): number {
+  let tokens = 0
+  for (const message of envelope.messages) tokens += estimateMessage(message)
+  tokens += estimateSystemTokens(envelope.system === undefined ? undefined : { system: envelope.system } as EpochHeader)
+  tokens += estimateToolsTokens(envelope.tools === undefined || envelope.tools.length === 0
+    ? undefined
+    : { tools: envelope.tools } as unknown as EpochHeader)
+  return tokens
+}

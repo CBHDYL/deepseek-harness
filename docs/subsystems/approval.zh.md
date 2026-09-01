@@ -132,6 +132,43 @@ setPolicy(agent: Agent, policy: ApprovalPolicy): void
 async request(req: ApprovalRequest): Promise<ApprovalOutcome>
 
 /**
+ * Whether an unconsumed grant authorizes this exact execution object. The
+ * action guard's monotonic deny fence reads this; the scheduler takes the
+ * grant atomically at the dispatch boundary. Only a request that carried
+ * this same object minted the grant, so no other attempt can satisfy it.
+ * @param subject - the exact registry-created execution object.
+ * @returns true only while an allowed-once grant for this object is untaken.
+ */
+isAuthorized(subject: object): boolean
+
+/**
+ * Atomically take the one-shot grant for an exact execution object at the
+ * dispatch boundary: the first take succeeds and spends the grant; every
+ * later take fails. Idempotent after the first success.
+ * @param subject - the exact registry-created execution object.
+ * @returns true exactly once per minted grant.
+ */
+take(subject: object): boolean
+
+/**
+ * Revoke any grant for an exact execution object when its attempt reaches a
+ * terminal disposition (cancelled, denied, executed): no live authorization
+ * may outlive the execution lifecycle.
+ * @param subject - the exact registry-created execution object.
+ */
+revoke(subject: object): void
+
+/**
+ * The authorization record for an exact execution object, for tool bodies
+ * that must consult the attempt's decision mid-execution (sandbox
+ * escalation reuse). Survives the take (the record stays until revoked at
+ * the terminal transition); `available` reports the untaken state.
+ * @param subject - the exact registry-created execution object.
+ * @returns the record, or undefined for an object without one.
+ */
+executionApproval(subject: object): { readonly available: boolean; readonly sandboxMode?: string } | undefined
+
+/**
  * Read the session override without applying the configured default.
  * @param session - session whose log supplies the override.
  * @returns the last logged policy, or `undefined` without one.

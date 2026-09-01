@@ -135,9 +135,15 @@ cachedSnapshot(meta: SessionHeader): ProjectionSnapshot | undefined
  * this boundary (states are live references), then the whole record is
  * replaced. NOT fail-soft — callers on the fail-soft paths contain it.
  * @param session - the live session to checkpoint.
+ * @param _trigger - the trigger name for diagnostics (unused by this method:
+ *   the enqueueing caller owns the failure log).
+ * @param final - the ordered detach task: skips the post-flush lifecycle
+ *   recheck (the session is already detached; the last cut must land).
+ * @param captured - a cut snapshotted at detach time (the disposal cascade
+ *   unregisters projection units while the task is queued).
  * @returns resolution after durability and event emission.
  */
-async write(session: Session): Promise<void>
+async write(session: Session, _trigger?: string, final: boolean = false, captured?: ProjectionCheckpoint): Promise<void>
 
 /**
  * Cold-read one persisted session's projections with zero full-log load:
@@ -155,7 +161,9 @@ async coldSnapshot(id: SessionId, signal?: AbortSignal): Promise<ProjectionSnaps
 
 /**
  * Write-behind health for one live session: pending count (0 = clean),
- * consecutive failures, and remaining automatic retries.
+ * consecutive failures, and remaining automatic retries. A nonzero
+ * `failures` with `pending > 0` means a checkpoint is stale and being
+ * retried.
  * @param session - the live session to inspect.
  * @returns the write-behind health for that session.
  */

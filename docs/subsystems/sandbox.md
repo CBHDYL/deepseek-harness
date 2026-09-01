@@ -205,6 +205,18 @@ The sandbox-policy service (`ctx.sandboxPolicy`). Owns the deployment default mo
 resolve(request: SandboxPolicyRequest = {}): SandboxExecutionPolicy
 
 /**
+ * Whether this owner minted the authority. Enforcing backends accept only
+ * minted authorities; a caller-constructed object is ignored and the owner's
+ * default applies. TypeScript cannot forge the brand, and this runtime check
+ * stops structurally forged objects from partially-trusted in-process code.
+ * It is not a malicious-code boundary: a plugin that can patch the service
+ * or reach an unrestricted capability is out of scope.
+ * @param authority - the policy object a capability call carries.
+ * @returns true only for an authority this service returned from `resolve`.
+ */
+isMinted(authority: SandboxExecutionPolicy): boolean
+
+/**
  * Read the session override without applying the deployment default.
  * @param session - session whose log supplies the override.
  * @returns the last logged mode, or `undefined` without one.

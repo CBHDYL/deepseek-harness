@@ -9,7 +9,7 @@
  */
 
 import { join } from 'node:path'
-import { decodeStorageRecord, packChunkRuns, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
+import { decodeStorageRecord, packChunkRuns, SUPPORTED_SESSION_FORMAT_VERSIONS } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader, SessionId, StorageRecord } from '@deepseek-ai/dsh-session'
 import { SessionFormatUnsupportedError, sessionFormatVersionRefusal } from '@deepseek-ai/dsh-session-persistence'
 
@@ -227,6 +227,8 @@ interface SessionLogScan {
   meta: SessionHeader
   events: SessionEvent[]
   committedBytes: number
+  /** Complete records past the valid prefix that could not be preserved. */
+  lostLines: number
 }
 
 /** Parse one complete header record supplied independently from event rows. */
@@ -240,7 +242,7 @@ interface SessionLogScan {
 function refuseForeignFormatVersion(parsed: unknown): void {
   if (typeof parsed !== 'object' || parsed === null) return
   const { version, id } = parsed as { version?: unknown; id?: unknown }
-  if (typeof version !== 'number' || version === SESSION_FORMAT_VERSION) return
+  if (typeof version !== 'number' || SUPPORTED_SESSION_FORMAT_VERSIONS.includes(version)) return
   throw new SessionFormatUnsupportedError(
     sessionFormatVersionRefusal(typeof id === 'string' ? id : String(id), version),
   )
@@ -278,6 +280,7 @@ export class SessionLogScanner {
   private committedBytes: number
   private eventLine = 0
   private issue: Error | undefined
+  private lostLines = 0
   private finished = false
 
   /**
@@ -340,10 +343,21 @@ export class SessionLogScanner {
    */
   finish(): SessionLogScan {
     this.finished = true
-    return { meta: this.meta, events: this.events, committedBytes: this.committedBytes }
+    return {
+      meta: this.meta,
+      events: this.events,
+      committedBytes: this.committedBytes,
+      lostLines: this.lostLines,
+    }
   }
 
-  /** Decode one complete event row and update the contiguous prefix. */
+  /**
+   * Decode one complete event row and update the contiguous prefix. Recovery
+   * semantics: from the first unparsable record or seq gap onward, everything
+   * is counted as lost — the scanner never throws on committed-region damage;
+   * the coordinator commits an atomic repair that records the loss in
+   * `session/repaired` instead of silently presenting a shorter log.
+   */
   private consumeEventLine(line: Buffer, endByte: number): void {
     this.eventLine += 1
     let decoded: SessionEvent[]
@@ -351,11 +365,14 @@ export class SessionLogScanner {
       decoded = decodeStorageRecord(JSON.parse(line.toString('utf8')))
     } catch {
       this.issue ??= new Error(`corrupt session log: unparsable committed event at line ${this.eventLine}`)
+      this.lostLines += 1
       return
     }
 
     if (this.issue !== undefined) {
-      if (decoded.some(event => event.type === 'turn/end')) throw this.issue
+      // Everything after the first damaged record is lost: no refusal, no
+      // silent shortening — the loss is recorded by the repair transaction.
+      this.lostLines += 1
       return
     }
 
@@ -368,7 +385,7 @@ export class SessionLogScanner {
           `corrupt session log: seq gap in committed region at line ${this.eventLine} `
           + `(expected ${expected}, got ${event.seq})`,
         )
-        if (decoded.some(candidate => candidate.type === 'turn/end')) throw this.issue
+        this.lostLines += 1
         return
       }
       this.events.push(event)

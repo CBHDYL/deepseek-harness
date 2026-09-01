@@ -16,6 +16,7 @@ const SURFACE_EVENT_TYPES = new Set<string>([
   'user/message',
   'assistant/message',
   'tool/result',
+  'session/repaired',
 ])
 
 /**
@@ -104,6 +105,11 @@ export function deriveEventMessage(event: SessionEvent): Message | null {
       return event.data.message
     }
     case 'tool/result': {
+      return event.data.message
+    }
+    case 'session/repaired': {
+      // The repair notice is the recovered session's first model-visible fact:
+      // the resumed model must know its history is incomplete.
       return event.data.message
     }
     default:

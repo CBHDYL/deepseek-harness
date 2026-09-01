@@ -7,7 +7,7 @@
 
 import { MessageId, freezeMessage, type CallId } from '@deepseek-ai/dsh-llm'
 import type { ToolResultMessage } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent } from './types.ts'
+import type { OperationId, SessionEvent } from './types.ts'
 
 /** Recovery code for an assistant tool request that never reached a recorded call start. */
 export const TOOL_NOT_STARTED = 'TOOL_NOT_STARTED'
@@ -28,8 +28,15 @@ export function interruptedTurnClosers(events: readonly SessionEvent[]): Session
   let openTurn: number | null = null
   let openStep: number | null = null
   // Reset at each turn boundary so earlier calls cannot leak into tail repair.
-  // Assistant blocks register calls; later `tool/call` events add their seqs to `sourceEventSeqs`.
-  const pendingCalls = new Map<CallId, { step: number; callSeq?: number }>()
+  // Entries pair on the attempt correlation (operationId) when one exists and
+  // fall back to the model call id only for legacy rows without one: a reused
+  // call id over two distinct attempts must not make one attempt's result
+  // delete the other. Keys are namespaced (`call:`/`op:`) because a provider
+  // call id like "1" and a numeric operation id occupy different namespaces
+  // and must never collide in one map.
+  const pendingCalls = new Map<string, { step: number; callId: CallId; callSeq?: number; operationId?: OperationId }>()
+  const callKey = (callId: CallId): string => `call:${callId}`
+  const operationKey = (operationId: OperationId): string => `op:${operationId}`
   for (const event of events) {
     switch (event.type) {
       case 'turn/start':
@@ -53,20 +60,48 @@ export function interruptedTurnClosers(events: readonly SessionEvent[]): Session
         // The assistant message carries the tool-call blocks; each is pending
         // until a tool/result event with the same callId is logged.
         for (const block of event.data.message.content) {
-          if (block.type === 'tool-call') pendingCalls.set(block.id, { step: event.data.step })
+          if (block.type === 'tool-call') pendingCalls.set(callKey(block.id), { step: event.data.step, callId: block.id })
         }
         break
       case 'tool/call':
-        // Cite the `tool/call` seq from the synthetic result.
+        // Cite the `tool/call` seq from the synthetic result and carry the
+        // attempt correlation so the repaired disposition closes the audit
+        // chain the interrupted execution opened. Once an attempt correlation
+        // exists the entry moves under it: the model call id stops being the
+        // pairing key for that attempt. A `tool/call` with no matching
+        // assistant block is a registry-owned direct execution — register it
+        // as its own pending attempt so repair closes that chain too.
         {
-          const entry = pendingCalls.get(event.data.callId)
-          if (entry) {
+          const entry = pendingCalls.get(callKey(event.data.callId))
+          if (entry !== undefined) {
             entry.callSeq = event.seq
+            if (event.data.operationId !== undefined) {
+              entry.operationId = event.data.operationId
+              pendingCalls.delete(callKey(event.data.callId))
+              pendingCalls.set(operationKey(event.data.operationId), entry)
+            }
+          } else {
+            pendingCalls.set(
+              event.data.operationId !== undefined
+                ? operationKey(event.data.operationId)
+                : callKey(event.data.callId),
+              {
+                step: event.data.step,
+                callId: event.data.callId,
+                callSeq: event.seq,
+                ...event.data.operationId !== undefined ? { operationId: event.data.operationId } : {},
+              },
+            )
           }
         }
         break
       case 'tool/result':
-        pendingCalls.delete(event.data.message.source.callId)
+        // New-format pairing by attempt correlation; legacy rows (no
+        // operationId) fall back to the model call id.
+        {
+          const op = event.data.operationId
+          pendingCalls.delete(op !== undefined ? operationKey(op) : callKey(event.data.message.source.callId))
+        }
         break
       // Other event types do not move the turn/step boundary cursor.
       default:
@@ -88,7 +123,7 @@ export function interruptedTurnClosers(events: readonly SessionEvent[]): Session
 
   // Close calls before their step: providers reject dangling assistant calls,
   // and Map insertion order preserves their transcript order.
-  for (const [callId, { step, callSeq }] of pendingCalls) {
+  for (const { step, callId, callSeq, operationId } of pendingCalls.values()) {
     const started = callSeq !== undefined
     const message: ToolResultMessage = freezeMessage({
       id: MessageId(`interrupted-tool-result-${callId}-${seq}`),
@@ -117,6 +152,7 @@ export function interruptedTurnClosers(events: readonly SessionEvent[]): Session
         error: started
           ? { name: 'ToolOutcomeUnknownError', code: TOOL_OUTCOME_UNKNOWN }
           : { name: 'ToolNotStartedError', code: TOOL_NOT_STARTED },
+        ...operationId !== undefined ? { operationId } : {},
       },
       surfaceOp: 'append',
       ...started ? { sourceEventSeqs: [callSeq] } : {},

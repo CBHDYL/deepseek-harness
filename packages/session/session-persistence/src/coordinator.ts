@@ -11,13 +11,15 @@ import {
   interruptedTurnClosers,
   KNOWN_SESSION_EVENT_TYPES,
   SESSION_FORMAT_VERSION,
+  SUPPORTED_SESSION_FORMAT_VERSIONS,
   SessionPreparation,
   snapshotJsonValue,
   snapshotSessionEvent,
 } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
-import type { SessionInspection, SessionLocation } from './index.ts'
+import type { SessionInspection, SessionIntegrity, SessionLocation } from './index.ts'
 import type { SessionPersistenceRevision } from './revision.ts'
 import { observeQueuedAbort, SessionPreparations } from './preparations.ts'
 import type { SessionPreparationReservation } from './preparations.ts'
@@ -76,8 +78,8 @@ export class SessionFormatUnsupportedError extends Error {
  */
 export function sessionFormatVersionRefusal(id: string, version: number): string {
   return version > SESSION_FORMAT_VERSION
-    ? `session "${id}" uses log format v${version}, but this harness reads only v${SESSION_FORMAT_VERSION}: the log was written by a newer harness — upgrade the harness to open it`
-    : `session "${id}" uses log format v${version}, older than the supported v${SESSION_FORMAT_VERSION}, and this build ships no upgrade path for it`
+    ? `session "${id}" uses log format v${version}, but this harness reads only up to v${SESSION_FORMAT_VERSION}: the log was written by a newer harness — upgrade the harness to open it`
+    : `session "${id}" uses log format v${version}, which this build does not support (supported: ${SUPPORTED_SESSION_FORMAT_VERSIONS.join(', ')})`
 }
 
 /** Coordinator policy supplied by a concrete persistence backend. */
@@ -101,6 +103,12 @@ export interface StoredPrefix<TornMarker = unknown> {
   /** Revision observed for exactly this detached prefix. */
   revision: SessionPersistenceRevision
   tornMarker?: TornMarker
+  /**
+   * Complete records past the valid prefix that the scan could not preserve
+   * (middle corruption or a discarded torn fragment). Drives the
+   * `session/repaired` provenance the coordinator commits with the repair.
+   */
+  recoveryLoss?: { lostLines: number; recoveredEvents: number }
 }
 
 /**
@@ -184,13 +192,24 @@ export interface PersistenceBackend<TornMarker = unknown> {
   appendBatch(meta: SessionHeader, events: readonly SessionEvent[], isMaterialized: boolean): Promise<void>
 
   /**
-   * Make a crash repair durable: truncate the torn tail (iff
-   * `tornMarker !== undefined`) and append `closers` (iff any). NOT required to
-   * be atomic — a file backend may truncate-then-append in two fsync'd steps.
-   * Used by load (truncate + synthetic closers) and by live-adoption (truncate
-   * only, `closers = []`).
+   * Make a crash repair durable ATOMICALLY: rebuild the artifact as
+   * [header stamped v{SESSION_FORMAT_VERSION}] + `events` (the validated
+   * prefix including any recovered tail records) + `closers` +
+   * `repairedEvent` (the required-on-read `session/repaired` diagnostic) and
+   * publish it with temp-write → fsync → atomic replace → parent-directory
+   * fsync. A crash at any point must leave either the original artifact or
+   * the complete repaired one — never a truncated intermediate. Used by load
+   * (closers + diagnostic) and by live-adoption (closers = [], diagnostic
+   * still records the discarded tail).
    */
-  commitRepair(meta: SessionHeader, tornMarker: TornMarker | undefined, closers: readonly SessionEvent[]): Promise<void>
+  commitRepair(
+    meta: SessionHeader,
+    events: readonly SessionEvent[],
+    tornMarker: TornMarker | undefined,
+    closers: readonly SessionEvent[],
+    /** `undefined` only for the live-adoption truncate (the live session continues; no diagnostic row). */
+    repairedEvent: SessionEvent | undefined,
+  ): Promise<void>
 
   /**
    * List all stored (materialized) sessions' metadata.
@@ -216,6 +235,8 @@ export interface PersistenceBackend<TornMarker = unknown> {
 
 /** Per-session write state held by the coordinator's in-memory bookkeeping. */
 interface SessionState {
+  /** Durably provable completeness provenance established at load/create. */
+  integrity: SessionIntegrity
   meta: SessionHeader
   /** The next seq the backend expects to append (the stored log length). */
   cursor: number
@@ -249,6 +270,10 @@ interface PreparedSessionSource<TornMarker> {
   readonly sessionLength: number
   readonly tornMarker: TornMarker | undefined
   readonly closers: readonly SessionEvent[]
+  /** The validated stored prefix (including recovered tail records) the repair rebuilds from. */
+  readonly storedEvents: readonly SessionEvent[]
+  /** Complete records the scan could not preserve. */
+  readonly recoveryLoss: { lostLines: number; recoveredEvents: number }
 }
 
 /** Collect the rejection reasons from a set of promises (none-throwing). */
@@ -654,7 +679,7 @@ export class PersistenceCoordinator<TornMarker = unknown> {
       throw new Error(`session "${meta.id}" already has a persisted log on disk; load/resume it instead of creating`)
     }
     // Pure lazy: record intent only. No artifact until the first append.
-    this.states.set(meta.id, { meta, cursor: 0, materialized: false })
+    this.states.set(meta.id, { integrity: 'intact', meta, cursor: 0, materialized: false })
   }
 
   // `async` so synchronous materialization failures below reject (not throw) per
@@ -829,7 +854,7 @@ export class PersistenceCoordinator<TornMarker = unknown> {
    * @param signal - optional cancellation for queued and backend read work.
    * @returns stored header and the valid stored events with `seq >= fromSeq`.
    */
-  readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
     if (!Number.isSafeInteger(fromSeq) || fromSeq < 0) {
       return Promise.reject(new TypeError(`readFrom fromSeq must be a non-negative safe integer, got ${String(fromSeq)}`))
     }
@@ -842,7 +867,7 @@ export class PersistenceCoordinator<TornMarker = unknown> {
     id: SessionId,
     fromSeq: number,
     signal?: AbortSignal,
-  ): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  ): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
     signal?.throwIfAborted()
     if (this.backend.loadStoredFrom !== undefined) {
       let suffix: StoredSuffix | undefined
@@ -858,15 +883,16 @@ export class PersistenceCoordinator<TornMarker = unknown> {
       this.assertVersion(suffix.meta)
       if (suffix.events.some(needsLegacyPrefix)) {
         const whole = await this.readStoredPrefix(id, signal)
-        return { meta: whole.meta, events: whole.events.filter(event => event.seq >= fromSeq) }
+        return { meta: whole.meta, events: whole.events.filter(event => event.seq >= fromSeq), integrity: 'unknown' }
       }
       const events = snapshotStoredEvents(suffix.events, id)
       this.assertEventsSupported(suffix.meta, events)
-      return { meta: structuredClone(suffix.meta), events }
+      // A physical suffix read cannot prove whole-log completeness.
+      return { meta: structuredClone(suffix.meta), events, integrity: 'unknown' }
     }
     const whole = await this.readStoredPrefix(id, signal)
     // Sequential fallback: contiguous seqs from 0 make the suffix an index slice.
-    return { meta: whole.meta, events: whole.events.slice(fromSeq) }
+    return { meta: whole.meta, events: whole.events.slice(fromSeq), integrity: 'unknown' }
   }
 
   /** Read one detached physical prefix without logical recovery or caching. */
@@ -893,7 +919,7 @@ export class PersistenceCoordinator<TornMarker = unknown> {
     const stored = await this.backend.loadStored(id)
     if (stored === undefined) throw new Error(`session "${id}" not found`)
     try {
-      const { meta, events, revision, tornMarker } = stored
+      const { meta, events, revision, tornMarker, recoveryLoss } = stored
       this.assertStoredId(id, meta)
       this.assertVersion(meta)
       const storedEvents = adoptStoredEvents(events, id)
@@ -907,9 +933,23 @@ export class PersistenceCoordinator<TornMarker = unknown> {
         meta,
         seedSource: 'persistence',
       })
+      const loss = recoveryLoss ?? { lostLines: 0, recoveredEvents: 0 }
+      const integrity: SessionIntegrity = meta.version === 0
+        // A legacy v0 log cannot prove it was never silently truncated by the
+        // old two-step repair — its completeness is unknown by definition.
+        ? 'unknown'
+        // CURRENT uncommitted recovery state wins over historical repair
+        // provenance: a previously repaired session damaged again reports
+        // unknown until THIS damage is committed to a new repair.
+        : tornMarker !== undefined || loss.lostLines > 0 || closers.length > 0
+          ? 'unknown'
+          : storedEvents.some(event => event.type === 'session/repaired')
+            ? 'repaired'
+            : 'intact'
       const inspection: SessionInspection = Object.freeze({
         meta: session.header,
         events: Object.freeze(balanced),
+        integrity,
       })
       return {
         inspection,
@@ -918,6 +958,8 @@ export class PersistenceCoordinator<TornMarker = unknown> {
         sessionLength: session.events.length,
         tornMarker,
         closers,
+        storedEvents,
+        recoveryLoss: loss,
       }
     } catch (error: unknown) {
       // An unsupported format is a refusal over an intact log, not damage —
@@ -928,6 +970,53 @@ export class PersistenceCoordinator<TornMarker = unknown> {
         { cause: error },
       )
     }
+  }
+
+  /**
+   * The durable recovery diagnostic appended by an atomic repair: the
+   * model-facing notice (the resumed model must know its history is
+   * incomplete) plus the recovery provenance, never folded into the synthetic
+   * closers of an ordinary interrupted turn.
+   */
+  private repairedEventFor(
+    source: PreparedSessionSource<TornMarker>,
+    reason: string,
+  ): SessionEvent {
+    const events = source.inspection.events
+    const last = events.at(-1)
+    const text = [
+      'The session history was damaged and has been repaired:',
+      source.recoveryLoss.lostLines > 0
+        ? ` ${source.recoveryLoss.lostLines} record(s) could not be recovered.`
+        : '',
+      source.recoveryLoss.recoveredEvents > 0
+        ? ` ${source.recoveryLoss.recoveredEvents} record(s) were recovered from a partially written tail.`
+        : '',
+      source.closers.length > 0
+        ? ' The interrupted turn was closed with synthetic terminal events.'
+        : '',
+      ' Treat earlier history as possibly incomplete.',
+    ].join('')
+    const message = createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: 'plugin', plugin: 'session-persistence' },
+    })
+    return {
+      type: 'session/repaired',
+      seq: events.length,
+      time: last?.time ?? Date.now(),
+      data: {
+        message,
+        reason,
+        lostLines: source.recoveryLoss.lostLines,
+        recoveredEvents: source.recoveryLoss.recoveredEvents,
+        synthesizedClosers: source.closers.length,
+      },
+      // The diagnostic joins the ordered model surface through the SAME
+      // surface contract as every message-producing event: the resumed model
+      // sees the repair notice via deriveMessages().
+      surfaceOp: 'append' as const,
+    } as SessionEvent
   }
 
   /** Commit one prepared repair and establish its ownerless durable cursor. */
@@ -941,17 +1030,28 @@ export class PersistenceCoordinator<TornMarker = unknown> {
       throw new Error(`session "${id}" already has a live persistence owner`)
     }
     if (!await this.isPreparedSourceCurrent(source)) return undefined
-    if (source.tornMarker !== undefined || source.closers.length > 0) {
-      await this.backend.commitRepair(source.inspection.meta, source.tornMarker, source.closers)
+    if (source.tornMarker !== undefined || source.closers.length > 0 || source.recoveryLoss.lostLines > 0) {
+      const reason = source.recoveryLoss.lostLines > 0 ? 'corrupted-records' : 'torn-tail'
+      await this.backend.commitRepair(
+        source.inspection.meta,
+        source.storedEvents,
+        source.tornMarker,
+        source.closers,
+        this.repairedEventFor(source, reason),
+      )
       // The repair changed the durable revision. Reload the exact committed
       // graph instead of associating the old in-memory view with a newer revision.
       return undefined
     }
     const state = existing ?? {
+      integrity: 'intact',
       meta: source.inspection.meta,
       cursor,
       materialized: true,
     }
+    state.integrity = source.inspection.integrity === 'unknown' && source.inspection.meta.version !== 0
+      ? 'intact'
+      : source.inspection.integrity
     state.meta = source.inspection.meta
     state.cursor = cursor
     state.materialized = true
@@ -981,12 +1081,13 @@ export class PersistenceCoordinator<TornMarker = unknown> {
     if (interruptedTurnClosers(events).length > 0) {
       throw new Error(`cannot load session "${session.id}" while its live turn is open; use the live Session or wait for the turn to close`)
     }
-    return Object.freeze({ meta: state.meta, events })
+    return Object.freeze({ meta: state.meta, events, integrity: state.integrity })
   }
 
   /** Borrow one immutable view from an already-live Session. */
   private inspectLive(session: Session): SessionInspection {
-    return Object.freeze({ meta: session.header, events: session.events })
+    const state = this.states.get(session.id)
+    return Object.freeze({ meta: session.header, events: session.events, integrity: state?.integrity ?? 'unknown' })
   }
 
   /** Await one retiring lifecycle with caller cancellation. */
@@ -1044,7 +1145,7 @@ export class PersistenceCoordinator<TornMarker = unknown> {
   }
 
   private assertVersion(meta: SessionHeader): void {
-    if (meta.version === SESSION_FORMAT_VERSION) return
+    if (SUPPORTED_SESSION_FORMAT_VERSIONS.includes(meta.version)) return
     throw this.unsupported(meta, sessionFormatVersionRefusal(meta.id, meta.version))
   }
 
@@ -1311,9 +1412,15 @@ export class PersistenceCoordinator<TornMarker = unknown> {
     if (!seedCoversPrefix(seed, storedEvents)) {
       throw new Error(`session "${session.header.id}" already has a persisted log on disk that does not match this live session (id collision)`)
     }
-    // Truncate-only repair (no closers): the open turn is NOT closed here.
-    if (tornMarker !== undefined) await this.backend.commitRepair(meta, tornMarker, [])
+    // Adoption repair (no closers, no diagnostic): the open turn is NOT closed
+    // here, and the LIVE session continues from its own in-memory log, so no
+    // durable diagnostic row is inserted between the stored prefix and the
+    // live suffix. Only the discarded tail is truncated atomically.
+    if (tornMarker !== undefined) {
+      await this.backend.commitRepair(meta, storedEvents, tornMarker, [], undefined)
+    }
     this.states.set(session.header.id, {
+      integrity: 'intact',
       meta: { ...meta },
       cursor: storedEvents.length,
       materialized: true,

@@ -70,6 +70,31 @@ describe('gen-tool-catalog collectToolCatalog', () => {
     })
   })
 
+  it('EFFECT-2: harvests each tool\'s runtime effects classification and fails loud on an unresolvable definition', async () => {
+    const catalog = await collectToolCatalog()
+    // Every harvested tool has an explicit classification (declared or the
+    // honest "undeclared"); the harvest is deterministic and complete.
+    for (const entry of catalog) {
+      for (const schema of entry.schemas) {
+        const effects = entry.effects[schema.name]
+        expect(effects, `${entry.pkg} ${schema.name}`).toBeTruthy()
+        expect(['read-only', 'side-effectful', 'undeclared']).toContain(effects)
+      }
+    }
+    // Spot-check two runtime declarations: the lsp tool declares read-only,
+    // the service runner declares side-effectful.
+    const lsp = catalog.find(entry => entry.pkg === '@deepseek-ai/dsh-tool-lsp')
+    expect(lsp?.effects.lsp).toBe('read-only')
+    // EFFECT-1: the trusted catalog never harvests MCP runtime registrations
+    // (server self-claims stay outside the shipped classification authority).
+    expect(catalog.some(entry => entry.pkg.includes('mcp'))).toBe(false)
+    // Determinism: a second harvest agrees tool-for-tool.
+    const again = await collectToolCatalog()
+    expect(again.flatMap(entry => Object.entries(entry.effects))).toEqual(
+      catalog.flatMap(entry => Object.entries(entry.effects)),
+    )
+  })
+
   it('harvests search tools without depending on the generator process PATH', async () => {
     const oldPath = process.env.PATH
     try {
@@ -138,6 +163,7 @@ describe('gen-tool-catalog render', () => {
         requires: ['ctx.tools'],
         writes: ['tool/result'],
         schemas: [{ name: 'demo', description: 'A demo tool.', parameters: { type: 'object', properties: {} } }],
+        effects: { demo: 'undeclared' },
       },
     ]
     const md = render(catalog)
@@ -147,5 +173,6 @@ describe('gen-tool-catalog render', () => {
     expect(md).toContain('A demo tool.')
     expect(md).toContain('```json')
     expect(md).toContain('Source: [`packages/demo/tool-demo/src/index.ts`]')
+    expect(md).toContain('Effects: `undeclared`')
   })
 })

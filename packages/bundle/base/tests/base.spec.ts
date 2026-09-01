@@ -35,6 +35,17 @@ describe('dsh-base bundle', () => {
     expect(rows.find(row => row.id === 'session-telemetry-otel')?.config?.['mode']).toEqual({
       __jsExpr: "process.env.DSH_TELEMETRY_MODE || 'DISABLED'",
     })
+    // E18 (Final Convergence Audit): the shipped base bundle defaults the
+    // action-policy guard to OBSERVE — side-effectful calls run ungoverned and
+    // are only logged. This is an explicit deferred product decision: the
+    // enforce rollout is gated on the PR-5 verification assets and a test
+    // deployment window, not silently flipped here. Touching this assertion
+    // means the enforcement-default decision is being made — do it in that
+    // decision's own change, not as a side effect.
+    expect(rows.find(row => row.id === 'action-policy-guard')?.config).toMatchObject({
+      mode: 'observe',
+      treatUndeclaredAsSideEffectful: true,
+    })
     expect(rows.filter(row => row.id === 'subagent-codex')).toHaveLength(0)
     expect(rows.filter(row => row.id === 'subagent-claude-code')).toHaveLength(0)
     expect(manifest.dependencies).not.toHaveProperty('@deepseek-ai/dsh-subagent-codex')

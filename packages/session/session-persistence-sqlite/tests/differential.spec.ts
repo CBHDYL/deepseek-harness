@@ -150,7 +150,7 @@ async function verifyBackend(
     for (const batch of batches(events, sizes)) {
       await mounted.persistence.append(header.id, batch)
     }
-    expect(await mounted.persistence.inspect(header.id), name).toEqual({ meta: header, events })
+    expect(await mounted.persistence.inspect(header.id), name).toEqual({ meta: header, events, integrity: 'intact' })
     expect(await mounted.persistence.list(), name).toEqual([header])
     const revision = (await mounted.persistence.listSnapshots())[0]?.revision
     for (let fromSeq = 0; fromSeq <= events.length + 1; fromSeq += 1) {
@@ -164,7 +164,7 @@ async function verifyBackend(
 
   mounted = await mount(name, root)
   try {
-    expect(await mounted.persistence.inspect(header.id), `${name} reopen`).toEqual({ meta: header, events })
+    expect(await mounted.persistence.inspect(header.id), `${name} reopen`).toEqual({ meta: header, events, integrity: 'intact' })
   } finally {
     await mounted.dispose()
   }

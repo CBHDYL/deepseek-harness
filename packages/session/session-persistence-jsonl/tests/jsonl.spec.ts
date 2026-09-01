@@ -601,41 +601,48 @@ describe('JsonlSessionPersistence: durability and crash semantics', () => {
     // 7) — a turn can be huge, so they must not be truncated — and durably closes
     // the orphaned turn with synthetic step/end (8) + turn/end {interrupted} (9).
     const loaded = await ctx.sessionPersistence.load(m.id)
-    expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
-    const last = loaded.events.at(-1)!
+    expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    const last = loaded.events.at(-2)!
     expect(last.type === 'turn/end' && last.data.reason).toEqual({ kind: 'interrupted' })
     const stepEnd = loaded.events[8]!
     expect(stepEnd.type).toBe('step/end')
+    expect(loaded.events.at(-1)?.type).toBe('session/repaired')
+    expect(loaded.integrity).toBe('repaired')
     // the torn seq-8 chunk fragment did not survive
     expect(loaded.events.some(e => e.type === 'assistant/chunk' && e.seq === 8)).toBe(false)
 
-    // The next append continues at seq 10 (the balanced length).
+    // The next append continues at seq 11 (the balanced length + diagnostic).
     const turn3 = [
-      { type: 'turn/start', seq: 10, time: 11, data: { turn: 3 } },
-      { type: 'turn/end', seq: 11, time: 12, data: { turn: 3, reason: { kind: 'completed' } } },
+      { type: 'turn/start', seq: 11, time: 11, data: { turn: 3 } },
+      { type: 'turn/end', seq: 12, time: 12, data: { turn: 3, reason: { kind: 'completed' } } },
     ] as SessionEvent[]
     await ctx.sessionPersistence.append(m.id, turn3)
     const reloaded = await ctx.sessionPersistence.load(m.id)
-    expect(reloaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+    expect(reloaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
   })
 
-  it('committed events are never rewritten: only the crash tail is repaired', async () => {
+  it('committed events are preserved verbatim by the atomic rebuild (v1 header + diagnostic added)', async () => {
     const m = meta('append-only')
     await ctx.sessionPersistence.create(m)
     await ctx.sessionPersistence.append(m.id, oneTurnLog())
     const before = await readFile(rawLogPath(root, undefined, m.id), 'utf8')
-    const committedPrefix = before // the whole committed log
 
-    // A crash tail then a repair-append.
+    // A crash tail then the atomic repair commit.
     await writeFile(rawLogPath(root, undefined, m.id), '\n{"partial', { flag: 'a' })
-    await ctx.sessionPersistence.load(m.id)
+    const loaded = await ctx.sessionPersistence.load(m.id)
+    expect(loaded.integrity).toBe('repaired')
     await ctx.sessionPersistence.append(m.id, [
-      { type: 'turn/start', seq: 6, time: 9, data: { turn: 2 } },
-      { type: 'turn/end', seq: 7, time: 10, data: { turn: 2, reason: { kind: 'completed' } } },
+      { type: 'turn/start', seq: 7, time: 9, data: { turn: 2 } },
+      { type: 'turn/end', seq: 8, time: 10, data: { turn: 2, reason: { kind: 'completed' } } },
     ] as SessionEvent[])
     const after = await readFile(rawLogPath(root, undefined, m.id), 'utf8')
-    // the committed prefix is byte-for-byte intact at the head of the file
-    expect(after.startsWith(committedPrefix)).toBe(true)
+    // The atomic rebuild re-encodes the artifact (header stamped v1, the
+    // diagnostic appended); the committed EVENT lines still round-trip.
+    const beforeEvents = before.split('\n').filter(line => line.startsWith('{"type":"turn/start"') || line.startsWith('{"type":"user/message"') || line.startsWith('{"type":"step/start"') || line.startsWith('{"type":"assistant/message"') || line.startsWith('{"type":"step/end"') || line.startsWith('{"type":"turn/end"'))
+    for (const line of beforeEvents) expect(after).toContain(line)
+    const reloaded = await ctx.sessionPersistence.load(m.id)
+    expect(reloaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8])
+    expect(reloaded.integrity).toBe('repaired')
   })
 
   it('a failed appendLines truncates partial bytes so a retry has no seq gap', async () => {
@@ -849,10 +856,14 @@ describe('JsonlSessionPersistence: scanLog unit', () => {
     expect(scanner.finish().events).toEqual([oneTurnLog()[0]])
 
     const committed = new SessionLogScanner(header)
-    expect(() => { committed.write(Buffer.from([
+    committed.write(Buffer.from([
       JSON.stringify({ type: 'turn/end', seq: 1, time: 2, data: { turn: 1, reason: { kind: 'completed' } } }),
       '',
-    ].join('\n'))) }).toThrow(/seq gap in committed region/)
+    ].join('\n')))
+    // Recovery semantics: the gap is reported as loss, never a throw.
+    const gapScan = committed.finish()
+    expect(gapScan.events).toEqual([])
+    expect(gapScan.lostLines).toBeGreaterThan(0)
   })
 
   it('incrementally scans records split across reusable decoder chunks', () => {
@@ -967,9 +978,12 @@ describe('JsonlSessionPersistence: scanLog unit', () => {
       JSON.stringify({ type: 'step/start', seq: 2, time: 2, data: { turn: 1, step: 1 } }), // gap: missing seq 1
       JSON.stringify({ type: 'turn/end', seq: 3, time: 3, data: { turn: 1, reason: { kind: 'completed' } } }),
     ].join('\n') + '\n'
-    // A turn/end exists, so the prefix up to it is committed — but it has a hole.
-    // Truncating it would silently drop committed data → unloadable.
-    expect(() => scanLog(Buffer.from(log))).toThrow(/seq gap in committed region/)
+    // A turn/end exists, so the prefix up to it is committed — but it has a
+    // hole. Recovery semantics: the scan never throws; it preserves the valid
+    // prefix and reports the loss so the atomic repair records it.
+    const scan = scanLog(Buffer.from(log))
+    expect(scan.events.map(e => e.seq)).toEqual([0])
+    expect(scan.lostLines).toBeGreaterThan(0)
   })
 
   it('rejects a corrupt line BEFORE a later committed turn/end (committed data damaged)', () => {
@@ -978,7 +992,9 @@ describe('JsonlSessionPersistence: scanLog unit', () => {
       '{not json', // corrupt, sits in the committed region (a turn/end follows)
       JSON.stringify({ type: 'turn/end', seq: 1, time: 2, data: { turn: 1, reason: { kind: 'completed' } } }),
     ].join('\n') + '\n'
-    expect(() => scanLog(Buffer.from(log))).toThrow(/unparsable committed event/)
+    const scan = scanLog(Buffer.from(log))
+    expect(scan.events.map(e => e.seq)).toEqual([])
+    expect(scan.lostLines).toBe(2)
   })
 
   it('a header-only log (no event lines at all) preserves nothing — committedBytes is the header', () => {
@@ -1140,7 +1156,9 @@ describe('JsonlSessionPersistence: default packed chunk rows', () => {
       JSON.stringify({ type: 'text-chunks', seq0: 0, time0: 1, data: { turn: 1, step: 1, index: 0, dt: [], texts: ['a', 'b'] } }),
       JSON.stringify({ type: 'turn/end', seq: 2, time: 3, data: { turn: 1, reason: { kind: 'completed' } } }),
     ].join('\n') + '\n'
-    expect(() => scanLog(Buffer.from(logText))).toThrow(/unparsable committed event/)
+    const scan = scanLog(Buffer.from(logText))
+    expect(scan.events.map(e => e.seq)).toEqual([])
+    expect(scan.lostLines).toBe(2)
   })
 
   it('scanLog: a packed row with a mid-run seq gap after the last turn/end drops the whole row', () => {
@@ -1502,11 +1520,12 @@ describe('JsonlSessionPersistence: edge cases', () => {
     await ctx2.plugin(SessionStore)
     await ctx2.plugin(JsonlSessionPersistence, { root, compression: 'none' })
     await ctx2.sessionPersistence.append(m.id, [
-      { type: 'turn/start', seq: 6, time: 9, data: { turn: 2 } },
-      { type: 'turn/end', seq: 7, time: 10, data: { turn: 2, reason: { kind: 'completed' } } },
+      { type: 'turn/start', seq: 7, time: 9, data: { turn: 2 } },
+      { type: 'turn/end', seq: 8, time: 10, data: { turn: 2, reason: { kind: 'completed' } } },
     ] as SessionEvent[])
     const loaded = await ctx2.sessionPersistence.load(m.id)
-    expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
+    expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8])
+    expect(loaded.events[6]?.type).toBe('session/repaired')
     await ctx2.fiber.dispose()
   })
 
@@ -1520,7 +1539,7 @@ describe('JsonlSessionPersistence: edge cases', () => {
       { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
     ] as SessionEvent[])
     const { events } = await ctx.sessionPersistence.load(m.id)
-    expect(events.map(e => e.type)).toEqual(['turn/start', 'turn/end'])
+    expect(events.map(e => e.type)).toEqual(['turn/start', 'turn/end', 'session/repaired'])
     const end = events[1]!
     expect(end.type === 'turn/end' && end.data.reason).toEqual({ kind: 'interrupted' })
   })

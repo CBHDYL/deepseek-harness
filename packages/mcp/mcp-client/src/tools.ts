@@ -37,6 +37,17 @@ export interface ToolBridgeOptions {
   maxToolsPerServer: number
   /** Whole-sync deadline in ms (a stalled server cannot wedge startup forever). */
   syncTimeoutMs: number
+  /**
+   * Maximum UTF-8 bytes of one tool's description before the tool is excluded
+   * from the generation (PR-6 product constant, default 4096).
+   */
+  maxToolDescriptionBytes: number
+  /**
+   * Maximum UTF-8 bytes of one tool's serialized `inputSchema` + `outputSchema`
+   * before the tool is excluded from the generation (PR-6 product constant,
+   * default 65536).
+   */
+  maxToolSchemaBytes: number
 }
 
 /** State for one sync generation: the current set of disposers keyed by public name. */
@@ -59,6 +70,11 @@ const INVALID_NAME_CHARS = /[^A-Za-z0-9_-]/g
 
 /** Hex chars of the SHA-256 identity hash appended on lossy normalization. */
 const HASH_LENGTH = 12
+
+/** UTF-8 byte length of a string (multibyte-correct, `string.length` is not). */
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).length
+}
 
 /** Raw result record: the bridge owns JSON-value validation after transport. */
 const RawCallToolResultSchema = z.record(z.string(), z.unknown())
@@ -177,12 +193,29 @@ export async function syncTools(
     // `tools/list` cannot wedge the whole startup sync (the page cap only
     // bounds *how many* pages, and the cursor check only bounds pagination).
     const response = await listToolsUncached(client, cursor, { timeout: Math.max(1, syncDeadline - Date.now()) })
+    let excludedTools = 0
     for (const tool of response.tools) {
       const publicName = publicToolName(opts.serverName, tool.name)
       if (definitions.has(publicName)) {
         throw new Error(
           `mcp-client(${opts.serverName}): server listed tool "${tool.name}" more than once — invalid tool list`,
         )
+      }
+      // PR-6 source bounds: untrusted model-facing metadata is measured in
+      // UTF-8 bytes at sync and an offending tool is EXCLUDED from the
+      // generation (rejected, never silently truncated into the prompt). The
+      // final request byte ceiling remains the aggregate safety net.
+      const descriptionBytes = utf8Bytes(tool.description ?? '')
+      const schemaBytes = utf8Bytes(JSON.stringify(tool.inputSchema))
+        + utf8Bytes(JSON.stringify(supportedOutputSchema(tool.outputSchema) ?? {}))
+      if (descriptionBytes > opts.maxToolDescriptionBytes || schemaBytes > opts.maxToolSchemaBytes) {
+        excludedTools += 1
+        ctx.logger.warn(
+          `mcp-client(${opts.serverName}): excluding tool "${tool.name}" — model-facing metadata is `
+          + `${descriptionBytes} description bytes and ${schemaBytes} schema bytes `
+          + `(limits ${opts.maxToolDescriptionBytes}/${opts.maxToolSchemaBytes})`,
+        )
+        continue
       }
       definitions.set(publicName, createDefinition(
         client,
@@ -195,6 +228,9 @@ export async function syncTools(
         tool.execution?.taskSupport === 'required',
         opts,
       ))
+    }
+    if (excludedTools > 0) {
+      ctx.logger.warn(`mcp-client(${opts.serverName}): excluded ${excludedTools} tool(s) whose model-facing metadata exceeds the source bounds`)
     }
     if (definitions.size > opts.maxToolsPerServer) {
       throw new Error(`mcp-client(${opts.serverName}): tool list exceeds ${opts.maxToolsPerServer} tools — aborting`)

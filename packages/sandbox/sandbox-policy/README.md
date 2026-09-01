@@ -11,12 +11,14 @@ Filesystem tools, one-shot bash commands, and terminal sessions may enforce the 
 ## Config
 
 - `mode` — the deployment default `SandboxMode` (`read-only` / `workspace-write` / `danger-full-access`), validated at load. Default `read-only` (fail-safe).
+- `maxMode` — the hard deployment ceiling no resolution exceeds: session overrides and approved escalations are capped to it, and a default wider than the ceiling fails at load. Default `danger-full-access` (an approved escalation may reach the widest mode, as before this field existed).
 - `workspaceRoot` — the fallback directory `workspace-write` may write under for agentless calls or sessions without a cwd. Default `process.cwd()`, resolved to its absolute filesystem identity either way. A normal agent call uses its session header's immutable `cwd` instead.
 
 ## API
 
 - `ctx.sandboxPolicy.resolve({ session?, mode? })` — resolves one complete per-call policy. An explicit approved mode outranks the session's last `sandbox/mode` event, which outranks `defaultMode`; the session's immutable `cwd` is canonicalized with filesystem semantics before becoming `workspaceRoot`, otherwise the configured fallback applies. Canonicalization precedes lexical normalization so `symlink/..` agrees with process working-directory resolution.
 - `ctx.sandboxPolicy.defaultMode` / `ctx.sandboxPolicy.workspaceRoot` — the deployment default and fallback root used by `resolve()`.
+- `ctx.sandboxPolicy.isMinted(policy)` — provenance check for the enforcing fs/shell backends: true only for an authority this owner returned from `resolve()`. A caller-constructed policy object is ignored and the owner's deployment default applies — the forged object's declared fields never take effect, and every path is capped by `maxMode`. This is not a claim that session narrowing or operation authorization is enforced: the fallback is the deployment default (which can be wider than a session's narrowed standing mode), a minted authority can be captured and replayed, and `resolve({ session, mode })` stays directly callable up to `maxMode`. Those closures are the operation-bound grant (PR-2), not this check. It is also not a malicious-code boundary — a plugin that can patch services or reach an unrestricted capability is out of scope.
 - `sandbox:policy` — a request-time cache-safe context contribution derived directly from `resolve({ session })`. It states the mode's capability-neutral file-effect contract and the canonical session workspace under `workspace-write`; tool owners retain operation-specific denial and escalation guidance.
 - `effectiveSandboxMode(events)` — the pure fold of a session's `sandbox/mode` events (the last switch wins, or `undefined`), used inside `resolve()`.
 - `setSandboxMode(session, mode)` — THE write path for a per-session override: appends exactly one `sandbox/mode` event. The switch IS its event; nothing mutates the mode out of band.

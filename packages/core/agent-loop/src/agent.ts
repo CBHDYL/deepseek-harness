@@ -13,6 +13,7 @@ import type {
   CancelOptions,
   InboxTarget,
   PreStepDecision,
+  RequestBudgetAction,
   RequestErrorAction,
 } from '@deepseek-ai/dsh-agent'
 import { Inbox, agentEvents, assembleContextFor } from '@deepseek-ai/dsh-agent'
@@ -32,8 +33,64 @@ import { canonicalHeader, headerEquals } from '@deepseek-ai/dsh-session'
 import { joinContextSections, renderContextSections, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import type { Context } from '@deepseek-ai/cordis'
+import { estimateRequest } from '@deepseek-ai/dsh-token-meter'
 import { RuntimeContextProjection } from './runtime-context.ts'
 import { executeToolCalls } from './tool-calls.ts'
+
+/** Canonical code for a request rejected by the prompt budget before dispatch. */
+export const PROMPT_BUDGET_EXCEEDED_CODE = 'PROMPT_BUDGET_EXCEEDED'
+
+/** Serializable measurement of the final model-facing request representation. */
+interface PromptBudgetMeasurement {
+  /** UTF-8 bytes of `{messages, system, tools}` — the strict bounded representation. */
+  bytes: number
+  /** Fixed-density heuristic token estimate of the same representation. */
+  estimateTokens: number
+}
+
+/** One rejected-before-dispatch request: an {@link LlmError} carrying its budget facts. */
+class PromptBudgetError extends LlmError {
+  readonly bytes: number
+  readonly estimateTokens: number
+  readonly provider: string
+
+  constructor(message: string, measurement: PromptBudgetMeasurement, provider: string) {
+    super(message, PROMPT_BUDGET_EXCEEDED_CODE)
+    this.bytes = measurement.bytes
+    this.estimateTokens = measurement.estimateTokens
+    this.provider = provider
+  }
+}
+
+/**
+ * Measure the final model-facing request representation: the exact dispatched
+ * `messages`, `system`, and `tools` fields. The byte count is the hard ceiling
+ * input (UTF-8, via the JSON form the provider payload derives from); the
+ * token estimate reuses the repo's fixed-density heuristic.
+ * @param messages - the boundary messages about to be dispatched.
+ * @param system - the rendered system prompt.
+ * @param tools - the model-facing tool schemas.
+ * @returns byte size and heuristic token estimate.
+ */
+function measurePromptBudget(
+  messages: Message[],
+  system: string | undefined,
+  tools: GenerateOptions['tools'],
+): PromptBudgetMeasurement {
+  const representation = {
+    messages,
+    ...system === undefined ? {} : { system },
+    ...tools === undefined || tools.length === 0 ? {} : { tools },
+  }
+  return {
+    bytes: new TextEncoder().encode(JSON.stringify(representation)).length,
+    estimateTokens: estimateRequest({
+      messages,
+      ...system === undefined ? {} : { system },
+      tools: tools ?? [],
+    }),
+  }
+}
 
 type Phase =
   | { kind: 'idle'; lastTurn: number }
@@ -371,12 +428,40 @@ export class ReactLoopAgent implements Agent {
     signal.throwIfAborted()
     const system = renderPrompt(assembly)
     const maxRequestAttempts = this.loopCtx.agentLoop.config.maxRequestAttempts
+    const budgetCompactionRetries = this.loopCtx.agentLoop.config.budgetCompactionRetries
     let attempt = 0
+    let budgetRecoveries = 0
 
     while (true) {
-      const { request, preparedCall } = await this.buildRequest(
-        turn, step, assembly.tools, system, this.session.deriveMessages(), signal,
-      )
+      let request: GenerateOptions
+      let preparedCall: PreparedLlmCall | undefined
+      try {
+        ({ request, preparedCall } = await this.buildRequest(
+          turn, step, assembly.tools, system, this.session.deriveMessages(), signal,
+        ))
+      } catch (error: unknown) {
+        // Budget rejection happens BEFORE any durable header or attempt event:
+        // compaction gets one bounded recovery opportunity per step, and only
+        // a listener that actually reduced the surface retries.
+        if (!(error instanceof PromptBudgetError)) throw error
+        if (budgetRecoveries >= budgetCompactionRetries) throw error
+        const action = await this.dispatch.waterfall(
+          'agent/request-budget',
+          {
+            turn,
+            step,
+            provider: error.provider,
+            bytes: error.bytes,
+            estimateTokens: error.estimateTokens,
+            signal,
+          },
+          () => Promise.resolve<RequestBudgetAction>({ kind: 'reject' }),
+        )
+        signal.throwIfAborted()
+        if (action.kind !== 'retry') throw error
+        budgetRecoveries += 1
+        continue
+      }
       attempt += 1
       this.session.append('request/attempt-start', {
         turn, step, attempt, provider: request.provider, model: request.model,
@@ -539,6 +624,24 @@ export class ReactLoopAgent implements Agent {
       config = proposedConfig
     }
     signal.throwIfAborted()
+
+    // Final layered budget check, BEFORE any durable header is logged and any
+    // provider dispatch: the hard byte ceiling is the fail-safe, the optional
+    // estimate ceiling is the earlier trigger. A rejected request was never
+    // loop-built — no request/header event names it, so the reconstruction
+    // invariant (every SENT request rebuilds from the log) stays untouched.
+    const budget = measurePromptBudget(boundaryMessages, system, tools)
+    const budgetConfig = this.loopCtx.agentLoop.config
+    if (budget.bytes > budgetConfig.maxRequestBytes
+      || (budgetConfig.maxEstimateTokens !== undefined && budget.estimateTokens > budgetConfig.maxEstimateTokens)) {
+      throw new PromptBudgetError(
+        `prompt budget exceeded: request is ${budget.bytes} bytes (~${budget.estimateTokens} estimated tokens)`
+        + ` across ${boundaryMessages.length} messages and ${tools.length} tool schemas`
+        + ` (ceiling ${budgetConfig.maxRequestBytes} bytes)`,
+        budget,
+        config.provider,
+      )
+    }
 
     const header = canonicalHeader({
       config,

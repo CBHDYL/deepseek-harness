@@ -9,7 +9,7 @@
 
 英文源文件根据源码生成（`scripts/gen-persistence-catalog.ts`），并由 `pnpm run verify-persistence-catalog`（`doc-sync`（文档同步门禁）的一部分）验证新鲜度；本中文文件作为经评审对侧通过双语配对维护。声明块保留源码声明和嵌套属性的 JSDoc，只移除其所在接口／模块带来的缩进，并使用 `ts persistence-catalog` 围栏（doc-typecheck 会跳过这些围栏，因为声明引用了其所属模块中的类型）。payload 中的类型名称会链接到记录该类型的页面。参见 [persistence-log-catalog Agent Note](../.agents/notes/archived/process/2026-07-04-persistence-log-catalog.md)。
 
-以下信封声明组合了每个事件的 `type`、单调递增的 `seq`、以 epoch 毫秒表示的 `time`、`data`、可选的未知类型跳过标记 `ignorable`，以及条件字段 `surfaceOp`／`sourceEventSeqs`。**surface** 表示 `SurfaceEventType` 成员：它会生成一条 LLM（大语言模型）消息，并声明该事件如何加入 surface 列表。**log-only** 表示其他所有事件：这类记录可持久化、可回放，但不参与派生历史。每个 payload 均可进行 JSON 序列化（在 `Session.append` 处强制执行），整个格式固定为 `SESSION_FORMAT_VERSION = 0`：这是预发布格式，不暗示任何兼容性（参见[版本立场](subsystems/persistence.zh.md)）。范围仅限本仓库中的包；下游插件可以继续合并其他事件类型，而这些类型按设计不属于本目录。
+以下信封声明组合了每个事件的 `type`、单调递增的 `seq`、以 epoch 毫秒表示的 `time`、`data`、可选的未知类型跳过标记 `ignorable`，以及条件字段 `surfaceOp`／`sourceEventSeqs`。**surface** 表示 `SurfaceEventType` 成员：它会生成一条 LLM（大语言模型）消息，并声明该事件如何加入 surface 列表。**log-only** 表示其他所有事件：这类记录可持久化、可回放，但不参与派生历史。每个 payload 均可进行 JSON 序列化（在 `Session.append` 处强制执行），整个格式固定为 `SESSION_FORMAT_VERSION = 1`（可读取 legacy v0）：这是预发布格式，不暗示任何兼容性（参见[版本立场](subsystems/persistence.zh.md)）。范围仅限本仓库中的包；下游插件可以继续合并其他事件类型，而这些类型按设计不属于本目录。
 
 ## 事件信封
 
@@ -26,6 +26,7 @@ export type SurfaceEventType =
   | 'user/message'
   | 'assistant/message'
   | 'tool/result'
+  | 'session/repaired'
 
 /**
  * How a session event entered the ordered surface. Only valid on
@@ -173,6 +174,12 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
   id: ApprovalRequestId
   toolName: string
   callId?: CallId
+  /** Registry-minted attempt correlation when the asker is the tool scheduler or an escalating tool body. */
+  operationId?: OperationId
+  /** Canonical arguments digest of the attempt being decided (audit binding). */
+  argsDigest?: string
+  /** Requested sandbox dimension when the ask covers a sandbox escalation. */
+  sandboxMode?: string
   reason?: string
 }
 ```
@@ -194,10 +201,14 @@ Types: [CallId](subsystems/core.zh.md)
 'approval/decided': {
   id: ApprovalRequestId
   outcome: ApprovalOutcome
+  /** The asked attempt correlation, mirroring `approval/asked`. */
+  operationId?: OperationId
+  /** The sandbox dimension this decision covered, mirroring `approval/asked`. */
+  sandboxMode?: string
 }
 ```
 
-来源：[`packages/interaction/user-approval/src/index.ts:55`](../packages/interaction/user-approval/src/index.ts)
+来源：[`packages/interaction/user-approval/src/index.ts:61`](../packages/interaction/user-approval/src/index.ts)
 
 <a id="approvalpolicy--log-only"></a>
 
@@ -726,6 +737,34 @@ Types: [ScheduleChange](subsystems/schedule.zh.md)
 
 来源：[`packages/core/session/src/types.ts:367`](../packages/core/session/src/types.ts)
 
+#### `session/repaired` — surface
+
+```ts persistence-catalog
+/**
+ * A crash-recovery transaction committed durably: the model-facing notice
+ * that part of the session history was lost or synthesized, plus the
+ * recovery provenance. Surface event: the notice enters the model history
+ * so a resumed session knows its past is incomplete. Required-on-read —
+ * builds that do not know this event refuse the log instead of silently
+ * reconstructing a shorter history (the format-version boundary).
+ */
+'session/repaired': {
+  message: UserMessage
+  /** Recovery category, e.g. 'torn-tail' or 'corrupted-records'. */
+  reason: string
+  /** Complete records past the valid prefix that were lost. */
+  lostLines: number
+  /** Complete records recovered from a torn tail and re-committed. */
+  recoveredEvents: number
+  /** Synthetic terminal closers the repair added. */
+  synthesizedClosers: number
+}
+```
+
+来源：[`packages/core/session/src/types.ts:337`](../packages/core/session/src/types.ts)
+
+<a id="sessiontitle--log-only"></a>
+
 <a id="sessiontitle--log-only"></a>
 
 #### `session/title` — log-only
@@ -884,12 +923,20 @@ Types: [TodoItem](subsystems/session.zh.md)
  * JSON string exactly as the model produced it (unparsed). `callId` pairs the
  * call with its `tool/result`.
  */
-'tool/call': { turn: number; step: number; callId: CallId; name: string; arguments: string }
+'tool/call': {
+  turn: number
+  step: number
+  callId: CallId
+  name: string
+  arguments: string
+  /** Registry-minted attempt correlation (absent only on legacy or synthetic rows). */
+  operationId?: OperationId
+}
 ```
 
 Types: [CallId](subsystems/core.zh.md)
 
-来源：[`packages/core/session/src/types.ts:283`](../packages/core/session/src/types.ts)
+来源：[`packages/core/session/src/types.ts:292`](../packages/core/session/src/types.ts)
 
 <a id="toolcode-dispatch--log-only"></a>
 
@@ -961,10 +1008,12 @@ Types: [CallId](subsystems/core.zh.md)
   message: ToolResultMessage
   error?: { name: string; code: string }
   meta?: JsonValue
+  /** The matching `tool/call` attempt correlation (absent only on legacy or synthetic rows). */
+  operationId?: OperationId
 }
 ```
 
-来源：[`packages/core/session/src/types.ts:295`](../packages/core/session/src/types.ts)
+来源：[`packages/core/session/src/types.ts:318`](../packages/core/session/src/types.ts)
 
 ### `tool-workflow/*`
 

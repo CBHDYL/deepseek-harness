@@ -9,9 +9,10 @@ import z from '@deepseek-ai/schemastery'
 import { AnonymousEntries, NamedEntries, ScopedLayers, scopeOf, scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { ScopeKey, ScopeLayer, Scoped } from '@deepseek-ai/dsh-scope'
 import type { CallId, ContentBlock, ToolSchema } from '@deepseek-ai/dsh-llm'
-import { assertNever, deepFreeze, HarnessError } from '@deepseek-ai/dsh-llm'
+import { assertNever, createToolResultMessage, deepFreeze, HarnessError } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { snapshotJsonValue } from '@deepseek-ai/dsh-session'
+import { createHash } from 'node:crypto'
+import { snapshotJsonValue, type OperationId, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { JsonValue, UserMessage } from '@deepseek-ai/dsh-session'
 import type { ToolProviderResult } from '@deepseek-ai/dsh-system-prompt'
 import type { CodeRuntime } from '@deepseek-ai/dsh-code-runtime'
@@ -318,6 +319,22 @@ declare const toolExecutionTokenBrand: unique symbol
 export type ToolExecutionToken = symbol & { readonly [toolExecutionTokenBrand]: true }
 
 /**
+ * Merge two pre-execute recommendations under the security aggregation
+ * `deny > ask > allow`: a deny wins over everything, an ask wins over an
+ * allow, and the first allow loses to either. Security-relevant
+ * `tools/pre-execute` listeners delegate with `next()` and merge their own
+ * decision over the downstream one so listener registration order never
+ * becomes a security property.
+ */
+export function mergePreToolDecisions(a: PreToolDecision, b: PreToolDecision): PreToolDecision {
+  if (a.kind === 'deny') return a
+  if (b.kind === 'deny') return b
+  if (a.kind === 'ask') return a
+  if (b.kind === 'ask') return b
+  return { kind: 'allow' }
+}
+
+/**
  * Caller-supplied description of one tool call. {@link ToolRuntime.execute}
  * adds the registry-owned token to form a pipeline {@link ToolExecution};
  * callers do not choose that token.
@@ -346,6 +363,15 @@ export interface ToolExecutionInput {
   readonly parent?: ToolExecutionToken
   /** Required caller-owned cancellation for this invocation. */
   readonly signal: AbortSignal
+  /**
+   * Optional registry-minted operation identity ({@link ToolRuntime.mintOperationId})
+   * the trusted loop stamps for durable audit correlation. A value the registry
+   * did not mint is ignored and replaced with a fresh internal identity, so a
+   * caller can never select or replay an operation id. Mutable on the input
+   * (the trusted loop stamps it before dispatch) and frozen read-only on the
+   * registry's {@link ToolExecution}.
+   */
+  operationId?: OperationId
 }
 
 /**
@@ -392,6 +418,10 @@ export interface ToolExecution extends ToolExecutionInput {
   readonly rootCallId: CallId
   /** Registry-assigned identity shared with nested calls only as their opaque `parent` token. */
   readonly token: ToolExecutionToken
+  /** Registry-minted attempt correlation, the durable join key for the approval audit chain. */
+  readonly operationId: OperationId
+  /** Canonical digest of the frozen parsed arguments — audit binding only, never replay prevention. Absent when argument materialization failed before the policy pipeline. */
+  readonly argsDigest?: string
 }
 
 /**
@@ -468,6 +498,15 @@ export interface ToolRuntimeScheduler {
   finalize(exec: ToolRunContext, result: ToolExecutionResult): Promise<ToolExecutionResult>
   /** Run definition-owned content finalization, then materialize and notify without post-execute. */
   finish(exec: ToolRunContext, result: ToolExecutionResult): ToolExecutionResult
+  /**
+   * Mint a durable operation id for the trusted loop to log on `tool/call`
+   * before `prepare`. Internal to the scheduler channel: the public
+   * `ToolRuntime.execute` path never honors a caller-supplied id, so audit
+   * ownership cannot be claimed by minting through a public method.
+   */
+  mintOperationId(session: Session): OperationId
+  /** Release a minted-but-never-claimed id when a scheduled call is abandoned. */
+  releaseOperationId(session: Session, operationId: OperationId): void
 }
 
 /**
@@ -632,6 +671,164 @@ function errorMessage(error: unknown): string {
   }
 }
 
+/**
+ * Stack-safe canonical JSON serialization for audit digests and raw-argument
+ * projection. `JSON.stringify` recurses and overflows the JavaScript call
+ * stack on deeply nested (thousands of levels) parsed arguments; this
+ * iterative walk emits the byte-identical string for the lossless-JSON
+ * subset `snapshotJsonValue` admits (insertion-ordered keys, JSON string
+ * escaping), so digests stay stable while depth is unbounded.
+ * @param value - a lossless JSON value.
+ * @returns the canonical JSON text.
+ */
+function serializeLosslessJson(value: unknown): string {
+  const chunks: string[] = []
+  const pending: ({ kind: 'open'; node: unknown } | { kind: 'text'; text: string })[] = [{ kind: 'open', node: value }]
+  while (pending.length > 0) {
+    const task = pending.pop()
+    /* v8 ignore next -- the loop condition guarantees one pending task. */
+    if (task === undefined) continue
+    if (task.kind === 'text') {
+      chunks.push(task.text)
+      continue
+    }
+    const node = task.node
+    if (node === null) {
+      chunks.push('null')
+      continue
+    }
+    switch (typeof node) {
+      case 'string':
+        chunks.push(JSON.stringify(node))
+        break
+      case 'number':
+      case 'boolean':
+        chunks.push(String(node))
+        break
+      case 'object': {
+        if (Array.isArray(node)) {
+          chunks.push('[')
+          for (let index = node.length - 1; index >= 0; index -= 1) {
+            pending.push({ kind: 'text', text: index === node.length - 1 ? ']' : ',' })
+            pending.push({ kind: 'open', node: node[index] })
+          }
+          if (node.length === 0) chunks.push(']')
+        } else {
+          const keys = Object.keys(node)
+          chunks.push('{')
+          for (let index = keys.length - 1; index >= 0; index -= 1) {
+            const key = keys[index] as string
+            pending.push({ kind: 'text', text: index === keys.length - 1 ? '}' : ',' })
+            pending.push({ kind: 'open', node: (node as Record<string, unknown>)[key] })
+            pending.push({ kind: 'text', text: `${JSON.stringify(key)}:` })
+          }
+          if (keys.length === 0) chunks.push('}')
+        }
+        break
+      }
+      default:
+        // Unreachable for lossless-JSON inputs (undefined/bigint are rejected
+        // at materialization); kept total for defensive callers.
+        chunks.push('null')
+    }
+  }
+  return chunks.join('')
+}
+
+/** Raw durable arguments projection for registry-owned `tool/call` rows (direct executions). */
+function argumentsRawOf(args: unknown): string {
+  if (typeof args === 'string') return args
+  try {
+    const detached = snapshotJsonValue(args)
+    if (detached !== undefined) return serializeLosslessJson(detached)
+  } catch { /* fall through to the lossy last resort */ }
+  try {
+    return serializeLosslessJson(args)
+  } catch {
+    return String(args)
+  }
+}
+
+/** The requested sandbox dimension carried by an attempt's frozen args, when the model supplied one. */
+function sandboxModeFromArgs(args: unknown): string | undefined {
+  if (typeof args !== 'object' || args === null) return undefined
+  const candidate = (args as { sandbox_permissions?: unknown }).sandbox_permissions
+  return typeof candidate === 'string' ? candidate : undefined
+}
+
+/**
+ * The model's escalation justification from the attempt's FROZEN parsed args,
+ * when present. Read from the deep-frozen execution args only — never from a
+ * caller's live mutable object — so the human-facing reason always states
+ * exactly what this attempt's frozen identity carried.
+ */
+function justificationFromArgs(args: unknown): string | undefined {
+  if (typeof args !== 'object' || args === null) return undefined
+  const candidate = (args as { justification?: unknown }).justification
+  return typeof candidate === 'string' && candidate.trim().length > 0 ? candidate : undefined
+}
+
+/** The durable operation id an event carries, for any operation-bearing event type. */
+function operationIdOfEvent(event: SessionEvent): OperationId | undefined {
+  switch (event.type) {
+    case 'tool/call':
+    case 'tool/result':
+    case 'tool/code-dispatch-start':
+    case 'tool/code-dispatch':
+    case 'approval/asked':
+    case 'approval/decided':
+      return event.data.operationId
+    default:
+      return undefined
+  }
+}
+
+/**
+ * Highest numeric durable operation id in a session's loaded log, for counter
+ * seeding. Scans EVERY operation-bearing event type — Code Mode sub-dispatches
+ * mint from the same per-session counter but never produce a `tool/call`, so
+ * seeding from `tool/call` alone would re-mint a logged id after restart or
+ * ToolRuntime replacement.
+ */
+function highestOperationIdIn(events: readonly SessionEvent[] | undefined): number {
+  let highest = 0
+  if (!Array.isArray(events)) return highest
+  for (const event of events) {
+    const id = operationIdOfEvent(event)
+    if (id === undefined) continue
+    const numeric = Number(id)
+    if (Number.isInteger(numeric) && numeric > highest) highest = numeric
+  }
+  return highest
+}
+
+/** The session's currently open turn/step, or undefined outside an open step. */
+function openTurnStep(events: readonly SessionEvent[] | undefined): { turn: number; step: number } | undefined {
+  if (!Array.isArray(events)) return undefined
+  let turn: number | undefined
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index] as SessionEvent
+    if (event.type === 'turn/end') return undefined
+    if (event.type === 'turn/start') {
+      const data = (event as { data?: { turn?: number } }).data
+      turn = data?.turn
+      break
+    }
+  }
+  if (turn === undefined) return undefined
+  let step: number | undefined
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index] as SessionEvent
+    if (event.type === 'step/start') {
+      const data = (event as { data?: { step?: number } }).data
+      step = data?.step
+      break
+    }
+    if (event.type === 'step/end') return undefined
+  }
+  return step === undefined ? undefined : { turn, step }
+}
+
 /** Derive one failure message from policy feedback without changing its rendered blocks. */
 function failureMessageFromContent(content: ContentBlock[]): string {
   const text = content
@@ -721,11 +918,55 @@ interface ToolView {
  */
 export type ToolGuard = (execution: Readonly<ToolExecution>) => string | undefined
 
+/**
+ * A mandatory security recommendation evaluated by the registry for EVERY
+ * execution attempt. Unlike `tools/pre-execute` waterfall listeners, policy
+ * listeners cannot short-circuit one another: the registry invokes every
+ * registered policy and aggregates all decisions under deny > ask > allow, so
+ * registration order and listener discipline are not security properties. A
+ * policy returns a {@link PreToolDecision} (or nothing for allow); a throwing
+ * policy denies the attempt.
+ * @param execution - the identity-protected call before extensible pre-execute policy completes.
+ * @returns the mandatory recommendation, or nothing for allow.
+ */
+export type ToolPolicy = (execution: Readonly<ToolExecution>) => PreToolDecision | void
+
+/**
+ * Registry-owned, frozen identity record for one execution attempt — the only
+ * enforcement read path. The live {@link ToolExecution} object stays mutable
+ * for the around-dispatch signal contract, so authorization, the guard fence,
+ * and the atomic take read this frozen record (WeakMap provenance by the
+ * execution object) instead of the object's properties.
+ */
+export interface ToolExecutionIdentity {
+  /** Registry-assigned correlation token shared with nested calls as their opaque `parent` token. */
+  readonly token: ToolExecutionToken
+  /** Durable audit correlation id, unique within the attempt's session log. */
+  readonly operationId: OperationId
+  readonly callId: CallId
+  readonly rootCallId: CallId
+  readonly name: string
+  /** The agent the attempt runs under, when one exists. */
+  readonly agent?: Agent
+  /** Enclosing transport execution token, when the attempt is nested. */
+  readonly parent?: ToolExecutionToken
+  /** The attempt's session (from the agent). */
+  readonly session?: Session
+  /** The attempt's scope (the agent context). */
+  readonly scope?: ScopeKey
+  /** Canonical digest of the frozen parsed arguments; absent when materialization failed. */
+  readonly argsDigest?: string
+}
+
+/** Authorization state of one registry-created execution attempt. */
+type ToolExecutionState = 'prepared' | 'authorized' | 'dispatching' | 'terminal'
+
 /** One scope's complete tool-registry contribution. */
 class ToolLayer implements ScopeLayer {
   readonly tools: NamedEntries<ToolDefinition>
   readonly restrictions = new AnonymousEntries<CompiledToolRestriction>()
   readonly guards = new AnonymousEntries<ToolGuard>()
+  readonly policies = new AnonymousEntries<ToolPolicy>()
   /**
    * Presentation this scope's agent declared for itself, shadowing the
    * deployment default. One cell rather than an entry table: two answers to
@@ -742,7 +983,7 @@ class ToolLayer implements ScopeLayer {
   /** Whether every contribution table in this aggregate layer is empty. */
   isEmpty(): boolean {
     return this.tools.isEmpty() && this.restrictions.isEmpty() && this.guards.isEmpty()
-      && this.mode === undefined
+      && this.policies.isEmpty() && this.mode === undefined
   }
 
   /** Whether every compiled restriction in this layer admits a global tool name. */
@@ -796,6 +1037,96 @@ function resolveMaxParallelSubCalls(value: number | undefined): number {
  * one visibility resolver feeds presentation, lookup, and dispatch.
  */
 export class ToolRuntime extends Service {
+  /** Registry-created executions — the runtime provenance boundary (WeakSet membership). */
+  private readonly mintedExecutions = new WeakSet<ToolRunContext>()
+  /** Frozen identity records, the only enforcement read path for one attempt. */
+  private readonly executionIdentities = new WeakMap<ToolRunContext, ToolExecutionIdentity>()
+  /** Authorization state machine per attempt. */
+  private readonly executionStates = new WeakMap<ToolRunContext, ToolExecutionState>()
+  /** The single settled final result per attempt, so a repeated finalize returns the exact settled value. */
+  private readonly finalResults = new WeakMap<ToolRunContext, ToolExecutionResult>()
+  /** Registry-owned audit bookkeeping for executions the registry itself logged. */
+  private readonly executionAudit = new WeakMap<ToolRunContext, { turn: number; step: number; callSeq: number }>()
+  /** Attempts whose approval ask minted an authorization grant that the dispatch boundary must take. */
+  private readonly grantRequired = new WeakSet<ToolExecution>()
+  /** Per-session durable operation-id counters, seeded from the loaded log so a resumed session never re-mints a logged id. Weak-keyed: sessions never outlive their counter. */
+  private readonly sessionOperationCounters = new WeakMap<Session, number>()
+  /** Per-session minted-but-unclaimed operation ids (the scheduler-internal claim channel). Weak-keyed: sessions never outlive their unclaimed set. */
+  private readonly sessionUnclaimedOperationIds = new WeakMap<Session, Set<OperationId>>()
+  /** Registry-global counter for agent-less executions (never written to a session log). */
+  private globalOperationCounter = 0
+
+  /**
+   * Mint the durable operation identity for one upcoming execution attempt in
+   * the given session, so the trusted loop can log it on `tool/call` BEFORE
+   * dispatch. PRIVATE: reachable only through the internal scheduler channel
+   * (`TOOL_RUNTIME_SCHEDULER.mintOperationId`) — the public
+   * `ToolRuntime.execute` path never honors a caller-supplied operation id,
+   * so a caller cannot mint-then-claim its way out of registry-owned audit
+   * rows. The per-session counter is seeded from the loaded log, so ids stay
+   * unique within one session log across process restarts and ToolRuntime
+   * replacement. Claiming happens in {@link createExecution}: an id that was
+   * never minted (or was already claimed) is discarded and a fresh internal
+   * identity replaces it.
+   * @param session - the session whose log the attempt's audit rows will join.
+   * @returns a brand-new operation id valid for exactly one scheduler input.
+   */
+  private mintOperationId(session: Session): OperationId {
+    const id = this.nextOperationId(session)
+    let unclaimed = this.sessionUnclaimedOperationIds.get(session)
+    if (unclaimed === undefined) {
+      unclaimed = new Set()
+      this.sessionUnclaimedOperationIds.set(session, unclaimed)
+    }
+    unclaimed.add(id)
+    return id
+  }
+
+  /** Release a minted-but-never-claimed id (an abandoned scheduler call), so no unclaimed identity lingers. */
+  private releaseOperationId(session: Session, operationId: OperationId): void {
+    this.sessionUnclaimedOperationIds.get(session)?.delete(operationId)
+  }
+
+  /** Next durable operation id for one session (seeded from its log) or the registry-global counter. */
+  private nextOperationId(session: Session | undefined): OperationId {
+    if (session === undefined) {
+      this.globalOperationCounter += 1
+      return `${this.globalOperationCounter}` as OperationId
+    }
+    let counter = this.sessionOperationCounters.get(session)
+    if (counter === undefined) {
+      // A session whose events cannot be read (a hostile or corrupt fold)
+      // must not fail the execution: seed from zero and let the pre-commit
+      // invariant reject any resulting duplicate identity at append time.
+      try {
+        counter = highestOperationIdIn(session.events)
+      } catch {
+        counter = 0
+      }
+      this.sessionOperationCounters.set(session, counter)
+    }
+    counter += 1
+    this.sessionOperationCounters.set(session, counter)
+    return `${counter}` as OperationId
+  }
+
+  /**
+   * Claim a caller-supplied operation id for the attempt's session, or mint a
+   * fresh internal one (claimed immediately). `claimed` reports whether a
+   * previously minted id was consumed — the trusted loop's channel — which is
+   * also the signal that the loop already owns the attempt's durable audit
+   * rows; a forged or replayed input lands in the internal branch and the
+   * registry owns the audit chain instead.
+   */
+  private claimOperationId(session: Session | undefined, supplied: OperationId | undefined): { operationId: OperationId; claimed: boolean } {
+    if (session !== undefined && supplied !== undefined) {
+      const unclaimed = this.sessionUnclaimedOperationIds.get(session)
+      if (unclaimed !== undefined && unclaimed.delete(supplied)) return { operationId: supplied, claimed: true }
+    }
+    // Internal mints are claimed immediately: no unclaimed residue that a
+    // later input could replay.
+    return { operationId: this.nextOperationId(session), claimed: false }
+  }
   static inject = ['systemPrompt']
 
   static Config: z<Config> = z.object({
@@ -809,6 +1140,8 @@ export class ToolRuntime extends Service {
     dispatch: exec => this.dispatchScheduledExecution(exec),
     finalize: (exec, result) => this.finalizeScheduledExecution(exec, result),
     finish: (exec, result) => this.finishScheduledExecution(exec, result),
+    mintOperationId: session => this.mintOperationId(session),
+    releaseOperationId: (session, operationId) => this.releaseOperationId(session, operationId),
   }
 
   /** Context deferred by a running tool body, keyed by its scheduler-owned execution. */
@@ -1126,6 +1459,56 @@ export class ToolRuntime extends Service {
     )
   }
 
+  /**
+   * Register a MANDATORY security recommendation. Every policy is evaluated
+   * for every execution attempt — no policy can short-circuit another — and
+   * all recommendations aggregate under deny > ask > allow before the single
+   * scheduler approval point. A plain-context policy applies globally; one
+   * registered through `agent.ctx` applies only to that agent. A throwing
+   * policy denies the attempt.
+   * @param policy - mandatory recommendation returning a {@link PreToolDecision} (or nothing for allow).
+   * @returns the exact disposer that unregisters the policy.
+   */
+  policy(policy: ToolPolicy): () => void {
+    return this.layers.effect(
+      this.ctx,
+      layer => layer.policies.append(policy),
+      { label: 'tools.policy()', notify: false },
+    )
+  }
+
+  /**
+   * The frozen identity record for one registry-created execution, or
+   * undefined for an object the registry never created. Enforcement reads
+   * this record, never the mutable live object.
+   * @param execution - the execution whose identity is requested.
+   * @returns the frozen record for a recognized execution.
+   */
+  identityOf(execution: Readonly<ToolExecution>): ToolExecutionIdentity | undefined {
+    return this.executionIdentities.get(execution as ToolRunContext)
+  }
+
+  /** Aggregate every mandatory policy recommendation; each is evaluated regardless of the others. */
+  private collectPolicyDecisions(exec: ToolExecution): PreToolDecision {
+    let decision: PreToolDecision = { kind: 'allow' }
+    const evaluate = (policy: ToolPolicy): void => {
+      let recommendation: PreToolDecision
+      try {
+        recommendation = policy(exec) ?? { kind: 'allow' }
+      } catch (error: unknown) {
+        recommendation = { kind: 'deny', reason: `tools.policy listener failed: ${errorMessage(error)}` }
+      }
+      decision = mergePreToolDecisions(decision, recommendation)
+    }
+    for (const policy of this.layers.global.policies.values()) evaluate(policy)
+    if (exec.agent !== undefined) {
+      for (const layer of this.layers.chainLayers(exec.agent)) {
+        for (const policy of layer.policies.values()) evaluate(policy)
+      }
+    }
+    return decision
+  }
+
   /** First monotonic denial from the global then the scope chain's guard layers, farthest first. */
   private guardReason(exec: ToolExecution): string | undefined {
     const globalReason = this.layers.global.guardReason(exec)
@@ -1351,7 +1734,10 @@ export class ToolRuntime extends Service {
    * @returns the materialized final result.
    */
   async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult> {
-    return this.prepareExecution(exec, prepared => this.completeScheduledExecution(prepared))
+    // The public entry never honors a caller-supplied operation id: audit
+    // ownership for direct executions belongs to the registry. Only the
+    // internal scheduler channel claims minted ids (the trusted loop).
+    return this.prepareExecution(exec, prepared => this.completeScheduledExecution(prepared), false)
   }
 
   private async completeScheduledExecution(prepared: ScheduledToolPreparation): Promise<ToolExecutionResult> {
@@ -1372,7 +1758,10 @@ export class ToolRuntime extends Service {
     }
   }
 
-  private createExecution(exec: ToolExecutionInput): ScheduledToolPreparation | { kind: 'ready'; exec: MutableToolRunContext } {
+  private createExecution(
+    exec: ToolExecutionInput,
+    honorOperationId: boolean,
+  ): ScheduledToolPreparation | { kind: 'ready'; exec: MutableToolRunContext } {
     const deferredContexts: UserMessage[] = []
     const token = createExecutionToken()
     const callId = exec.callId
@@ -1381,6 +1770,11 @@ export class ToolRuntime extends Service {
     const agent = exec.agent
     const parent = exec.parent
     const signal = exec.signal
+    const session = agent?.session
+    const operationClaim = honorOperationId
+      ? this.claimOperationId(session, exec.operationId)
+      : { operationId: this.nextOperationId(session), claimed: false }
+    const operationId = operationClaim.operationId
     // Distinguish a mode-collapsed call (visible in the scope, denied only by
     // the `code` collapse) from a genuinely unknown tool. A collapsed call is
     // deterministically denied, so it terminates BEFORE the extensible policy
@@ -1393,6 +1787,7 @@ export class ToolRuntime extends Service {
     const concludingExecutions = this.concludingExecutions
     const base = {
       token,
+      operationId,
       callId,
       rootCallId,
       name,
@@ -1405,6 +1800,30 @@ export class ToolRuntime extends Service {
       concludeTurn(): void {
         concludingExecutions.add(this as unknown as ToolExecution)
       },
+    }
+    // Durable audit ownership: the trusted loop logs `tool/call` itself before
+    // calling the scheduler (it supplies a minted operation id). A direct
+    // `ctx.tools.execute()` caller that does not go through the loop has no
+    // one else to own the audit rows, so the registry opens the chain itself
+    // and closes it with a `tool/result` at the terminal transition.
+    const ownsAudit = agent !== undefined && parent === undefined && !operationClaim.claimed
+    let audit: { turn: number; step: number; callSeq: number } | undefined
+    if (ownsAudit && session !== undefined) {
+      // An unreadable events fold must not fail the execution: skip the
+      // registry-owned audit rows and let the tool surface its own error.
+      let open: { turn: number; step: number } | undefined
+      try {
+        open = openTurnStep(session.events)
+      } catch {
+        open = undefined
+      }
+      if (open !== undefined) {
+        const event = session.append('tool/call', {
+          turn: open.turn, step: open.step, callId, name, arguments: argumentsRawOf(exec.arguments),
+          operationId,
+        })
+        audit = { turn: open.turn, step: open.step, callSeq: event.seq }
+      }
     }
     // Capture the finalizer BEFORE argument materialization: the
     // `finalizeContent` contract snapshots the callback when the call starts,
@@ -1424,13 +1843,18 @@ export class ToolRuntime extends Service {
       if (detached === undefined) {
         throw new TypeError('tool execution arguments must be losslessly JSON-serializable')
       }
-      const execution: MutableToolRunContext = { ...base, arguments: deepFreeze(detached) }
+      const execution: MutableToolRunContext = {
+        ...base,
+        argsDigest: createHash('sha256').update(serializeLosslessJson(detached)).digest('hex'),
+        arguments: deepFreeze(detached),
+      }
       this.deferredContexts.set(execution, deferredContexts)
       this.contentFinalizers.set(execution, finalizerFor())
       this.cancellationStates.set(execution, {
         callerSignal: signal,
         bodyInvoked: false,
       })
+      this.registerExecution(execution, execution.argsDigest, audit)
       if (collapsed) {
         // The collapse denies the call before the policy pipeline, but a
         // pre-dispatch abort still keeps the established cancellation
@@ -1457,8 +1881,39 @@ export class ToolRuntime extends Service {
     } catch (error: unknown) {
       const execution: MutableToolRunContext = { ...base, arguments: undefined }
       this.contentFinalizers.set(execution, finalizerFor())
+      this.registerExecution(execution, undefined, audit)
       return { kind: 'final-result', exec: execution, result: toolErrorResult(error) }
     }
+  }
+
+  /**
+   * Record the frozen identity, provenance, and initial authorization state for
+   * one registry-created execution; the identity record is the only
+   * enforcement read path and is never mutated by any pipeline stage.
+   * @param execution - the live mutable execution object.
+   * @param detached - the frozen parsed arguments (undefined when materialization failed).
+   * @param audit - registry-owned tool/call bookkeeping when the registry opened the audit chain.
+   */
+  private registerExecution(
+    execution: MutableToolRunContext,
+    argsDigest: string | undefined,
+    audit: { turn: number; step: number; callSeq: number } | undefined,
+  ): void {
+    this.mintedExecutions.add(execution)
+    this.executionIdentities.set(execution, Object.freeze({
+      token: execution.token,
+      operationId: execution.operationId,
+      callId: execution.callId,
+      rootCallId: execution.rootCallId,
+      name: execution.name,
+      ...execution.agent !== undefined ? { agent: execution.agent } : {},
+      ...execution.parent !== undefined ? { parent: execution.parent } : {},
+      ...execution.agent?.session !== undefined ? { session: execution.agent.session } : {},
+      ...execution.agent !== undefined ? { scope: execution.agent as ScopeKey } : {},
+      ...argsDigest !== undefined ? { argsDigest } : {},
+    }))
+    this.executionStates.set(execution, 'prepared')
+    if (audit !== undefined) this.executionAudit.set(execution, audit)
   }
 
   /**
@@ -1468,30 +1923,36 @@ export class ToolRuntime extends Service {
    * @internal
    */
   private async prepareScheduledExecution(input: ToolExecutionInput): Promise<ScheduledToolPreparation> {
-    return this.prepareExecution(input, prepared => prepared)
+    return this.prepareExecution(input, prepared => prepared, true)
   }
 
   private async prepareExecution<T>(
     input: ToolExecutionInput,
     next: (prepared: ScheduledToolPreparation) => T | PromiseLike<T>,
+    honorOperationId: boolean,
   ): Promise<T> {
-    const created = this.createExecution(input)
+    const created = this.createExecution(input, honorOperationId)
     if (created.kind !== 'ready') return next(created)
     const exec = created.exec
     if (this.callerCancelled(exec)) {
       return next({ kind: 'final-result', exec, result: toolAbortedBeforeDispatchResult() })
     }
     try {
+      // Mandatory security recommendations are collected FIRST and cannot be
+      // short-circuited: every registered policy evaluates for this attempt.
+      const policyDecision = this.collectPolicyDecisions(exec)
       const carrier = scopeTarget(this, exec.agent)
-      const gate = await this.ctx.waterfall(
+      const downstream = await this.ctx.waterfall(
         carrier, 'tools/pre-execute', exec,
         () => Promise.resolve<PreToolDecision>({ kind: 'allow' }),
       )
+      const gate = mergePreToolDecisions(policyDecision, downstream)
       const askResolution: ToolAskResolution = gate.kind === 'ask'
         ? await this.serviceAsk(exec, gate)
         : { decision: gate, approvalCancelled: false }
       const { decision } = askResolution
       if (this.callerCancelled(exec) && askResolution.approvalCancelled) {
+        this.ctx.get('approval')?.revoke?.(exec)
         return await next({ kind: 'post-result', exec, result: toolAbortedBeforeDispatchResult() })
       }
       const denialReason = decision.kind === 'allow'
@@ -1509,8 +1970,15 @@ export class ToolRuntime extends Service {
         })
       }
       if (this.callerCancelled(exec)) {
+        // A cancelled attempt must not leave a live authorization behind: the
+        // grant dies with the attempt instead of outliving it.
+        this.ctx.get('approval')?.revoke?.(exec)
         return await next({ kind: 'post-result', exec, result: toolAbortedBeforeDispatchResult() })
       }
+      // The attempt is authorized but not yet dispatching: the atomic take
+      // happens at the dispatch boundary, where the one-shot transition also
+      // closes replay of this prepared execution.
+      this.executionStates.set(exec, 'authorized')
       return await next({ kind: 'dispatch', exec })
     } catch (error: unknown) {
       return next({ kind: 'final-result', exec, result: toolErrorResult(error) })
@@ -1578,12 +2046,66 @@ export class ToolRuntime extends Service {
    * @internal
    */
   private async dispatchScheduledExecution(exec: ToolRunContext): Promise<ScheduledToolDispatch> {
+    // The atomic one-shot claim: only an authorized attempt may enter
+    // dispatch, and exactly once. A captured prepared execution, a second
+    // scheduler.dispatch call, or a concurrent dispatch all fail closed here
+    // — no second body dispatch is possible. The registry-minted provenance
+    // WeakSet is load-bearing: an object the registry never created cannot
+    // enter any scheduler stage.
+    if (!this.mintedExecutions.has(exec)) {
+      return {
+        kind: 'final-result',
+        result: toolErrorResult(new HarnessError(
+          'tool registry scheduler invariant violated: unrecognized execution',
+          'UNRECOGNIZED_TOOL_EXECUTION',
+        )),
+      }
+    }
+    if (this.executionStates.get(exec) !== 'authorized') {
+      const state = this.executionStates.get(exec)
+      return {
+        kind: 'final-result',
+        result: toolErrorResult(new HarnessError(
+          `tool execution duplicate dispatch rejected (attempt state: ${state})`,
+          'DUPLICATE_TOOL_DISPATCH',
+        )),
+      }
+    }
+    this.executionStates.set(exec, 'dispatching')
+    // Atomic authorization take at the same synchronous boundary as the
+    // state transition: the grant dies here, before any body code can run.
+    // Attempts that never asked approval (read-only calls, absent guard)
+    // carry no grant and dispatch without one.
+    if (this.grantRequired.has(exec)) {
+      const approval = this.ctx.get('approval')
+      if (approval === undefined || approval.take?.(exec) !== true) {
+        return {
+          kind: 'final-result',
+          result: toolErrorResult(new HarnessError(
+            `tool execution authorization was not taken for "${exec.name}" (no unconsumed grant for this attempt)`,
+            'TOOL_AUTHORIZATION_MISSING',
+          )),
+        }
+      }
+    }
+    let bodyStarted = false
     try {
       const mutableExec = exec as MutableToolRunContext
       const carrier = scopeTarget(this, exec.agent)
       const result = await this.ctx.waterfall(
         carrier, 'tools/execute', mutableExec,
-        () => this.dispatchToolBody(mutableExec),
+        () => {
+          // One-shot body continuation: a wrapper invoking `next()` twice
+          // cannot dispatch the body twice.
+          if (bodyStarted) {
+            return Promise.resolve(toolErrorResult(new HarnessError(
+              `tool execution body continuation invoked twice for "${exec.name}"`,
+              'DUPLICATE_TOOL_DISPATCH',
+            )))
+          }
+          bodyStarted = true
+          return this.dispatchToolBody(mutableExec)
+        },
       )
       const normalized = this.normalizeDispatchResult(exec, result)
       const deferredContexts = this.deferredContexts.get(exec)
@@ -1618,6 +2140,10 @@ export class ToolRuntime extends Service {
    * @internal
    */
   private async finalizeScheduledExecution(exec: ToolRunContext, result: ToolExecutionResult): Promise<ToolExecutionResult> {
+    this.assertMintedExecution(exec)
+    // A terminal execution can never be finalized again: no duplicate
+    // disposition row, no re-notification, no second post-execute pass.
+    if (this.executionStates.get(exec) === 'terminal') return this.finalResults.get(exec) ?? result
     try {
       const postResult = await this.postExecute(exec, result)
       return this.finishScheduledExecution(
@@ -1631,6 +2157,12 @@ export class ToolRuntime extends Service {
     }
   }
 
+  /** Registry provenance check at every staged scheduler entry point. */
+  private assertMintedExecution(exec: ToolRunContext): void {
+    /* v8 ignore next -- only registry-minted executions reach the staged scheduler methods */
+    if (!this.mintedExecutions.has(exec)) throw new Error('tool registry scheduler invariant violated: unrecognized execution')
+  }
+
   /**
    * Materialize the candidate, apply definition-owned content finalization,
    * then materialize and notify the authoritative result.
@@ -1640,6 +2172,12 @@ export class ToolRuntime extends Service {
    * @internal
    */
   private finishScheduledExecution(exec: ToolRunContext, result: ToolExecutionResult): ToolExecutionResult {
+    this.assertMintedExecution(exec)
+    // One-shot terminal transition: a second finish (misused internal
+    // scheduler API) returns the settled result without appending a second
+    // terminal disposition or re-notifying observers.
+    if (this.executionStates.get(exec) === 'terminal') return this.finalResults.get(exec) ?? result
+    this.executionStates.set(exec, 'terminal')
     let materializedResult: ToolExecutionResult
     try {
       materializedResult = this.materializeFinalResult(result)
@@ -1652,8 +2190,46 @@ export class ToolRuntime extends Service {
     } catch (error: unknown) {
       finalResult = this.materializeFinalResult(toolErrorResult(error))
     }
+    // Terminal transition (performed above, once): the attempt is over, its
+    // grant (if any) is revoked, and the registry-owned audit chain (direct
+    // executions) closes with the terminal disposition.
+    this.ctx.get('approval')?.revoke?.(exec)
+    const audit = this.executionAudit.get(exec)
+    if (audit !== undefined) this.appendOwnedToolResult(exec, finalResult, audit)
     this.notifyResult(exec, finalResult)
+    this.finalResults.set(exec, finalResult)
     return finalResult
+  }
+
+  /**
+   * Close the registry-owned audit chain for a direct execution: the
+   * `tool/result` that pairs with the registry-appended `tool/call` on the
+   * same operation id, so a direct `ctx.tools.execute()` attempt satisfies
+   * the same terminal-disposition contract as loop-scheduled calls.
+   * @param exec - the terminal execution.
+   * @param result - the materialized final outcome.
+   * @param audit - the call seq and turn/step the registry recorded at creation.
+   */
+  private appendOwnedToolResult(
+    exec: ToolRunContext,
+    result: ToolExecutionResult,
+    audit: { turn: number; step: number; callSeq: number },
+  ): void {
+    const agent = exec.agent
+    if (agent === undefined) return
+    const message = createToolResultMessage({
+      callId: exec.callId,
+      content: result.content,
+      isError: result.isError,
+    })
+    agent.session.append('tool/result', {
+      turn: audit.turn,
+      step: audit.step,
+      message,
+      ...result.error?.info ? { error: result.error.info } : {},
+      ...result.meta !== undefined ? { meta: result.meta } : {},
+      operationId: exec.operationId,
+    }, { surfaceOp: 'append', sourceEventSeqs: [audit.callSeq] })
   }
 
   /** Apply the snapshotted tool-owned content transform without exposing other result fields. */
@@ -1714,15 +2290,33 @@ export class ToolRuntime extends Service {
         approvalCancelled: false,
       }
     }
+    const sandboxMode = sandboxModeFromArgs(exec.arguments)
+    const justification = justificationFromArgs(exec.arguments)
     const outcome = await approval.request({
       agent: exec.agent,
       toolName: exec.name,
       callId: exec.callId,
-      ...ask.reason !== undefined ? { reason: ask.reason } : {},
+      operationId: exec.operationId,
+      // The grant binds to THIS registry-created execution object; the
+      // approval service keeps it by object identity (WeakMap provenance),
+      // never by the caller-supplied durable id.
+      authorizationSubject: exec,
+      ...exec.argsDigest !== undefined ? { argsDigest: exec.argsDigest } : {},
+      ...sandboxMode !== undefined ? { sandboxMode } : {},
+      // The human-facing reason names the requested sandbox dimension AND the
+      // model's justification (both read from the attempt's frozen args), so
+      // the merged single approval presents exactly what it covers.
+      ...sandboxMode !== undefined
+        ? { reason: `${ask.reason ?? `tool "${exec.name}" requires approval`} — requests sandbox escalation to "${sandboxMode}"${justification !== undefined ? `: ${justification}` : ''}` }
+        : ask.reason !== undefined ? { reason: ask.reason } : {},
       signal: exec.signal,
     })
     switch (outcome) {
-      case 'allowed-once': return { decision: { kind: 'allow' }, approvalCancelled: false }
+      case 'allowed-once':
+        // The approval service minted the grant for this exact execution
+        // object; the dispatch boundary must take it atomically.
+        this.grantRequired.add(exec)
+        return { decision: { kind: 'allow' }, approvalCancelled: false }
       case 'rejected': return {
         decision: { kind: 'deny', reason: `the user rejected tool "${exec.name}"` },
         approvalCancelled: false,

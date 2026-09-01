@@ -285,6 +285,9 @@ describe('headless stream-json snapshots', () => {
       binArgs: ['--profile', 'headless', '--patch', headlessOverlayPath, 'Trigger the keyless model failure.'],
       tsconfigPath,
       expectedExitCode: 1,
+      // The product CLI boot is the heaviest keyless smoke; under full-suite
+      // parallel load it needs more than the default 30s process deadline.
+      processTimeoutMs: 60_000,
       env: {
         DSH_CLI_MOCK_FAILURE: '1',
         DSH_TELEMETRY_DISABLED: '1',

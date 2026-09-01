@@ -11,12 +11,14 @@
 ## 配置
 
 - `mode`：部署默认 `SandboxMode`（`read-only`／`workspace-write`／`danger-full-access`），加载时验证。默认为 `read-only`（故障安全）。
+- `maxMode`：任何解析结果都不会超过的部署硬上限：会话覆盖与批准的升权都被封顶到该值，且默认值宽于上限时在加载阶段报错。默认为 `danger-full-access`（批准的升权可以到达最宽模式，与此字段引入前一致）。
 - `workspaceRoot`：无 agent（智能体）的调用或没有 cwd 的会话在 `workspace-write` 下可写入的回退目录。默认为 `process.cwd()`；无论显式配置还是采用默认值，都会解析为其绝对文件系统标识。普通 agent 调用改用其会话头中不可变的 `cwd`。
 
 ## 接口
 
 - `ctx.sandboxPolicy.resolve({ session?, mode? })`：解析一项完整的逐调用策略。显式批准的模式优先于会话最后一条 `sandbox/mode` 事件，后者又优先于 `defaultMode`；会话不可变的 `cwd` 会先按文件系统语义规范化，再成为 `workspaceRoot`，否则使用配置的回退值。规范化先于词法归一化，因此 `symlink/..` 与进程工作目录解析保持一致。
 - `ctx.sandboxPolicy.defaultMode`／`ctx.sandboxPolicy.workspaceRoot`：`resolve()` 使用的部署默认值与回退根目录。
+- `ctx.sandboxPolicy.isMinted(policy)`：供执行侧 fs/shell 后端使用的来源检查：仅当该授权由本归属方的 `resolve()` 返回时为真。调用方自行构造的策略对象会被忽略并回落归属方的部署默认值——伪造对象声明的字段永不生效，且每条路径都被 `maxMode` 封顶。这不宣称会话收窄或操作授权已被强制执行：回落是部署默认值（可能宽于会话收窄后的当前模式）、铸造出的授权可被捕获重放、`resolve({ session, mode })` 仍可直接调用到 `maxMode` 上限——这些收口是操作绑定授权（PR-2），不是本检查。它也不是恶意代码边界——能够补丁服务或接触无限制能力的插件不在范围内。
 - `sandbox:policy`：直接派生自 `resolve({ session })` 的请求时缓存安全上下文贡献。它说明该模式中与具体能力无关的文件操作约定，以及 `workspace-write` 下规范化的会话工作区；工具归属方仍负责特定于操作的拒绝与升权引导。
 - `effectiveSandboxMode(events)`：会话 `sandbox/mode` 事件的纯 fold（最后一次切换胜出，没有则为 `undefined`），在 `resolve()` 内使用。
 - `setSandboxMode(session, mode)`：逐会话覆盖的唯一写入路径：恰好追加一条 `sandbox/mode` 事件。切换本身就是事件；不会在带外修改模式。

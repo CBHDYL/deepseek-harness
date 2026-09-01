@@ -1,4 +1,4 @@
-{"type":"session","version":0,"id":"{{sessionId}}","createdAt":0,"cwd":"{{cwd}}","delegationDepth":0}
+{"type":"session","version":1,"id":"{{sessionId}}","createdAt":0,"cwd":"{{cwd}}","delegationDepth":0}
 {"type":"agent/inbox/spliced","data":{"target":"next-turn","start":0,"inserted":[{"content":[{"type":"text","text":"Start a long task; this turn will be cancelled mid-stream."}],"source":{"kind":"user"},"role":"user","id":"f74653c2-8793-4004-ab0d-833a8dfd42bf"}]}}
 {"type":"turn/start","data":{"turn":1}}
 {"type":"agent/inbox/spliced","data":{"target":"next-turn","start":0,"removedCount":1,"inserted":[]}}
@@ -8,8 +8,10 @@
 {"type":"session/title","data":{"title":"Start a long task; this","messageSeqs":[4],"source":{"kind":"fallback"}}}
 {"type":"request/header","data":{"header":{"config":{"provider":"deepseek-official","model":"deepseek-v4-flash"},"system":"{{system}}","tools":"{{tools}}"},"reason":"initial"}}
 {"type":"request/context","data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}
+{"type":"request/attempt-start","data":{"turn":1,"step":1,"attempt":1,"provider":"deepseek-official","model":"deepseek-v4-flash"},"ignorable":true}
 {"type":"assistant/chunk","data":{"turn":1,"step":1,"chunk":{"type":"block-start","index":0,"blockType":"text"}}}
 {"type":"assistant/chunk","data":{"turn":1,"step":1,"chunk":{"type":"text-delta","index":0,"text":"partial"}}}
-{"type":"assistant/message","data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"partial"}],"source":{"kind":"model","provider":"deepseek-official","model":"deepseek-v4-flash"},"id":"104e9294-f9b8-4248-b7df-0b7e2a069c0a"},"interrupted":true},"sourceEventSeqs":[9,10],"surfaceOp":"append"}
+{"type":"request/attempt-end","data":{"turn":1,"step":1,"attempt":1,"outcome":"throw","failure":{"message":"[object Object]","code":"UNKNOWN"}},"ignorable":true}
+{"type":"assistant/message","data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"partial"}],"source":{"kind":"model","provider":"deepseek-official","model":"deepseek-v4-flash"},"id":"104e9294-f9b8-4248-b7df-0b7e2a069c0a"},"interrupted":true},"sourceEventSeqs":[10,11],"surfaceOp":"append"}
 {"type":"step/end","data":{"turn":1,"step":1}}
 {"type":"turn/end","data":{"turn":1,"reason":{"kind":"aborted","reason":{"kind":"user"}}}}

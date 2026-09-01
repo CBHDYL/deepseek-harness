@@ -26,6 +26,10 @@ Two mandatory points, throttled in between:
 
 Both `Config` fields are required (no defaults): flush cadence is a deployment choice with no universally correct value, stated in cordis.yml.
 
+### Write queue
+
+All triggers for one session share a single-flight queue: at most one checkpoint write is in flight per session, each queued write snapshots the newest registry cut when its turn arrives (a later cut never loses to an earlier one), and triggers arriving while a write is queued coalesce onto it. Detach is an ordered task on the same queue — it runs after every prior write, never coalesced away — and its final cut is captured at the detach moment (units unregister during teardown, so a task-time cut could be empty). Dirty bookkeeping (`dirtyStats(session)`: pending events, consecutive failures, remaining automatic retries) is retired only by the successful write that covered those events; a failed write keeps its events dirty for the retry/next trigger, and a rejected task never strands the tail.
+
 ## Listing read (`cachedSnapshot(meta)`)
 
 The zero-I/O rung: client values viewed straight from the identity-matching stored record (version- and state-schema-matching keys only), returned as a `{asOfSeq, values}` cut — `asOfSeq` is the lowest served-row watermark, so a client seeding its per-session value store under higher-seq-wins can never let a stale list block overwrite a newer push frame. Host-only rows are never returned. `undefined` when no usable client row exists (unknown id, unrelated lifecycle, or no usable rows); the api-proxy list carrier turns that into an absent column.

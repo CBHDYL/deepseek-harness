@@ -527,6 +527,27 @@ restrict(filter: ToolRestriction): () => void
 guard(guard: ToolGuard): () => void
 
 /**
+ * Register a MANDATORY security recommendation. Every policy is evaluated
+ * for every execution attempt — no policy can short-circuit another — and
+ * all recommendations aggregate under deny > ask > allow before the single
+ * scheduler approval point. A plain-context policy applies globally; one
+ * registered through `agent.ctx` applies only to that agent. A throwing
+ * policy denies the attempt.
+ * @param policy - mandatory recommendation returning a {@link PreToolDecision} (or nothing for allow).
+ * @returns the exact disposer that unregisters the policy.
+ */
+policy(policy: ToolPolicy): () => void
+
+/**
+ * The frozen identity record for one registry-created execution, or
+ * undefined for an object the registry never created. Enforcement reads
+ * this record, never the mutable live object.
+ * @param execution - the execution whose identity is requested.
+ * @returns the frozen record for a recognized execution.
+ */
+identityOf(execution: Readonly<ToolExecution>): ToolExecutionIdentity | undefined
+
+/**
  * Look up a tool as one scope sees it (scoped
  * shadows global; a restricted-away global reads as absent). Presenters pass
  * the calling agent so the rendered card matches the definition that

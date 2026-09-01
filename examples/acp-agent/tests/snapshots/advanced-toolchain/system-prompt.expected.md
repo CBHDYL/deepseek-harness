@@ -11,6 +11,8 @@ Use the write tool to create files or completely replace file contents. Existing
 
 Use the edit tool for targeted changes to existing UTF-8 text files. It replaces literal old_string with new_string; by default old_string must appear exactly once. If old_string appears multiple times, provide a more specific old_string or set replace_all to true. Read the file first (the default fs-observation-policy requires it), unless you just created or edited it in this session.
 
+Use the apply_patch tool for changes too large or too scattered for a literal edit: it applies a single-file unified diff whose context lines are verified, so a wrong target fails loudly instead of corrupting. Read the file first (the fs-observation-policy requires it), then send the diff.
+
 Check the [exit code: N] marker on every bash result; investigate failures before moving on.
 
 Track every background job id you start. You are notified in-session when a job finishes — do not busy-poll or sleep on one; keep working on independent steps and do not duplicate a running job's work. Before giving a final answer, collect every still-relevant job with job_output (set wait: true only when you are genuinely blocked on it), and job_kill jobs that stopped mattering.
@@ -144,6 +146,17 @@ The available tools:
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
 interface ToolArgsMap {
+  /** Apply a single-file unified diff to an existing file. The diff must start with `--- a/<path>` and `+++ b/<path>` headers followed by `@@ -l,c +l,c @@` hunks (space = context, `-` = removed, `+` = added). Every context and removed line is verified against the file; the first mismatch fails the call with the hunk and line number. Multi-file diffs are rejected. */
+  apply_patch: {
+    /** The unified diff to apply, with `--- a/<path>` and `+++ b/<path>` headers. */
+    patch: string;
+    /** Optional explicit target path; defaults to the `+++ b/` header path. */
+    file_path?: string;
+    /** The wider sandbox mode this file operation needs. Only valid as a one-shot retry of an operation the sandbox just denied; requires justification and user approval. */
+    sandbox_permissions?: "workspace-write" | "danger-full-access";
+    /** Required with sandbox_permissions: one sentence for the user explaining why this exact file operation needs the wider access. */
+    justification?: string;
+  } & Record<string, JsonValue>;
   /** Execute a bash command (`bash -c`) and return its stdout/stderr. Each call runs in a fresh shell: no state (cwd, variables, functions) persists between calls — pass `workdir` instead of using `cd`. Non-zero exits are reported as `[exit code: N]`. Current harness environment facts are exposed through managed `$DSH_*` variables; inspect them when needed. Commands may run under a file sandbox; a blocked file operation is reported as `[sandbox: file access denied under <mode> mode]` — a policy denial, not a bug in the command; do not retry another way. Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. Set `run_in_background: true` for long-running commands: the call returns a job id immediately; read its output with `job_output` and stop it with `job_kill`. Attempting a command the sandbox may deny is safe and expected: run it and read the marker rather than assuming the denial. When a command is denied and a wider mode would let it succeed, escalate immediately in the same turn — the one sanctioned exception to a denial: retry the exact same command once with `sandbox_permissions` (the narrowest wider mode that suffices) plus a one-sentence `justification`. Do not detour through chat to ask permission first — the approval prompt raised by that retry is how the user consents. If the session states approval prompts are disabled, there is no exception: a denial is final — do not set `sandbox_permissions`. Never escalate speculatively: ground the request in a real denial — normally the one this command just hit; escalating up front is fine only when this session already denied the same access. A rejected escalation is final for that command — stop and explain, never work around it — but it does not forbid attempting or escalating other commands later. */
   bash: {
     /** The bash command to execute. */
@@ -384,6 +397,12 @@ interface ToolArgsMap {
 }
 
 interface ToolOutputMap {
+  apply_patch: {
+    path: string;
+    hunksApplied: number;
+    before: string;
+    after: string;
+  };
   bash: {
     kind: "background";
     jobId: string;

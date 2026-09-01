@@ -105,10 +105,35 @@ export type EscalationOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'una
 export interface EscalationApprover<A = object, C = string> {
   /**
    * Ask the human to approve one action, resolving to a closed outcome.
-   * @param req - the audit-self-contained request (agent, tool, call id, reason, optional signal).
+   * @param req - the audit-self-contained request (agent, tool, call id, reason, optional signal, and the attempt's correlation: operation id, args digest, requested sandbox dimension).
    * @returns the human's decision as a closed {@link EscalationOutcome}.
    */
-  request(req: { agent: A; toolName: string; callId: C; reason: string; signal?: AbortSignal }): Promise<EscalationOutcome>
+  request(req: {
+    agent: A
+    toolName: string
+    callId: C
+    reason: string
+    signal?: AbortSignal
+    operationId?: string
+    argsDigest?: string
+    sandboxMode?: string
+  }): Promise<EscalationOutcome>
+}
+
+/**
+ * Correlation and reuse facts an escalating tool body hands
+ * {@link approveEscalation}: the attempt's durable operation id and args
+ * digest (audit binding), and whether the attempt's single execution approval
+ * already named exactly this requested dimension (preauthorized), in which
+ * case no second human question is asked.
+ */
+export interface EscalationCorrelation {
+  /** The attempt's durable operation id, written onto the approval audit pair. */
+  readonly operationId?: string
+  /** The attempt's frozen-arguments digest (audit binding only). */
+  readonly argsDigest?: string
+  /** The execution attempt's approval already covered exactly this requested mode. */
+  readonly preauthorized?: boolean
 }
 
 /**
@@ -157,7 +182,11 @@ export interface EscalationRequest {
  * @param approval - the approval ingredients the tool holds (see {@link EscalationApproval}).
  * @returns the granted mode, consumed by the one call that asked.
  */
-export async function approveEscalation<A, C>(request: EscalationRequest, approval: EscalationApproval<A, C>): Promise<SandboxMode> {
+export async function approveEscalation<A, C>(
+  request: EscalationRequest,
+  approval: EscalationApproval<A, C>,
+  correlation: EscalationCorrelation = {},
+): Promise<SandboxMode> {
   const { requestedMode: mode, effectiveMode, justification, subject } = request
   // Repeating the effective mode grants nothing and is safe to normalize before
   // approval. Unknown modes still fail closed instead of becoming idempotent.
@@ -173,6 +202,11 @@ export async function approveEscalation<A, C>(request: EscalationRequest, approv
       SANDBOX_ESCALATION_NOT_WIDER,
     )
   }
+  // The attempt's single execution approval already named exactly this
+  // dimension: reuse it — no second human question for the same execution.
+  if (correlation.preauthorized === true) {
+    return mode as SandboxMode
+  }
   if (approval.approver === undefined) {
     throw new Error(`sandbox escalation to "${mode}" requires approval, but no approval service is composed`)
   }
@@ -187,6 +221,9 @@ export async function approveEscalation<A, C>(request: EscalationRequest, approv
     callId: approval.callId,
     reason: `escalate sandbox to ${mode}: ${justification}`,
     ...approval.signal ? { signal: approval.signal } : {},
+    ...correlation.operationId !== undefined ? { operationId: correlation.operationId } : {},
+    ...correlation.argsDigest !== undefined ? { argsDigest: correlation.argsDigest } : {},
+    sandboxMode: mode,
   })
   switch (outcome) {
     // The schema enum already pinned `mode` to the closed target vocabulary;

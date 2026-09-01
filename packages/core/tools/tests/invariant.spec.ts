@@ -3,6 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import { CallId } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { ApprovalRequestId } from '@deepseek-ai/dsh-user-approval'
 import type { ToolExecution, ToolExecutionResult, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import * as ToolsInvariant from '@deepseek-ai/dsh-tools/invariant'
 import InvariantRegistry from '@deepseek-ai/dsh-invariants'
@@ -19,6 +20,8 @@ async function setup(): Promise<Context> {
 
 const execution = (overrides: Partial<ToolExecution> = {}): ToolExecution => ({
   token: Symbol('tool') as ToolExecutionToken,
+  operationId: 'invariant-op' as ToolExecution['operationId'],
+  argsDigest: 'invariant-digest',
   callId: CallId('call-1'),
   name: 'echo',
   arguments: Object.freeze({ text: 'hi' }),
@@ -236,4 +239,49 @@ describe('tool-pipeline invariants', () => {
     await ctx.plugin(InvariantRegistry)
     await expect(ctx.plugin(ToolsInvariant).then(() => undefined)).rejects.toThrow(/outside any open turn/)
   })
+
+describe('A6 operation-audit gate (pre-commit, executable)', () => {
+  async function a6Ctx(): Promise<Context> {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(InvariantRegistry)
+    await ctx.plugin(ToolsInvariant)
+    return ctx
+  }
+
+  it('rejects turn/end while an allowed-once attempt has no terminal disposition (F1)', async () => {
+    const ctx = await a6Ctx()
+    const session = ctx.sessions.create(SessionId('a6-missing'))
+    session.append('turn/start', { turn: 1 })
+    session.append('approval/decided', { id: ApprovalRequestId('r1'), outcome: 'allowed-once', operationId: 'op-missing' as never })
+    expect(() => session.append('turn/end', { turn: 1, reason: { kind: 'completed' } }))
+      .toThrow(/allowed-once attempt without a terminal disposition/)
+  })
+
+  it('rejects a duplicate opening identity across event kinds (F2: code-dispatch vs tool/call)', async () => {
+    const ctx = await a6Ctx()
+    const session = ctx.sessions.create(SessionId('a6-dup-cross'))
+    session.append('turn/start', { turn: 1 })
+    session.append('step/start', { turn: 1, step: 1 })
+    session.append('tool/call', { turn: 1, step: 1, callId: CallId('c1'), name: 'run_code', arguments: '{}', operationId: '1' as never })
+    expect(() => session.append('tool/code-dispatch-start', {
+      rootCallId: CallId('c1'), parentCallId: CallId('c1'), subCallId: CallId('c1:code:1'), name: 'bash', arguments: {}, operationId: '1' as never,
+    })).toThrow(/duplicate durable operationId/)
+  })
+
+  it('accepts a complete allowed-once chain closed by a Code Mode settle event (F2 positive)', async () => {
+    const ctx = await a6Ctx()
+    const session = ctx.sessions.create(SessionId('a6-code-ok'))
+    session.append('turn/start', { turn: 1 })
+    session.append('step/start', { turn: 1, step: 1 })
+    session.append('tool/call', { turn: 1, step: 1, callId: CallId('c1'), name: 'run_code', arguments: '{}', operationId: '1' as never })
+    session.append('approval/decided', { id: ApprovalRequestId('r2'), outcome: 'allowed-once', operationId: '2' as never })
+    session.append('tool/code-dispatch', {
+      rootCallId: CallId('c1'), parentCallId: CallId('c1'), subCallId: CallId('c1:code:1'), name: 'bash', arguments: {}, isError: false, content: [], operationId: '2' as never,
+    })
+    session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    expect(true).toBe(true)
+  })
+})
+
 })

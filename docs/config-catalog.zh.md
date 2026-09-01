@@ -179,6 +179,29 @@ export interface Config {
    * fails with `REQUEST_ATTEMPTS_EXCEEDED` at the cap. Default 16.
    */
   maxRequestAttempts?: number
+  /**
+   * Hard byte ceiling (UTF-8) on the final model-facing request
+   * representation. A request whose measured representation EXCEEDS it is
+   * never dispatched (strict predicate: exactly at the ceiling dispatches) —
+   * the normative hard boundary. Default
+   * {@link DEFAULT_MAX_REQUEST_BYTES}.
+   */
+  maxRequestBytes?: number
+  /**
+   * Optional earlier trigger: reject when the fixed-density heuristic token
+   * estimate of the final request exceeds this. Unset by default (the
+   * estimate is still computed and reported). The estimate is an ADVISORY,
+   * provider-agnostic heuristic (accepted design deviation, PR-6 F2) — it is
+   * never a provider token guarantee and never the only safety boundary;
+   * {@link Config.maxRequestBytes} is the normative enforcement.
+   */
+  maxEstimateTokens?: number | undefined
+  /**
+   * Recovery retries per step when a prompt-budget rejection is answered by
+   * an `agent/request-budget` listener (compaction). Default
+   * {@link DEFAULT_BUDGET_COMPACTION_RETRIES}.
+   */
+  budgetCompactionRetries?: number
   /** Agents created or resumed at plugin startup. */
   agents: (AgentOptions & {
     /** Stable config label used in logs and as the fresh combined-id prefix. */
@@ -268,6 +291,14 @@ export interface Config {
   agents?: AgentLoopConfig['agents']
   /** Agent-loop concurrency cap; `1` is serial. */
   maxParallelToolCalls?: AgentLoopConfig['maxParallelToolCalls']
+  /** Agent-loop per-step request-attempt cap (see dsh-agent-loop's `Config`). */
+  maxRequestAttempts?: AgentLoopConfig['maxRequestAttempts']
+  /** Agent-loop hard UTF-8 byte ceiling on one request's model-facing representation. */
+  maxRequestBytes?: AgentLoopConfig['maxRequestBytes']
+  /** Agent-loop optional advisory heuristic estimate trigger; unset by default. */
+  maxEstimateTokens?: AgentLoopConfig['maxEstimateTokens']
+  /** Agent-loop per-step budget-recovery retry cap. */
+  budgetCompactionRetries?: AgentLoopConfig['budgetCompactionRetries']
   /** Whether the system prompt includes the fixed Harness identity (default true). */
   includeHarnessIdentity?: SystemPromptConfig['includeHarnessIdentity']
   /** Whether model history includes dynamic runtime-context snapshots (default true). */
@@ -519,6 +550,14 @@ export interface BasicCompactionConfig extends CompactionPolicyConfig {
   modelPolicies?: ModelCompactPolicyConfig[]
   /** Enable automatic step-boundary pressure and overflow-recovery listeners. Defaults to `true`. */
   auto?: boolean
+  /**
+   * Hard UTF-8 byte allowance on one summarizer request's model-facing
+   * representation (messages + system + tool schemas). Defaults to
+   * {@link DEFAULT_SUMMARIZATION_MAX_BYTES}. This is the compaction reserve
+   * that bounds the auxiliary dispatch: a region that does not fit is refused
+   * before any provider dispatch and fails the compaction transaction typed.
+   */
+  summarizationMaxBytes?: number
 }
 
 /** Policy fields shared by the default policy and exact model overrides. */
@@ -1480,6 +1519,10 @@ export interface StdioConfig {
   maxToolsPerServer?: number
   /** Whole-sync deadline in ms (default 30000). */
   syncTimeoutMs?: number
+  /** Maximum UTF-8 bytes of one tool's description before exclusion (default 4096). */
+  maxToolDescriptionBytes?: number
+  /** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion (default 65536). */
+  maxToolSchemaBytes?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -1508,6 +1551,10 @@ export interface StreamableHttpConfig {
   maxToolsPerServer?: number
   /** Whole-sync deadline in ms (default 30000). */
   syncTimeoutMs?: number
+  /** Maximum UTF-8 bytes of one tool's description before exclusion (default 4096). */
+  maxToolDescriptionBytes?: number
+  /** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion (default 65536). */
+  maxToolSchemaBytes?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -1794,6 +1841,12 @@ export interface Config {
 export interface Config {
   /** File-sandbox mode a session starts from (default: `read-only`). */
   mode?: SandboxMode
+  /**
+   * Hard deployment ceiling (default: `danger-full-access`, preserving the
+   * historical semantics where an approved escalation may reach the widest
+   * mode). No session override or approved escalation resolves above it.
+   */
+  maxMode?: SandboxMode
   /**
    * Fallback root for agentless calls and sessions without a cwd (default:
    * `process.cwd()`). Normal agent calls use their session cwd instead.
@@ -2674,10 +2727,14 @@ export interface Config {
 Requires: `tools` · `systemPrompt`
 
 ```ts config-catalog
-/** Plugin config; no tunables yet. */
+/** Plugin config. */
 export interface Config {
   /** Directory for screenshots (default: OS temp dir). */
   screenshotDir?: string
+  /** `goto` navigation timeout in ms (default 30000). */
+  gotoTimeoutMs?: number
+  /** CSS selector action (`click`/`fill`/`read_text`) timeout in ms (default 10000). */
+  actionTimeoutMs?: number
 }
 ```
 

@@ -24,6 +24,7 @@ export type SurfaceEventType =
   | 'user/message'
   | 'assistant/message'
   | 'tool/result'
+  | 'session/repaired'
 
 /**
  * How a session event entered the ordered surface. Only valid on
@@ -90,7 +91,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }[T]
 ```
 
-Sources: [`packages/core/session/src/types.ts:371`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:378`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:407`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:445`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:417`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:424`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:454`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:492`](../packages/core/session/src/types.ts)
 
 ## Events
 
@@ -171,6 +172,12 @@ Source: [`packages/preset/agent-presets/src/session.ts:26`](../packages/preset/a
   id: ApprovalRequestId
   toolName: string
   callId?: CallId
+  /** Registry-minted attempt correlation when the asker is the tool scheduler or an escalating tool body. */
+  operationId?: OperationId
+  /** Canonical arguments digest of the attempt being decided (audit binding). */
+  argsDigest?: string
+  /** Requested sandbox dimension when the ask covers a sandbox escalation. */
+  sandboxMode?: string
   reason?: string
 }
 ```
@@ -192,10 +199,14 @@ Source: [`packages/interaction/user-approval/src/index.ts:44`](../packages/inter
 'approval/decided': {
   id: ApprovalRequestId
   outcome: ApprovalOutcome
+  /** The asked attempt correlation, mirroring `approval/asked`. */
+  operationId?: OperationId
+  /** The sandbox dimension this decision covered, mirroring `approval/asked`. */
+  sandboxMode?: string
 }
 ```
 
-Source: [`packages/interaction/user-approval/src/index.ts:55`](../packages/interaction/user-approval/src/index.ts)
+Source: [`packages/interaction/user-approval/src/index.ts:61`](../packages/interaction/user-approval/src/index.ts)
 
 <a id="approvalpolicy--log-only"></a>
 
@@ -217,7 +228,7 @@ Source: [`packages/interaction/user-approval/src/index.ts:55`](../packages/inter
 }
 ```
 
-Source: [`packages/interaction/user-approval/src/index.ts:67`](../packages/interaction/user-approval/src/index.ts)
+Source: [`packages/interaction/user-approval/src/index.ts:77`](../packages/interaction/user-approval/src/index.ts)
 
 ### `assistant/*`
 
@@ -232,7 +243,7 @@ Source: [`packages/interaction/user-approval/src/index.ts:67`](../packages/inter
 
 Types: [StreamChunk](subsystems/llm-streaming.md)
 
-Source: [`packages/core/session/src/types.ts:266`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:283`](../packages/core/session/src/types.ts)
 
 <a id="assistantmessage--surface"></a>
 
@@ -254,7 +265,7 @@ Source: [`packages/core/session/src/types.ts:266`](../packages/core/session/src/
 
 Types: [TokenUsage](subsystems/llm-streaming.md)
 
-Source: [`packages/core/session/src/types.ts:277`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:294`](../packages/core/session/src/types.ts)
 
 ### `command/*`
 
@@ -504,7 +515,7 @@ Source: [`packages/hooks/hook-protocol/src/types.ts:31`](../packages/hooks/hook-
 'job/end': { jobId: string; status: 'completed' | 'failed' | 'killed'; detail?: string; finishedAt: number }
 ```
 
-Source: [`packages/core/session/src/types.ts:344`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:390`](../packages/core/session/src/types.ts)
 
 <a id="jobstart--log-only"></a>
 
@@ -520,7 +531,7 @@ Source: [`packages/core/session/src/types.ts:344`](../packages/core/session/src/
 'job/start': { jobId: string; kind: string; label: string }
 ```
 
-Source: [`packages/core/session/src/types.ts:340`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:386`](../packages/core/session/src/types.ts)
 
 ### `llm/*`
 
@@ -603,7 +614,7 @@ Source: [`packages/plan/plan-mode/src/index.ts:53`](../packages/plan/plan-mode/s
 }
 ```
 
-Source: [`packages/core/session/src/types.ts:327`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:373`](../packages/core/session/src/types.ts)
 
 <a id="requestattempt-start--log-only"></a>
 
@@ -619,7 +630,7 @@ Source: [`packages/core/session/src/types.ts:327`](../packages/core/session/src/
 'request/attempt-start': { turn: number; step: number; attempt: number; provider: string; model: string }
 ```
 
-Source: [`packages/core/session/src/types.ts:320`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:366`](../packages/core/session/src/types.ts)
 
 <a id="requestcontext--log-only"></a>
 
@@ -633,7 +644,7 @@ Source: [`packages/core/session/src/types.ts:320`](../packages/core/session/src/
 'request/context': RequestContext
 ```
 
-Source: [`packages/core/session/src/types.ts:313`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:359`](../packages/core/session/src/types.ts)
 
 <a id="requestheader--log-only"></a>
 
@@ -647,7 +658,7 @@ Source: [`packages/core/session/src/types.ts:313`](../packages/core/session/src/
 'request/header': { header: EpochHeader; reason: RequestHeaderReason }
 ```
 
-Source: [`packages/core/session/src/types.ts:308`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:354`](../packages/core/session/src/types.ts)
 
 ### `sandbox/*`
 
@@ -722,7 +733,35 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 'session/end-seed': Record<string, never>
 ```
 
-Source: [`packages/core/session/src/types.ts:367`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:413`](../packages/core/session/src/types.ts)
+
+<a id="sessionrepaired--surface"></a>
+
+#### `session/repaired` — surface
+
+```ts persistence-catalog
+/**
+ * A crash-recovery transaction committed durably: the model-facing notice
+ * that part of the session history was lost or synthesized, plus the
+ * recovery provenance. Surface event: the notice enters the model history
+ * so a resumed session knows its past is incomplete. Required-on-read —
+ * builds that do not know this event refuse the log instead of silently
+ * reconstructing a shorter history (the format-version boundary).
+ */
+'session/repaired': {
+  message: UserMessage
+  /** Recovery category, e.g. 'torn-tail' or 'corrupted-records'. */
+  reason: string
+  /** Complete records past the valid prefix that were lost. */
+  lostLines: number
+  /** Complete records recovered from a torn tail and re-committed. */
+  recoveredEvents: number
+  /** Synthetic terminal closers the repair added. */
+  synthesizedClosers: number
+}
+```
+
+Source: [`packages/core/session/src/types.ts:337`](../packages/core/session/src/types.ts)
 
 <a id="sessiontitle--log-only"></a>
 
@@ -764,7 +803,7 @@ Source: [`packages/session/session-title-llm/src/index.ts:43`](../packages/sessi
 'step/end': { turn: number; step: number }
 ```
 
-Source: [`packages/core/session/src/types.ts:256`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:273`](../packages/core/session/src/types.ts)
 
 <a id="stepstart--log-only"></a>
 
@@ -775,7 +814,7 @@ Source: [`packages/core/session/src/types.ts:256`](../packages/core/session/src/
 'step/start': { turn: number; step: number }
 ```
 
-Source: [`packages/core/session/src/types.ts:254`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:271`](../packages/core/session/src/types.ts)
 
 ### `subagent/*`
 
@@ -868,7 +907,7 @@ Source: [`packages/experimental/agent-team/src/types.ts:208`](../packages/experi
 
 Types: [TodoItem](subsystems/session.md)
 
-Source: [`packages/core/session/src/types.ts:303`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:349`](../packages/core/session/src/types.ts)
 
 ### `tool/*`
 
@@ -882,12 +921,20 @@ Source: [`packages/core/session/src/types.ts:303`](../packages/core/session/src/
  * JSON string exactly as the model produced it (unparsed). `callId` pairs the
  * call with its `tool/result`.
  */
-'tool/call': { turn: number; step: number; callId: CallId; name: string; arguments: string }
+'tool/call': {
+  turn: number
+  step: number
+  callId: CallId
+  name: string
+  arguments: string
+  /** Registry-minted attempt correlation (absent only on legacy or synthetic rows). */
+  operationId?: OperationId
+}
 ```
 
 Types: [CallId](subsystems/core.md)
 
-Source: [`packages/core/session/src/types.ts:283`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:300`](../packages/core/session/src/types.ts)
 
 <a id="toolcode-dispatch--log-only"></a>
 
@@ -912,7 +959,7 @@ Source: [`packages/core/session/src/types.ts:283`](../packages/core/session/src/
 'tool/code-dispatch': CodeDispatchEventData
 ```
 
-Source: [`packages/core/tools/src/types.ts:56`](../packages/core/tools/src/types.ts)
+Source: [`packages/core/tools/src/types.ts:59`](../packages/core/tools/src/types.ts)
 
 <a id="toolcode-dispatch-start--log-only"></a>
 
@@ -935,7 +982,7 @@ Source: [`packages/core/tools/src/types.ts:56`](../packages/core/tools/src/types
 'tool/code-dispatch-start': CodeDispatchStartEventData
 ```
 
-Source: [`packages/core/tools/src/types.ts:40`](../packages/core/tools/src/types.ts)
+Source: [`packages/core/tools/src/types.ts:43`](../packages/core/tools/src/types.ts)
 
 <a id="toolresult--surface"></a>
 
@@ -959,10 +1006,12 @@ Source: [`packages/core/tools/src/types.ts:40`](../packages/core/tools/src/types
   message: ToolResultMessage
   error?: { name: string; code: string }
   meta?: JsonValue
+  /** The matching `tool/call` attempt correlation (absent only on legacy or synthetic rows). */
+  operationId?: OperationId
 }
 ```
 
-Source: [`packages/core/session/src/types.ts:295`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:320`](../packages/core/session/src/types.ts)
 
 ### `tool-workflow/*`
 
@@ -1042,7 +1091,7 @@ Source: [`packages/workflow/tool-workflow/src/types.ts:47`](../packages/workflow
 
 Types: [TurnEndReason](subsystems/session.md)
 
-Source: [`packages/core/session/src/types.ts:252`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:269`](../packages/core/session/src/types.ts)
 
 <a id="turnstart--log-only"></a>
 
@@ -1058,7 +1107,7 @@ Source: [`packages/core/session/src/types.ts:252`](../packages/core/session/src/
 'turn/start': { turn: number }
 ```
 
-Source: [`packages/core/session/src/types.ts:243`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:260`](../packages/core/session/src/types.ts)
 
 ### `user/*`
 
@@ -1077,7 +1126,7 @@ Source: [`packages/core/session/src/types.ts:243`](../packages/core/session/src/
 'user/message': UserMessage
 ```
 
-Source: [`packages/core/session/src/types.ts:264`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:281`](../packages/core/session/src/types.ts)
 
 ### `web/*`
 

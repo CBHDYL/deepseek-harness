@@ -260,16 +260,81 @@ describe('interruptedTurnClosers', () => {
     expect(result.data.message.content[0].content[0].text).toContain('first verify external state or ask the user')
   })
 
-  it('handles tool/call without a matching assistant/message entry gracefully', () => {
-    // A raw tool/call with no assistant-registered pending call has nothing to
-    // answer; repair still closes the step and turn without synthesizing a result.
+  it('closes a tool/call without a matching assistant/message entry as a started orphan', () => {
+    // A raw recorded tool/call with no assistant-registered pending call and
+    // no result is a started attempt whose outcome was lost (a direct or
+    // legacy execution): repair synthesizes its terminal disposition.
     const events: SessionEvent[] = [
       userTurnStart(1, 0),
       { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
       { type: 'tool/call', seq: 2, time: 2, data: { turn: 1, step: 1, callId: CallId('orphan'), name: 'bash', arguments: '{}' } },
     ]
     const closers = interruptedTurnClosers(events)
-    // No pending calls → no synthetic tool/result, just step/end + turn/end.
-    expect(closers.map(e => e.type)).toEqual(['step/end', 'turn/end'])
+    const results = closers.filter(e => e.type === 'tool/result')
+    expect(results).toHaveLength(1)
+    expect(results[0]!.type === 'tool/result' && results[0]!.data.error?.code).toBe(TOOL_OUTCOME_UNKNOWN)
+    expect(results[0]!.type === 'tool/result' && results[0]!.sourceEventSeqs).toEqual([2])
+    expect(closers.map(e => e.type)).toEqual(['tool/result', 'step/end', 'turn/end'])
   })
+
+  it('pairs by operation id when call ids repeat: one attempt result never deletes the other', () => {
+    const events: SessionEvent[] = [
+      userTurnStart(1, 0),
+      { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+      { type: 'assistant/message', seq: 2, time: 2, data: { turn: 1, step: 1, message: createMessage({ role: 'assistant', content: [{ type: 'tool-call', id: CallId('same'), name: 'bash', arguments: '{}' }], source: { kind: 'model', provider: 'mock', model: 'mock' } }) } },
+      { type: 'tool/call', seq: 3, time: 3, data: { turn: 1, step: 1, callId: CallId('same'), name: 'bash', arguments: '{}', operationId: 'op1' as never } },
+      { type: 'assistant/message', seq: 4, time: 4, data: { turn: 1, step: 1, message: createMessage({ role: 'assistant', content: [{ type: 'tool-call', id: CallId('same'), name: 'bash', arguments: '{}' }], source: { kind: 'model', provider: 'mock', model: 'mock' } }) } },
+      { type: 'tool/call', seq: 5, time: 5, data: { turn: 1, step: 1, callId: CallId('same'), name: 'bash', arguments: '{}', operationId: 'op2' as never } },
+      { type: 'tool/result', seq: 6, time: 6, data: { turn: 1, step: 1, message: createToolResultMessage({ callId: CallId('same'), content: [], isError: false }), operationId: 'op1' as never }, surfaceOp: 'append', sourceEventSeqs: [3] },
+    ]
+    const closers = interruptedTurnClosers(events)
+    const results = closers.filter(e => e.type === 'tool/result')
+    // Only op2 remains pending: op1's result closed op1 without deleting op2.
+    expect(results).toHaveLength(1)
+    expect(results[0]!.type === 'tool/result' && results[0]!.data.operationId).toBe('op2')
+    expect(results[0]!.type === 'tool/result' && results[0]!.data.error?.code).toBe(TOOL_OUTCOME_UNKNOWN)
+  })
+
+  it('legacy rows without operation id still pair by call id', () => {
+    const events: SessionEvent[] = [
+      userTurnStart(1, 0),
+      { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+      { type: 'assistant/message', seq: 2, time: 2, data: { turn: 1, step: 1, message: createMessage({ role: 'assistant', content: [{ type: 'tool-call', id: CallId('legacy'), name: 'bash', arguments: '{}' }], source: { kind: 'model', provider: 'mock', model: 'mock' } }) } },
+      { type: 'tool/call', seq: 3, time: 3, data: { turn: 1, step: 1, callId: CallId('legacy'), name: 'bash', arguments: '{}' } },
+      { type: 'tool/result', seq: 4, time: 4, data: { turn: 1, step: 1, message: createToolResultMessage({ callId: CallId('legacy'), content: [], isError: false }) }, surfaceOp: 'append', sourceEventSeqs: [3] },
+    ]
+    expect(interruptedTurnClosers(events).filter(e => e.type === 'tool/result')).toHaveLength(0)
+  })
+
+
+  it('closes a registry-owned direct tool/call orphan (F5: no assistant block)', () => {
+    const events: SessionEvent[] = [
+      userTurnStart(1, 0),
+      { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+      { type: 'tool/call', seq: 2, time: 2, data: { turn: 1, step: 1, callId: CallId('direct'), name: 'bash', arguments: '{}', operationId: 'op-direct' as never } },
+    ]
+    const closers = interruptedTurnClosers(events)
+    const results = closers.filter(e => e.type === 'tool/result')
+    expect(results).toHaveLength(1)
+    expect(results[0]!.type === 'tool/result' && results[0]!.data.operationId).toBe('op-direct')
+    expect(results[0]!.type === 'tool/result' && results[0]!.data.error?.code).toBe(TOOL_OUTCOME_UNKNOWN)
+    expect(results[0]!.type === 'tool/result' && results[0]!.sourceEventSeqs).toEqual([2])
+  })
+
+  it('keeps callId "1" and operationId "1" in separate namespaces (F6)', () => {
+    const events: SessionEvent[] = [
+      userTurnStart(1, 0),
+      { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
+      { type: 'assistant/message', seq: 2, time: 2, data: { turn: 1, step: 1, message: createMessage({ role: 'assistant', content: [{ type: 'tool-call', id: CallId('1'), name: 'bash', arguments: '{}' }], source: { kind: 'model', provider: 'mock', model: 'mock' } }) } },
+      { type: 'tool/call', seq: 3, time: 3, data: { turn: 1, step: 1, callId: CallId('1'), name: 'bash', arguments: '{}', operationId: '1' as never } },
+    ]
+    const closers = interruptedTurnClosers(events)
+    const results = closers.filter(e => e.type === 'tool/result')
+    // The assistant-block attempt (callId "1") was re-keyed under its
+    // operationId "1"; exactly ONE pending attempt remains.
+    expect(results).toHaveLength(1)
+    expect(results[0]!.type === 'tool/result' && results[0]!.data.operationId).toBe('1')
+    expect(results[0]!.type === 'tool/result' && results[0]!.sourceEventSeqs).toEqual([3])
+  })
+
 })

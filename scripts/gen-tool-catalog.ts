@@ -642,6 +642,8 @@ interface CatalogPackage {
   writes: string[]
   shippedNames?: string[]
   schemas: ToolSchema[]
+  /** Runtime `effects` classification per harvested tool name ("undeclared" when absent). */
+  effects: Record<string, string>
   /** A deployment note (see {@link ToolPackage.note}), rendered after the tools. */
   note?: string
 }
@@ -714,6 +716,7 @@ export async function collectToolCatalog(packages: ToolPackage[] = TOOL_PACKAGES
       await entry.mount(ctx)
       const schemas = ctx.tools.schemas(entry.scope?.(ctx)).sort((a, b) => a.name.localeCompare(b.name))
       assertToolsHarvested(entry, schemas.length)
+      const effects = harvestEffects(ctx, entry, schemas)
       catalog.push({
         pkg: entry.pkg,
         sources: Object.fromEntries(schemas.map(schema => [
@@ -723,6 +726,7 @@ export async function collectToolCatalog(packages: ToolPackage[] = TOOL_PACKAGES
         requires: entry.requires,
         writes: entry.writes,
         schemas,
+        effects,
         ...entry.shippedNames !== undefined ? { shippedNames: entry.shippedNames } : {},
         ...entry.note !== undefined ? { note: entry.note } : {},
       })
@@ -731,6 +735,33 @@ export async function collectToolCatalog(packages: ToolPackage[] = TOOL_PACKAGES
     }
   }
   return catalog
+}
+
+/**
+ * Read each harvested tool's runtime `effects` classification from the live
+ * registry. The catalog reports what the SHIPPED definition declares —
+ * classification evidence for operators, never an authority channel, and MCP
+ * runtime registrations are never harvested (server self-claims stay outside
+ * the trusted catalog per the E28 trust boundary).
+ */
+function harvestEffects(
+  ctx: Context,
+  entry: ToolPackage,
+  schemas: ToolSchema[],
+): Record<string, string> {
+  const effects: Record<string, string> = {}
+  for (const schema of schemas) {
+    const definition = ctx.tools.get(schema.name, entry.scope?.(ctx))
+    // A harvested schema MUST resolve back to its definition; a silent
+    // fallback would let a lookup failure fabricate "undeclared" and mask
+    // runtime-vs-catalog drift (EFFECT-2).
+    if (definition === undefined) {
+      throw new Error(`gen-tool-catalog: ${entry.pkg} tool "${schema.name}" has no resolvable definition for effects harvest`)
+    }
+    const declared = (definition as { effects?: string } | undefined)?.effects
+    effects[schema.name] = declared ?? 'undeclared'
+  }
+  return effects
 }
 
 /** Resolve one harvested tool to the plugin source that registered it. */
@@ -746,11 +777,12 @@ function toolSource(entry: ToolPackage, toolName: string): string {
 }
 
 /** Render one tool's entry: name, description, JSON-Schema parameters, source. */
-function renderTool(schema: ToolSchema, source: string): string[] {
+function renderTool(schema: ToolSchema, source: string, effects: string): string[] {
   const out = [`### \`${schema.name}\``, '']
   if (schema.description) out.push(schema.description, '')
   out.push('```json', JSON.stringify(schema.parameters, null, 2), '```', '')
   out.push(`Source: [\`${source}\`](../${source})`, '')
+  out.push(`Effects: \`${effects}\` (runtime-declared classification; \`undeclared\` counts as side-effectful under enforce)`, '')
   return out
 }
 
@@ -790,7 +822,7 @@ export function render(catalog: ToolCatalog): string {
     for (const schema of entry.schemas) {
       // Collection validated that every harvested schema has a source.
       const source = entry.sources[schema.name] as string
-      lines.push(...renderTool(schema, source))
+      lines.push(...renderTool(schema, source, entry.effects[schema.name] ?? 'undeclared'))
     }
     if (entry.note) lines.push(entry.note, '')
   }

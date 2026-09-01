@@ -9,7 +9,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { readdirSync } from 'node:fs'
-import { open, mkdir, readFile, readdir, realpath, link, rm, stat, truncate } from 'node:fs/promises'
+import { open, mkdir, readFile, readdir, realpath, link, rename, rm, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { scheduler } from 'node:timers/promises'
@@ -18,19 +18,19 @@ import {
   DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS, MAX_WRITE_BATCH_DELAY_MS,
   SessionPersistence, SessionPersistenceRevision, PersistenceCoordinator, SessionFormatUnsupportedError,
   type PersistenceBackend, type SessionLocation, type SessionPersistenceSnapshot,
-  type SessionInspection, type SessionPersistenceRevision as PersistenceRevision, type SessionRawArtifact,
+  type SessionInspection, type SessionIntegrity, type SessionPersistenceRevision as PersistenceRevision, type SessionRawArtifact,
   type StoredPrefix,
 } from '@deepseek-ai/dsh-session-persistence'
+import { SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionId, SessionHeader, SessionPreparation } from '@deepseek-ai/dsh-session'
 import {
   encodeSegment, eventLines, logPath, logSuffix, parseHeaderMeta, projectDir, scanLog, sessionDir,
-  SessionLogScanner, toHeaderLine,
-  type JsonlCompression,
+  SessionLogScanner, toHeaderLine, type HeaderLine, type JsonlCompression,
 } from './format.ts'
 import {
   compressZstdFrame, createZstdFrameDecoder, decompressZstdFrame, decompressZstdPrefix, scanZstdFrames,
 } from './zstd.ts'
-import { ensureDurableDirectoryWin32, publishNewFileWin32 } from './win32.ts'
+import { ensureDurableDirectoryWin32, publishNewFileWin32, replaceFileWin32 } from './win32.ts'
 
 export type { JsonlCompression } from './format.ts'
 
@@ -195,7 +195,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
 
   // JSONL is sequential media: no loadStoredFrom hook, so the coordinator
   // parses the stored prefix (both encodings) and skips forward to fromSeq.
-  readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
+  readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
     return this.coordinator.readFrom(id, fromSeq, signal)
   }
 
@@ -319,7 +319,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
         prefix = await this.readZstdPrefix(buffer, signal)
       } else {
         signal?.throwIfAborted()
-        const { meta, events, committedBytes } = scanLog(buffer)
+        const { meta, events, committedBytes, lostLines } = scanLog(buffer)
         signal?.throwIfAborted()
         prefix = {
           meta,
@@ -327,6 +327,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
           ...committedBytes < buffer.byteLength
             ? { tornMarker: { truncateTo: committedBytes, recoveredEvents: [] } }
             : {},
+          recoveryLoss: { lostLines, recoveredEvents: 0 },
         }
       }
     } catch (error: unknown) {
@@ -384,7 +385,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
       }
       if (tornStart === undefined) {
         const prefix = scanner.finish()
-        return { meta: prefix.meta, events: prefix.events }
+        return { meta: prefix.meta, events: prefix.events, recoveryLoss: { lostLines: prefix.lostLines, recoveredEvents: 0 } }
       }
 
       let recoveredPlaintext: Buffer = Buffer.alloc(0)
@@ -408,6 +409,10 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
           truncateTo: tornStart,
           recoveredEvents: recoveredPrefix.events.slice(complete.eventCount),
         },
+        recoveryLoss: {
+          lostLines: recoveredPrefix.lostLines,
+          recoveredEvents: recoveredPrefix.events.length - complete.eventCount,
+        },
       }
     } catch (error) {
       /* v8 ignore next -- decoder failure plus concurrent abort is timing-dependent */
@@ -429,18 +434,52 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
   }
 
   /**
-   * Make a crash repair durable: truncate a torn tail, restore complete events
-   * decoded from it, then append synthetic closers. Two fsync'd steps — the seam
-   * does not require this to be atomic.
+   * Commit a crash repair ATOMICALLY: rebuild the complete artifact as
+   * [header stamped v{SESSION_FORMAT_VERSION}] + `events` (the validated
+   * prefix including recovered tail records) + `closers` +
+   * `repairedEvent`, then publish with temp-write → fsync → atomic replace →
+   * parent-directory fsync. A crash at any point leaves either the original
+   * artifact or the complete repaired one — never a truncated intermediate
+   * (the pre-v1 truncate-then-append sequence could be interrupted between
+   * its two steps and masquerade as a clean shorter log: E27).
    */
   async commitRepair(
     meta: SessionHeader,
-    tornMarker: JsonlTornMarker | undefined,
+    events: readonly SessionEvent[],
+    _tornMarker: JsonlTornMarker | undefined,
     closers: readonly SessionEvent[],
+    repairedEvent: SessionEvent | undefined,
   ): Promise<void> {
-    if (tornMarker !== undefined) await this.repair(meta, tornMarker.truncateTo)
-    const repairedEvents = [...(tornMarker?.recoveredEvents ?? []), ...closers]
-    if (repairedEvents.length > 0) await this.appendLines(meta, repairedEvents)
+    const dir = sessionDir(this.root, meta.cwd, meta.id)
+    const finalPath = logPath(this.root, meta.cwd, meta.id, this.compression)
+    // The repaired artifact always speaks the current format: the header is
+    // re-stamped so a legacy v0 log upgrades exactly at its repair commit and
+    // an older runtime refuses it by version instead of misreading it.
+    const headerLine = toHeaderLine({ ...meta, version: SESSION_FORMAT_VERSION })
+    const content = await this.encodeRepairContent(headerLine, [...events, ...closers, ...repairedEvent !== undefined ? [repairedEvent] : []])
+    const tmp = await this.writeSyncedTempFile(finalPath, content)
+    try {
+      /* v8 ignore next -- native Windows coverage exercises this platform dispatch; Linux covers the POSIX peer */
+      if (process.platform === 'win32') {
+        await replaceFileWin32(tmp, finalPath)
+      } else {
+        await rename(tmp, finalPath)
+        await this.syncDirPosix(dir)
+      }
+    } catch (error) {
+      await rm(tmp, { force: true })
+      throw error
+    }
+  }
+
+  /** Encode a complete repaired artifact: current-format header + all committed records. */
+  private async encodeRepairContent(headerLine: HeaderLine, events: readonly SessionEvent[]): Promise<Buffer | string> {
+    const header = JSON.stringify(headerLine) + '\n'
+    const body = eventLines(events, this.packChunks) + '\n'
+    if (this.compression === 'none') return header + body
+    const headerFrame = await compressZstdFrame(header)
+    const eventFrame = await compressZstdFrame(body)
+    return Buffer.concat([headerFrame, eventFrame])
   }
 
   /** List valid unique stored sessions' metadata (header line only — no full-log parse). */
@@ -682,18 +721,6 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     const handle = await open(path, 'r+')
     try {
       await handle.truncate(size)
-      await handle.sync()
-    } finally {
-      await handle.close()
-    }
-  }
-
-  /** Truncate the log file to `offset` bytes and fsync (discard the crash tail). */
-  private async repair(meta: SessionHeader, offset: number): Promise<void> {
-    const path = logPath(this.root, meta.cwd, meta.id, this.compression)
-    await truncate(path, offset)
-    const handle = await open(path, 'r+')
-    try {
       await handle.sync()
     } finally {
       await handle.close()

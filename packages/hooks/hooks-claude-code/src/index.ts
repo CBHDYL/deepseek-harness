@@ -17,6 +17,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+import { mergePreToolDecisions } from '@deepseek-ai/dsh-tools'
 import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import {
   appendHookInvoked,
@@ -236,11 +237,19 @@ export function apply(ctx: Context, config: Config): void {
 
   // --- PreToolUse → PreToolDecision. Matcher subject is the tool name. ---
   ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
+    // Delegate FIRST and merge under deny > ask > allow (the tool registry's
+    // aggregation): a downstream deny still wins over our ask, and our ask
+    // wins over a downstream allow. Registration order is not a security
+    // property; the scheduler routes exactly one ask through ctx.approval.
+    const downstream = await next()
     const turn = lastTurn(exec.agent)
     const merged = await runPoint('PreToolUse', exec.name, preToolPayload(ctx, exec), { ...exec.agent ? { agent: exec.agent } : {}, turn, signal: exec.signal })
-    if (merged.decision === 'deny') return { kind: 'deny', reason: merged.reason ?? 'blocked by PreToolUse hook' }
-    if (merged.decision === 'ask') return { kind: 'ask', ...merged.reason !== undefined ? { reason: merged.reason } : {} }
-    return next()
+    const ours: PreToolDecision = merged.decision === 'deny'
+      ? { kind: 'deny', reason: merged.reason ?? 'blocked by PreToolUse hook' }
+      : merged.decision === 'ask'
+        ? { kind: 'ask', ...merged.reason !== undefined ? { reason: merged.reason } : {} }
+        : { kind: 'allow' }
+    return mergePreToolDecisions(ours, downstream)
   })
 
   // --- PostToolUse → PostToolDecision. Matcher subject is the tool name. ---

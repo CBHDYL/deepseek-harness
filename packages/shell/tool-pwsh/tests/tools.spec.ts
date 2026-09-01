@@ -203,7 +203,10 @@ class ConfiningFakeBash extends ShellExecutor {
 }
 
 /** Sandboxed composition: the shared policy service + a confining executor + the pwsh tool (+ optional approval). */
-async function setupSandboxed(withApproval = false) {
+async function setupSandboxed(
+  withApproval = false,
+  policyConfig: { mode?: 'read-only' | 'workspace-write' | 'danger-full-access'; maxMode?: 'read-only' | 'workspace-write' | 'danger-full-access' } = {},
+) {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
@@ -211,7 +214,7 @@ async function setupSandboxed(withApproval = false) {
   await ctx.plugin(LocalJobRegistry)
   await ctx.plugin(ToolTasks)
   await ctx.plugin(BashEnvPlugin)
-  await ctx.plugin(SandboxPolicyService, {})
+  await ctx.plugin(SandboxPolicyService, policyConfig)
   await ctx.plugin(ConfiningFakeBash)
   if (withApproval) await ctx.plugin(ApprovalService)
   await ctx.plugin(ToolPwsh)
@@ -630,6 +633,20 @@ describe('sandbox escalation through ctx.approval', () => {
     const result = await call(ctx, 'pwsh', escalate, sandboxAgent())
     expect(text(result)).toContain(message)
     expect(bash.modes).toEqual([])
+  })
+
+  it('caps an approved escalation at the deployment maxMode ceiling', async () => {
+    const { ctx, bash } = await setupSandboxed(true, { maxMode: 'workspace-write' })
+    ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('allowed-once'))
+    const result = await call(ctx, 'pwsh', {
+      command: 'Write-Output capped',
+      description: 'capped escalation',
+      sandbox_permissions: 'danger-full-access',
+      justification: 'the command needs the widest mode',
+    }, sandboxAgent())
+    expect(result.isError).toBe(false)
+    // The minted escalation is capped by the ceiling before the request rides.
+    expect(bash.modes).toEqual(['workspace-write'])
   })
 
   it('runs a granted foreground or background call under the approved mode', async () => {

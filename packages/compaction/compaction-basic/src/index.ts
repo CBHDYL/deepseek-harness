@@ -17,6 +17,7 @@ import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 // Type-only: makes the optional sibling service available to `ctx.get()`.
 import type {} from '@deepseek-ai/dsh-compaction-tool-result-pruner'
 import {
+  DEFAULT_SUMMARIZATION_MAX_BYTES,
   resolveCompactSpec,
   resolveConfig,
   resolveTargetPolicy,
@@ -44,6 +45,8 @@ export type {
   ResolvedRetention,
   ResolvedTargetPolicy,
 } from './types.ts'
+export { DEFAULT_SUMMARIZATION_MAX_BYTES } from './config.ts'
+export { COMPACTION_BUDGET_EXCEEDED_CODE } from './summarizer.ts'
 
 /** The region transaction's view of this service's dynamically dispatched summarizer. */
 type RegionSummarize = (input: SummarizationInput, agent: Agent, signal?: AbortSignal) => Promise<SummaryResult>
@@ -76,6 +79,7 @@ const retainTokensSchema = z.number().step(1).min(0)
 const summarizationProviderSchema = z.string()
 const summarizationModelSchema = z.string()
 const maxTokensSchema = z.number().step(1).min(1)
+const summarizationMaxBytesSchema = z.number().step(1).min(1)
 const compactionRetriesSchema = z.number().step(1).min(0)
 const maxOverflowRetriesSchema = z.number().step(1).min(0)
 
@@ -110,6 +114,7 @@ export class BasicCompactionEngine extends CompactionEngine {
     summarizationProvider: summarizationProviderSchema,
     summarizationModel: summarizationModelSchema,
     maxTokens: maxTokensSchema,
+    summarizationMaxBytes: summarizationMaxBytesSchema.default(DEFAULT_SUMMARIZATION_MAX_BYTES),
     compactionRetries: compactionRetriesSchema,
     maxOverflowRetries: maxOverflowRetriesSchema,
     modelPolicies: z.array(modelPolicy),
@@ -219,6 +224,44 @@ export class BasicCompactionEngine extends CompactionEngine {
         || agent.session.surface.replaceGeneration <= generation) return next()
       if (result !== null) logResult(result, 'context overflow recovery')
       this.overflowRetries.set(agent, retries + 1)
+      return { kind: 'retry' }
+    })
+
+    // Prompt-budget recovery (PR-6 layered budget): a request rejected BEFORE
+    // dispatch by the final byte ceiling or estimate ceiling gets one
+    // compaction opportunity. Return `retry` only when the surface actually
+    // changed (the loop then rebuilds and re-checks); otherwise delegate to
+    // the reject default. The loop bounds recovery retries per step.
+    ctx.on('agent/request-budget', async (
+      { agent, signal },
+      next,
+    ) => {
+      if (signal.aborted) return next()
+      const generation = agent.session.surface.replaceGeneration
+      try {
+        const result = await this.compactIfNeeded(agent, 'context-overflow', signal)
+        if (result !== null) logResult(result, 'prompt budget recovery')
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error)
+        // oxlint-disable-next-line typescript/no-unnecessary-condition -- the signal can abort while recovery is awaited.
+        if (!signal.aborted && agent.session.surface.replaceGeneration > generation) {
+          ctx.logger.warn(
+            `prompt-budget compaction failed after durable surface progress: ${message}; `
+            + 'retrying from the replacement surface',
+          )
+          return { kind: 'retry' }
+        }
+        ctx.logger.warn(
+          // oxlint-disable-next-line typescript/no-unnecessary-condition -- the signal can abort while recovery is awaited.
+          `prompt-budget compaction failed: ${message}; ${signal.aborted
+            ? 'cancellation prevents retry'
+            : 'preserving the budget rejection'}`,
+        )
+        return next()
+      }
+      // oxlint-disable-next-line typescript/no-unnecessary-condition -- the signal can abort while compaction is awaited.
+      if (signal.aborted
+        || agent.session.surface.replaceGeneration <= generation) return next()
       return { kind: 'retry' }
     })
   }

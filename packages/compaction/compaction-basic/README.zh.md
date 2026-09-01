@@ -35,12 +35,13 @@
 | `summarizationProvider` | 否（默认 `''`） | 与 `summarizationModel` 一起设置；空对会解析为最新已记录请求目标，再回退到 `AgentOptions` 对。 |
 | `summarizationModel` | 否（默认 `''`） | 与 `summarizationProvider` 一起设置；空对会解析为最新已记录请求目标，再回退到 `AgentOptions` 对。 |
 | `maxTokens` | 否（默认 `8192`） | 摘要调用的提供方生成上限；可包含推理 token。 |
+| `summarizationMaxBytes` | 否（默认 `8388608`） | 单次摘要请求模型可见表示（messages + system + 工具 schema）的硬 UTF-8 字节配额。超过配额的区域会在任何 provider 分发之前被拒绝，压缩事务以类型化方式失败（`COMPACTION_BUDGET_EXCEEDED`）；谓词是严格的，恰好等于配额时允许分发。这是约束辅助分发的 compaction reserve——恢复路径绝不能在没有这一明确边界的情况下，把请求上限刚拒绝的内容再次发给 provider。请将其保持在不低于自动恢复所需压缩的最大表层（默认值高于 agent-loop 请求上限，因此请求路径刚拒绝的表层仍可被压缩）。 |
 | `compactionRetries` | 否（默认 `1`） | 压力仍高于阈值时，在首次尝试后进行的额外尝试次数。 |
 | `maxOverflowRetries` | 否（默认 `1`） | 规范上下文窗口溢出后的最大重试次数；`0` 只禁用恢复。 |
 | `modelPolicies` | 否（默认 `[]`） | 精确的 `{ provider, model, ...partialPolicy }` 覆盖；匹配使用两个字段，不依赖 `listModels()`。 |
 | `auto` | 否（默认 `true`） | 注册步骤边界压力与溢出恢复 listener。设为 `false` 则仅手动执行。 |
 
-每个 `modelPolicies` 配置项都接受上述策略字段，但不接受 `auto` 和 `modelPolicies` 自身。如果配置项提供任意一个保留字段，就替换默认策略的保留选择；否则继承保留设置。摘要提供方／模型在每个配置项内仍然成对。
+每个 `modelPolicies` 配置项都接受上述策略字段，但不接受 `auto`、`modelPolicies` 自身以及部署级 `summarizationMaxBytes`。如果配置项提供任意一个保留字段，就替换默认策略的保留选择；否则继承保留设置。摘要提供方／模型在每个配置项内仍然成对。
 
 适配器可能无法为有效动态路由返回容量，已解析容量也可能暴露无效的绝对保留预算。此时手动压力检查会抛出目标特定配置错误；自动 listener 会对该精确目标警告一次，并携带完整历史继续。不相关的操作性失败仍会独立可见。规范提供方溢出仍会尝试恢复，因为提供方已确立压缩的必要性。
 

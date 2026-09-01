@@ -16,8 +16,8 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { PreToolDecision } from '@deepseek-ai/dsh-tools'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
+import type {} from '@deepseek-ai/dsh-tools'
 import type { ActionPolicyCandidateEventData, ActionPolicyEffectSource } from './types.ts'
 
 export type { ActionPolicyCandidateEventData, ActionPolicyEffectSource } from './types.ts'
@@ -61,74 +61,77 @@ export function apply(ctx: Context, config: Config): void {
   // The interceptor reads the tool registry, so it runs inside a tools-scoped
   // child context (the same injection the tool-facing plugins use).
   ctx.inject(['tools'], (toolCtx: Context) => {
-    // Call ids this guard's pre-execute granted (keyed by the branded call id).
-    const approved = new Map<string, true>()
-    // Monotonic deny: a `tools.guard()` denial cannot be overridden by a later
-    // pre-execute listener returning `allow`, so the enforce fence holds even
-    // if a user profile mounts an allow-bridging hooks listener after this
-    // guard. The async approval happens in pre-execute, which records the grant
-    // here; the guard denies any side-effectful call that is not granted.
+    // Monotonic deny fence: a `tools.guard()` denial cannot be overridden by
+    // a later allow, so the enforce fence holds even if a user profile mounts
+    // an allow-bridging hooks listener after this guard. The fence reads the
+    // registry's frozen identity record and verifies the exact execution
+    // object's grant (WeakMap provenance): a captured operation id, a mutated
+    // live execution, or a different attempt can never satisfy it. The guard
+    // is NOT a second approval system: the ask runs through the single
+    // scheduler approval point, and this fence only verifies.
     toolCtx.tools.guard((exec) => {
       if (mode !== 'enforce') return undefined
-      const tool = exec.agent === undefined ? undefined : toolCtx.tools.get(exec.name, scopeOf(exec.agent.ctx))
+      const identity = toolCtx.tools.identityOf(exec)
+      if (identity === undefined) return 'action-policy: unrecognized tool execution identity'
+      const tool = identity.agent === undefined ? undefined : toolCtx.tools.get(identity.name, scopeOf(identity.agent.ctx))
       const effects = tool?.effects
       const sideEffectful = effects === 'side-effectful' || (effects === undefined && treatUndeclared)
       if (!sideEffectful) return undefined
-      if (approved.has(exec.callId)) return undefined
-      return `action-policy: side-effectful tool "${exec.name}" requires approval`
+      const approval = toolCtx.get('approval')
+      if (approval?.isAuthorized(exec) === true) return undefined
+      return `action-policy: side-effectful tool "${identity.name}" requires approval`
     })
 
-    toolCtx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
-      const tool = exec.agent === undefined ? undefined : toolCtx.tools.get(exec.name, scopeOf(exec.agent.ctx))
+    // Mandatory security recommendation: registered on the registry-owned
+    // policy collection, where no listener can short-circuit another and all
+    // recommendations aggregate under deny > ask > allow. In enforce mode a
+    // side-effectful call without a composed approval service or without an
+    // agent denies; otherwise it asks exactly once through the scheduler's
+    // single approval point.
+    toolCtx.tools.policy((exec) => {
+      const identity = toolCtx.tools.identityOf(exec)
+      if (identity === undefined) {
+        return { kind: 'deny', reason: 'action-policy: unrecognized tool execution identity' }
+      }
+      const tool = identity.agent === undefined ? undefined : toolCtx.tools.get(identity.name, scopeOf(identity.agent.ctx))
       const effects = tool?.effects
       const effectSource: ActionPolicyEffectSource | undefined = effects === 'side-effectful'
         ? 'declared'
         : effects === undefined && treatUndeclared ? 'undeclared' : undefined
-      if (effectSource === undefined) return next()
+      if (effectSource === undefined) return { kind: 'allow' }
 
       if (mode === 'observe') {
-        if (exec.agent !== undefined) {
+        if (identity.agent !== undefined) {
           const candidate: ActionPolicyCandidateEventData = {
-            toolName: exec.name,
-            callId: exec.callId,
+            toolName: identity.name,
+            callId: identity.callId,
             effectSource,
           }
-          exec.agent.session.append('action-policy/candidate', candidate, { ignorable: true })
+          identity.agent.session.append('action-policy/candidate', candidate, { ignorable: true })
         }
         toolCtx.logger.warn(
-          `action-policy: side-effectful tool "${exec.name}" invoked without an approval gate (observe mode; declare effects: read-only to exempt)`,
+          `action-policy: side-effectful tool "${identity.name}" invoked without an approval gate (observe mode; declare effects: read-only to exempt)`,
         )
-        return next()
+        return { kind: 'allow' }
       }
 
       const approval = toolCtx.get('approval')
       if (approval === undefined) {
         return {
           kind: 'deny',
-          reason: `action-policy: tool "${exec.name}" is side-effectful but no approval service is composed`,
+          reason: `action-policy: tool "${identity.name}" is side-effectful but no approval service is composed`,
         }
       }
-      if (exec.agent === undefined) {
-        return { kind: 'deny', reason: `action-policy: tool "${exec.name}" requires approval but the call has no agent` }
+      if (identity.agent === undefined) {
+        return {
+          kind: 'deny',
+          reason: `action-policy: tool "${identity.name}" requires approval but the call has no agent`,
+        }
       }
-      let outcome: 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
-      try {
-        outcome = await approval.request({
-          agent: exec.agent,
-          toolName: exec.name,
-          callId: exec.callId,
-          reason: `action-policy: side-effectful tool "${exec.name}" requires approval`,
-        })
-      } catch (error: unknown) {
-        // Fail closed: a thrown approval request (e.g. no open turn on this
-        // call) must become a denial rather than an uncontrolled listener error.
-        return { kind: 'deny', reason: `action-policy: approval unavailable for tool "${exec.name}": ${error instanceof Error ? error.message : String(error)}` }
+      return {
+        kind: 'ask',
+        reason: `action-policy: side-effectful tool "${identity.name}" requires approval`,
       }
-      if (outcome === 'allowed-once') {
-        approved.set(exec.callId, true)
-        return next()
-      }
-      return { kind: 'deny', reason: `action-policy: tool "${exec.name}" approval ${outcome}` }
     })
   })
 }

@@ -75,4 +75,22 @@ describe('ACP machine permission policy', () => {
       .resolves.toBe('unavailable')
     expect(harness.permissionRequests).toHaveLength(0)
   })
+
+  it('surfaces the requested sandbox dimension on the allow option label (F7)', async () => {
+    harness = await makeBridgeHarness()
+    harness.onPermission = () => ({ outcome: { outcome: 'selected', optionId: 'allow-once' } })
+    const request = await ownedRequest({ sandboxMode: 'danger-full-access', reason: 'escalate sandbox to danger-full-access: need wider' })
+    await expect(harness.ctx.approval.request(request)).resolves.toBe('allowed-once')
+    expect(harness.permissionRequests[0]).toMatchObject({
+      options: [
+        {
+          optionId: 'allow-once',
+          kind: 'allow_once',
+          name: 'Allow once — escalate sandbox to danger-full-access: need wider',
+        },
+        { optionId: 'reject-once', kind: 'reject_once' },
+      ],
+    })
+  })
+
 })

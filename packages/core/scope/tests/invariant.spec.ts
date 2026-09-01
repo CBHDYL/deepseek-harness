@@ -66,6 +66,18 @@ describe('scoped-dispatch invariants', () => {
         },
         () => Promise.resolve(undefined),
       ],
+      'agent/request-budget': [
+        {
+          agent,
+          turn: 1,
+          step: 1,
+          provider: 'p',
+          bytes: 1,
+          estimateTokens: 1,
+          signal,
+        },
+        () => Promise.resolve({ kind: 'reject' }),
+      ],
       'agent/turn-stopping': [{ agent, turn: 1, signal }],
       'agent/stream-chunk': [{ agent, turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'x' } }],
       'agent/error': [{ agent, turn: 1, step: 0, error: new Error('x') }],

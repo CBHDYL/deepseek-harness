@@ -8,7 +8,9 @@
           baseURL: !!js process.env.DSH_SNAPSHOT_BASE_URL
           thinking: enabled
           reasoningEffort: low
-          streamIdleTimeoutMs: 150
+          # Wider than the 60ms mock keep-alive cadence: a loaded test host
+          # may stall timers, and a retry would double the pinned request count.
+          streamIdleTimeoutMs: 500
       - id: agent-spine
         config:
           agents:

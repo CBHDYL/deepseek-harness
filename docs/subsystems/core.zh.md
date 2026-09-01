@@ -923,6 +923,38 @@ Types: [LlmCallConfig](llm-streaming.zh.md) · [Scoped](scope.zh.md)
 
 Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 
+<a id="agentrequest-budget--waterfall"></a>
+
+#### `agent/request-budget` — waterfall
+
+Handle one prompt-budget rejection BEFORE any provider dispatch. The request exceeded the final byte ceiling or the configured estimate ceiling and was never sent. A listener returns `{ kind: 'retry' }` without calling `next()` when it owns recovery (compaction reduces the surface, then the loop rebuilds and re-checks), or calls `next()` to delegate; the default `{ kind: 'reject' }` fails the step loud with `PROMPT_BUDGET_EXCEEDED`. The loop bounds recovery retries per step.
+
+```ts cordis-catalog
+/**
+ * Handle one prompt-budget rejection BEFORE any provider dispatch. The
+ * request exceeded the final byte ceiling or the configured estimate
+ * ceiling and was never sent. A listener returns `{ kind: 'retry' }`
+ * without calling `next()` when it owns recovery (compaction reduces the
+ * surface, then the loop rebuilds and re-checks), or calls `next()` to
+ * delegate; the default `{ kind: 'reject' }` fails the step loud with
+ * `PROMPT_BUDGET_EXCEEDED`. The loop bounds recovery retries per step.
+ * @param payload.agent - the agent whose request was rejected.
+ * @param payload.turn - the turn containing the rejected request.
+ * @param payload.step - the step whose request was rejected.
+ * @param payload.provider - the provider selected for the rejected request.
+ * @param payload.bytes - UTF-8 bytes of the final model-facing request representation.
+ * @param payload.estimateTokens - the fixed-density heuristic token estimate of that representation.
+ * @param payload.signal - the turn abort signal.
+ * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+ * @mode waterfall
+ */
+'agent/request-budget'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; bytes: number; estimateTokens: number; signal: AbortSignal }, next: () => Promise<RequestBudgetAction>): Promise<RequestBudgetAction>
+```
+
+Types: [Scoped](scope.zh.md)
+
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
+
 <a id="agentrequest-error--waterfall"></a>
 
 #### `agent/request-error` — waterfall

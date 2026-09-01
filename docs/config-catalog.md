@@ -177,6 +177,29 @@ export interface Config {
    * fails with `REQUEST_ATTEMPTS_EXCEEDED` at the cap. Default 16.
    */
   maxRequestAttempts?: number
+  /**
+   * Hard byte ceiling (UTF-8) on the final model-facing request
+   * representation. A request whose measured representation EXCEEDS it is
+   * never dispatched (strict predicate: exactly at the ceiling dispatches) —
+   * the normative hard boundary. Default
+   * {@link DEFAULT_MAX_REQUEST_BYTES}.
+   */
+  maxRequestBytes?: number
+  /**
+   * Optional earlier trigger: reject when the fixed-density heuristic token
+   * estimate of the final request exceeds this. Unset by default (the
+   * estimate is still computed and reported). The estimate is an ADVISORY,
+   * provider-agnostic heuristic (accepted design deviation, PR-6 F2) — it is
+   * never a provider token guarantee and never the only safety boundary;
+   * {@link Config.maxRequestBytes} is the normative enforcement.
+   */
+  maxEstimateTokens?: number | undefined
+  /**
+   * Recovery retries per step when a prompt-budget rejection is answered by
+   * an `agent/request-budget` listener (compaction). Default
+   * {@link DEFAULT_BUDGET_COMPACTION_RETRIES}.
+   */
+  budgetCompactionRetries?: number
   /** Agents created or resumed at plugin startup. */
   agents: (AgentOptions & {
     /** Stable config label used in logs and as the fresh combined-id prefix. */
@@ -193,7 +216,7 @@ export interface Config {
 
 Depends on: [`AgentOptions`](subsystems/core.md) · [`SessionId`](subsystems/core.md)
 
-Source: [`packages/core/agent-loop/src/index.ts:270`](../packages/core/agent-loop/src/index.ts)
+Source: [`packages/core/agent-loop/src/index.ts:303`](../packages/core/agent-loop/src/index.ts)
 
 <a id="deepseek-aidsh-agent-presets"></a>
 
@@ -266,6 +289,14 @@ export interface Config {
   agents?: AgentLoopConfig['agents']
   /** Agent-loop concurrency cap; `1` is serial. */
   maxParallelToolCalls?: AgentLoopConfig['maxParallelToolCalls']
+  /** Agent-loop per-step request-attempt cap (see dsh-agent-loop's `Config`). */
+  maxRequestAttempts?: AgentLoopConfig['maxRequestAttempts']
+  /** Agent-loop hard UTF-8 byte ceiling on one request's model-facing representation. */
+  maxRequestBytes?: AgentLoopConfig['maxRequestBytes']
+  /** Agent-loop optional advisory heuristic estimate trigger; unset by default. */
+  maxEstimateTokens?: AgentLoopConfig['maxEstimateTokens']
+  /** Agent-loop per-step budget-recovery retry cap. */
+  budgetCompactionRetries?: AgentLoopConfig['budgetCompactionRetries']
   /** Whether the system prompt includes the fixed Harness identity (default true). */
   includeHarnessIdentity?: SystemPromptConfig['includeHarnessIdentity']
   /** Whether model history includes dynamic runtime-context snapshots (default true). */
@@ -517,6 +548,14 @@ export interface BasicCompactionConfig extends CompactionPolicyConfig {
   modelPolicies?: ModelCompactPolicyConfig[]
   /** Enable automatic step-boundary pressure and overflow-recovery listeners. Defaults to `true`. */
   auto?: boolean
+  /**
+   * Hard UTF-8 byte allowance on one summarizer request's model-facing
+   * representation (messages + system + tool schemas). Defaults to
+   * {@link DEFAULT_SUMMARIZATION_MAX_BYTES}. This is the compaction reserve
+   * that bounds the auxiliary dispatch: a region that does not fit is refused
+   * before any provider dispatch and fails the compaction transaction typed.
+   */
+  summarizationMaxBytes?: number
 }
 
 /** Policy fields shared by the default policy and exact model overrides. */
@@ -829,7 +868,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/hooks/hooks-claude-code/src/index.ts:45`](../packages/hooks/hooks-claude-code/src/index.ts)
+Source: [`packages/hooks/hooks-claude-code/src/index.ts:46`](../packages/hooks/hooks-claude-code/src/index.ts)
 
 <a id="deepseek-aidsh-hooks-codex"></a>
 
@@ -1478,6 +1517,10 @@ export interface StdioConfig {
   maxToolsPerServer?: number
   /** Whole-sync deadline in ms (default 30000). */
   syncTimeoutMs?: number
+  /** Maximum UTF-8 bytes of one tool's description before exclusion (default 4096). */
+  maxToolDescriptionBytes?: number
+  /** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion (default 65536). */
+  maxToolSchemaBytes?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -1506,6 +1549,10 @@ export interface StreamableHttpConfig {
   maxToolsPerServer?: number
   /** Whole-sync deadline in ms (default 30000). */
   syncTimeoutMs?: number
+  /** Maximum UTF-8 bytes of one tool's description before exclusion (default 4096). */
+  maxToolDescriptionBytes?: number
+  /** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion (default 65536). */
+  maxToolSchemaBytes?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -1525,7 +1572,7 @@ export interface ReconnectConfig {
 }
 ```
 
-Source: [`packages/mcp/mcp-client/src/index.ts:117`](../packages/mcp/mcp-client/src/index.ts)
+Source: [`packages/mcp/mcp-client/src/index.ts:139`](../packages/mcp/mcp-client/src/index.ts)
 
 <a id="deepseek-aidsh-message-feedback"></a>
 
@@ -1793,6 +1840,12 @@ export interface Config {
   /** File-sandbox mode a session starts from (default: `read-only`). */
   mode?: SandboxMode
   /**
+   * Hard deployment ceiling (default: `danger-full-access`, preserving the
+   * historical semantics where an approved escalation may reach the widest
+   * mode). No session override or approved escalation resolves above it.
+   */
+  maxMode?: SandboxMode
+  /**
    * Fallback root for agentless calls and sessions without a cwd (default:
    * `process.cwd()`). Normal agent calls use their session cwd instead.
    */
@@ -1802,7 +1855,7 @@ export interface Config {
 
 Depends on: [`SandboxMode`](subsystems/sandbox.md)
 
-Source: [`packages/sandbox/sandbox-policy/src/index.ts:67`](../packages/sandbox/sandbox-policy/src/index.ts)
+Source: [`packages/sandbox/sandbox-policy/src/index.ts:109`](../packages/sandbox/sandbox-policy/src/index.ts)
 
 <a id="deepseek-aidsh-sdk-jsonrpc-server"></a>
 
@@ -1892,7 +1945,7 @@ export interface Config {
 export type JournalMode = 'wal' | 'delete' | 'truncate' | 'persist'
 ```
 
-Source: [`packages/session/session-persistence-sqlite/src/index.ts:36`](../packages/session/session-persistence-sqlite/src/index.ts)
+Source: [`packages/session/session-persistence-sqlite/src/index.ts:37`](../packages/session/session-persistence-sqlite/src/index.ts)
 
 <a id="deepseek-aidsh-session-projection-cache"></a>
 
@@ -2027,7 +2080,7 @@ export enum SessionTelemetryMode {
 
 Depends on: `BatchLogRecordProcessorOptions` (`@opentelemetry/sdk-logs`) · `OTLPExporterNodeConfigBase` (`@opentelemetry/otlp-exporter-base`)
 
-Source: [`packages/session/session-telemetry-otel/src/index.ts:91`](../packages/session/session-telemetry-otel/src/index.ts)
+Source: [`packages/session/session-telemetry-otel/src/index.ts:92`](../packages/session/session-telemetry-otel/src/index.ts)
 
 <a id="deepseek-aidsh-session-title"></a>
 
@@ -2641,7 +2694,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/shell/tool-bash/src/index.ts:35`](../packages/shell/tool-bash/src/index.ts)
+Source: [`packages/shell/tool-bash/src/index.ts:36`](../packages/shell/tool-bash/src/index.ts)
 
 <a id="deepseek-aidsh-tool-bash-persistent"></a>
 
@@ -2826,7 +2879,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/shell/tool-pwsh/src/index.ts:52`](../packages/shell/tool-pwsh/src/index.ts)
+Source: [`packages/shell/tool-pwsh/src/index.ts:53`](../packages/shell/tool-pwsh/src/index.ts)
 
 <a id="deepseek-aidsh-tool-pwsh-persistent"></a>
 
@@ -3147,7 +3200,7 @@ export interface Config {
 export type ToolPresentationMode = 'native' | 'code' | 'both'
 ```
 
-Source: [`packages/core/tools/src/index.ts:665`](../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:862`](../packages/core/tools/src/index.ts)
 
 <a id="deepseek-aidsh-typert-loader"></a>
 
@@ -3194,7 +3247,7 @@ export interface Config {
 export type ApprovalPolicy = 'ask' | 'never'
 ```
 
-Source: [`packages/interaction/user-approval/src/index.ts:177`](../packages/interaction/user-approval/src/index.ts)
+Source: [`packages/interaction/user-approval/src/index.ts:211`](../packages/interaction/user-approval/src/index.ts)
 
 <a id="deepseek-aidsh-web"></a>
 

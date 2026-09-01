@@ -39,6 +39,20 @@ const DEFAULT_MAX_SYNC_PAGES = 50
 const DEFAULT_MAX_TOOLS_PER_SERVER = 2000
 /** Default whole-sync deadline in milliseconds. */
 const DEFAULT_SYNC_TIMEOUT_MS = 30_000
+/**
+ * Default UTF-8 byte ceiling on one tool's description before the tool is
+ * excluded from the generation. PR-6 product constant — the Design Review
+ * prescribes source bounds, not the number; 4 KiB is generous for legitimate
+ * tool descriptions (the shipped harness tools run far below it).
+ */
+const DEFAULT_MAX_TOOL_DESCRIPTION_BYTES = 4096
+/**
+ * Default UTF-8 byte ceiling on one tool's serialized `inputSchema` +
+ * `outputSchema` before the tool is excluded from the generation. PR-6
+ * product constant — 64 KiB admits every shipped harness schema with wide
+ * headroom while blocking adversarial advertisement.
+ */
+const DEFAULT_MAX_TOOL_SCHEMA_BYTES = 64 * 1024
 
 /** Valid `serverName`, kept below the public tool-name budget. */
 const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
@@ -79,6 +93,10 @@ export interface StdioConfig {
   maxToolsPerServer?: number
   /** Whole-sync deadline in ms (default 30000). */
   syncTimeoutMs?: number
+  /** Maximum UTF-8 bytes of one tool's description before exclusion (default 4096). */
+  maxToolDescriptionBytes?: number
+  /** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion (default 65536). */
+  maxToolSchemaBytes?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -107,6 +125,10 @@ export interface StreamableHttpConfig {
   maxToolsPerServer?: number
   /** Whole-sync deadline in ms (default 30000). */
   syncTimeoutMs?: number
+  /** Maximum UTF-8 bytes of one tool's description before exclusion (default 4096). */
+  maxToolDescriptionBytes?: number
+  /** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion (default 65536). */
+  maxToolSchemaBytes?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -135,6 +157,8 @@ export const Config = z.union([
     maxSyncPages: z.number().default(DEFAULT_MAX_SYNC_PAGES),
     maxToolsPerServer: z.number().default(DEFAULT_MAX_TOOLS_PER_SERVER),
     syncTimeoutMs: z.number().default(DEFAULT_SYNC_TIMEOUT_MS),
+    maxToolDescriptionBytes: z.number().default(DEFAULT_MAX_TOOL_DESCRIPTION_BYTES),
+    maxToolSchemaBytes: z.number().default(DEFAULT_MAX_TOOL_SCHEMA_BYTES),
     failOnStartupError: z.boolean().default(false),
     reconnect: Reconnect,
   }),
@@ -147,6 +171,8 @@ export const Config = z.union([
     maxSyncPages: z.number().default(DEFAULT_MAX_SYNC_PAGES),
     maxToolsPerServer: z.number().default(DEFAULT_MAX_TOOLS_PER_SERVER),
     syncTimeoutMs: z.number().default(DEFAULT_SYNC_TIMEOUT_MS),
+    maxToolDescriptionBytes: z.number().default(DEFAULT_MAX_TOOL_DESCRIPTION_BYTES),
+    maxToolSchemaBytes: z.number().default(DEFAULT_MAX_TOOL_SCHEMA_BYTES),
     failOnStartupError: z.boolean().default(false),
     reconnect: Reconnect,
   }),
