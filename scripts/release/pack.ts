@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { releaseFamily, tarballName, type ReleaseFamily, type ReleaseMember } from './families.ts'
 import { isEntry, runConcurrent } from './process.ts'
+import { packingRevision, restoreManifest, stampSourceRevision } from './source-revision.ts'
 import { PUBLISH_ORDER_FILE, tarballFiles } from './tarball.ts'
 
 /** Where pack output lands when `--out` is omitted. */
@@ -22,10 +23,23 @@ const DEFAULT_OUTPUT = 'dist/npm'
  * @param family - the release family being packed.
  * @param member - the member to pack.
  * @param destination - absolute output directory.
+ * @param revision - the packing commit stamped into the packed manifest.
  * @returns The tarball filename.
  */
-async function packMember(family: ReleaseFamily, member: ReleaseMember, destination: string): Promise<string> {
-  await runConcurrent('pnpm', ['--dir', member.directory, 'pack', '--pack-destination', destination])
+async function packMember(
+  family: ReleaseFamily,
+  member: ReleaseMember,
+  destination: string,
+  revision: string,
+): Promise<string> {
+  // npm packs the manifest as it finds it on disk, so the stamp lands before
+  // pack and the checked-in bytes are restored whether or not pack succeeded.
+  const original = stampSourceRevision(member.directory, revision)
+  try {
+    await runConcurrent('pnpm', ['--dir', member.directory, 'pack', '--pack-destination', destination])
+  } finally {
+    restoreManifest(member.directory, original)
+  }
 
   const filename = tarballName(member)
   const tarball = join(destination, filename)
@@ -62,6 +76,7 @@ async function main(): Promise<void> {
   const members = family.publishOrder(family.members(root)).order
   family.verifyBuildArtifacts(root)
   family.verifyVersions(members)
+  const revision = packingRevision(root)
 
   rmSync(destination, { recursive: true, force: true })
   mkdirSync(destination, { recursive: true })
@@ -77,7 +92,7 @@ async function main(): Promise<void> {
       cursor += 1
       const member = members[index]
       if (member === undefined) break
-      order[index] = await packMember(family, member, destination)
+      order[index] = await packMember(family, member, destination, revision)
     }
   }))
   writeFileSync(join(destination, PUBLISH_ORDER_FILE), `${order.join('\n')}\n`)

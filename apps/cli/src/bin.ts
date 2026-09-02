@@ -10,18 +10,19 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { loadLayeredEnv } from '@deepseek-ai/dsh-app-boot'
 import { parseDshArgs } from './args.ts'
+import { formatVersion, runtimeIdentity } from './identity.ts'
 
 // Both the source tree (apps/cli/src) and the bundled bin (apps/cli/lib) sit
 // one directory under apps/cli, so the checked-in manifest resolves with the
 // same relative hop from either artifact.
-function readVersion(): string {
-  const manifest = JSON.parse(
+function readIdentity(): string {
+  const manifest: unknown = JSON.parse(
     readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
-  ) as { version?: unknown }
-  return typeof manifest.version === 'string' ? manifest.version : '0.0.0'
+  )
+  return formatVersion(runtimeIdentity(manifest))
 }
 
-const invocation = parseDshArgs(process.argv.slice(2), readVersion())
+const invocation = parseDshArgs(process.argv.slice(2), readIdentity())
 
 switch (invocation.mode) {
   case 'profile': {
