@@ -1027,6 +1027,9 @@ importers:
       '@deepseek-ai/cordis-plugin-timer':
         specifier: workspace:^
         version: link:../../../vendor/timer
+      '@deepseek-ai/dsh-action-policy-guard':
+        specifier: workspace:^
+        version: link:../../guard/action-policy-guard
       '@deepseek-ai/dsh-agent':
         specifier: workspace:^
         version: link:../../core/agent
