@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-02-release-source-identity-critical-lineage.md
-2026-09-02-release-source-identity-critical-lineage.md: 5cc88a3c1f999807d009720152b9a9abc01660dd
-2026-09-02-release-source-identity-critical-lineage.zh.md: f25f1bf9aa8abe4aaf364989062aef0b718d9127
+2026-09-02-release-source-identity-critical-lineage.md: 07721a3604c7f5fe662aac49ed96506578a3193f
+2026-09-02-release-source-identity-critical-lineage.zh.md: 11c77458837b3449fba2b90f9ac6328dde4d2fd4

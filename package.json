@@ -157,7 +157,8 @@
     "mock:llm": "node --import tsx packages/test-support/llm-mock-server/src/bin.ts",
     "dev:web": "tsx scripts/dev-web.ts --poll",
     "postinstall": "node scripts/install-lefthook.mjs",
-    "verify-health": "tsx scripts/verify-health.ts"
+    "verify-health": "tsx scripts/verify-health.ts",
+    "gen-patch-manifest": "tsx scripts/release/gen-patch-manifest.ts"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-tool-session-query": "workspace:^",

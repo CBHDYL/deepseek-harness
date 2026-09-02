@@ -36,6 +36,7 @@ Status: implemented
 
 - `scripts/release/verify-packed-install.ts` 把整族 tarball 装进一次性 consumer 后运行检查器，registry 混装或错误血统的产物在发布时即失败。
 - `scripts/release/verify-critical-resolution.ts` 是对任意已安装运行时的只读命令：`--install <package root>`。未来 `dsh assess` 应消费它，而不是重写一套依赖检查。
+- `scripts/release/gen-patch-manifest.ts` 是最小 patch manifest：显式 `--baseline`/`--candidate` 两个 revision、计算的 merge base、delta 内每个提交经显式归属表归因（PR1–PR6 / R1–R4 / ALIGN / SANITATION / STOPGAP / MIGRATION / OTHER）、每个变更文件带其触碰提交，且零静默遗漏（无映射提交触碰的文件被报告为 unmapped）。输出为确定性 JSON + Markdown；它是证据，永不充当权威。
 - 解析探测在纯 Node 子进程中进行，发布进程自身的加载器（tsx、workspace tsconfig paths）无法替安装作答。
 - 2026-09-02 把打包候选 tarball 装进全局时产生了上文杂交体（npm 把 caret 成员解析到上游 `0.1.2-alpha.5`）；检查器检出全部七个关键包为 MISMATCH/UNKNOWN，安装从预装备份回滚。
 - 同一轮发现 `verify-packed-install` 空过：npm 把整族提升到 consumer 根目录，初版域规则把提升成员判为 plugin-private，跳过了血统比对。上面的域规则修正了分类；提升布局的 spec 用例将其钉住。
