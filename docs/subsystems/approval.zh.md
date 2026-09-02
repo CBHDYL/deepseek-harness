@@ -71,6 +71,18 @@ interface ApprovalRequest extends ApprovalRequestEvent {
    * attach the prompt to the tool call it already streamed.
    */
   readonly callId?: ToolCallId
+  /**
+   * Registry-minted execution-attempt identity (PR-2 port): the grant this
+   * approval may mint binds to it, so the same allowance can never authorize
+   * a different attempt.
+   */
+  readonly operationId?: string
+  /**
+   * SHA-256 digest of the frozen argument snapshot (PR-2 port): the grant's
+   * exact-arguments binding witness. A substitution between ask and dispatch
+   * changes the digest and fails the grant consumption.
+   */
+  readonly argsDigest?: string
   /** The asker's human-readable explanation of WHY it is asking. */
   readonly reason?: string
   /**

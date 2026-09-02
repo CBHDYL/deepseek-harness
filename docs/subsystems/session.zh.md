@@ -71,7 +71,7 @@ interface SessionEventMap {
    * JSON string exactly as the model produced it (unparsed). `callId` pairs the
    * call with its `tool/result`.
    */
-  'tool/call': { turn: number; step: number; callId: ToolCallId; name: string; arguments: string }
+  'tool/call': { turn: number; step: number; callId: ToolCallId; name: string; arguments: string; operationId?: string }
   /**
    * A completed tool call's model-facing result, optional internal failure
    * identity, and optional tool-private `meta` presentation payload. `meta` is
@@ -89,6 +89,7 @@ interface SessionEventMap {
     message: ToolResultMessage
     error?: { name: string; code: string }
     meta?: JsonValue
+    operationId?: string
   }
   /**
    * Full header for the next request, appended inside its step before dispatch.
@@ -128,6 +129,22 @@ interface SessionEventMap {
    * so tolerating concurrent writers needs a signal beyond the log.
    */
   'session/end-seed': Record<string, never>
+  /**
+   * Durable repair evidence (PR-3 port): the ONLY record a torn-tail recovery
+   * transaction appends besides the synthetic closers. Required-on-read —
+   * a build that does not know this event refuses the log rather than
+   * silently reconstructing a shorter history. The message joins the ordered
+   * surface through the standard envelope contract, so the resumed model sees
+   * that earlier history may be incomplete.
+   */
+  'session/repaired': {
+    /** Model-facing repair notice. */
+    message: UserMessage
+    /** Recovery category — currently always `torn-tail`. */
+    reason: string
+    /** Synthetic terminal closers the repair appended after the notice's log position. */
+    synthesizedClosers: number
+  }
 }
 ```
 
@@ -250,6 +267,7 @@ type SurfaceEventType =
   | 'user/message'
   | 'assistant/message'
   | 'tool/result'
+  | 'session/repaired'
 ```
 
 ### `SurfaceOp`：事件如何进入 surface

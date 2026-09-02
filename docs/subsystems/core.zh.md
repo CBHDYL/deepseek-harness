@@ -169,6 +169,12 @@ interface AgentOptions {
   reasoningEffort?: ReasoningEffortId
   /** Maximum output tokens for each conversation-model request. */
   maxTokens?: number
+  /** Hard UTF-8 byte ceiling for each conversation-model request (default 4 MiB — the normative enforcement). */
+  maxRequestBytes?: number
+  /** Optional advisory heuristic estimate ceiling; the byte ceiling stays normative (Option B). */
+  maxEstimateTokens?: number
+  /** Bounded budget-recovery (compaction) retries per step, 0–16 (default 1). */
+  budgetCompactionRetries?: number
 }
 ```
 

@@ -28,6 +28,16 @@ interface ToolDefinition extends ToolSchema {
   /** Mandatory canonical output declaration. */
   readonly output: ToolOutputDefinition
   /**
+   * Optional: the tool's declared authority effect. `'read-only'` claims the
+   * tool never mutates external state; `'side-effectful'` claims it may.
+   * Omission means undeclared — the action-policy guard then applies its
+   * `treatUndeclaredAsSideEffectful` rule. This metadata is NEVER model-visible
+   * (`schemas()` whitelists only name/description/parameters) and MCP/self-declared
+   * sources never populate it: only the shipped tool catalog and the
+   * implementing plugin carry the declaration the guard reads.
+   */
+  readonly effects?: 'read-only' | 'side-effectful'
+  /**
    * Run one accepted call and return only its canonical lossless-JSON value.
    * Async work must observe or forward `exec.signal` and settle only after its
    * owned work reaches quiescence. The registry preserves caller cancellation
@@ -289,6 +299,14 @@ interface PtcDispatchLog {
  * observers run.
  */
 interface ToolExecution extends ToolExecutionInput {
+  /**
+   * Registry-minted identity of this execution attempt (PR-2 port): unique
+   * per session, seeded from the loaded log's high-water mark, carried on
+   * every durable row of the attempt's chain. Grants and terminal
+   * dispositions bind to it; it is never a capability.
+   */
+  readonly operationId: OperationId
+
   /** Root model-requested call, resolved for every root and nested execution. */
   readonly rootCallId: ToolCallId
   /** Registry-assigned identity shared with nested calls only as their opaque `parent` token. */

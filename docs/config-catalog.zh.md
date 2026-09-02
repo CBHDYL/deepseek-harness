@@ -35,6 +35,31 @@ export interface AcpConfig {
 
 来源：[`packages/acp/acp/src/index.ts:75`](../packages/acp/acp/src/index.ts)
 
+<a id="deepseek-aidsh-action-policy-guard"></a>
+
+## `@deepseek-ai/dsh-action-policy-guard`
+
+```ts config-catalog
+/** Plugin config, validated fail-loud in `apply`. */
+export interface Config {
+  /**
+   * `observe` (default) logs ungoverned side-effectful calls and delegates;
+   * `enforce` requires an `allowed-once` approval for every side-effectful
+   * call before it runs (fail-closed when no approval service is composed).
+   * Validated against `observe`/`enforce` at plugin load.
+   */
+  mode?: string
+  /**
+   * Treat tools without a declared `effects` as side-effectful (default
+   * true). `false` restricts the gate to tools that explicitly declare
+   * `effects: 'side-effectful'`.
+   */
+  treatUndeclaredAsSideEffectful?: boolean
+}
+```
+
+来源：[`packages/guard/action-policy-guard/src/index.ts:34`](../packages/guard/action-policy-guard/src/index.ts)
+
 <a id="deepseek-aidsh-agent-default-model"></a>
 
 ## `@deepseek-ai/dsh-agent-default-model`
@@ -97,6 +122,35 @@ export interface Config {
    * omission defaults to {@link DEFAULT_MAX_PARALLEL_TOOL_CALLS}.
    */
   maxParallelToolCalls?: number
+  /**
+   * Hard cap on model-request attempts per step, including retries. A faulty
+   * or hostile `agent/request-error` listener cannot retry forever; the step
+   * fails with `REQUEST_ATTEMPTS_EXCEEDED` at the cap. Default 16.
+   */
+  maxRequestAttempts?: number
+  /**
+   * Hard byte ceiling (UTF-8) on the final model-facing request
+   * representation. A request whose measured representation EXCEEDS it is
+   * never dispatched (strict predicate: exactly at the ceiling dispatches) —
+   * the normative hard boundary. Default
+   * {@link DEFAULT_MAX_REQUEST_BYTES}.
+   */
+  maxRequestBytes?: number
+  /**
+   * Optional earlier trigger: reject when the fixed-density heuristic token
+   * estimate of the final request exceeds this. Unset by default (the
+   * estimate is still computed and reported). The estimate is an ADVISORY,
+   * provider-agnostic heuristic (accepted design deviation, PR-6 F2) — it is
+   * never a provider token guarantee and never the only safety boundary;
+   * {@link Config.maxRequestBytes} is the normative enforcement.
+   */
+  maxEstimateTokens?: number | undefined
+  /**
+   * Recovery retries per step when a prompt-budget rejection is answered by
+   * an `agent/request-budget` listener (compaction). Default
+   * {@link DEFAULT_BUDGET_COMPACTION_RETRIES}.
+   */
+  budgetCompactionRetries?: number
   /** Agents created or resumed at plugin startup. */
   agents: (AgentOptions & {
     /** Stable config label used in logs and as the fresh combined-id prefix. */
@@ -408,6 +462,14 @@ export interface BasicCompactionConfig extends CompactionPolicyConfig {
   modelPolicies?: ModelCompactPolicyConfig[]
   /** Enable automatic step-boundary pressure and overflow-recovery listeners. Defaults to `true`. */
   auto?: boolean
+  /**
+   * Hard UTF-8 byte allowance on one summarizer request's model-facing
+   * representation (messages + system + tool schemas). Defaults to
+   * {@link DEFAULT_SUMMARIZATION_MAX_BYTES}. This is the compaction reserve
+   * that bounds the auxiliary dispatch: a region that does not fit is refused
+   * before any provider dispatch and fails the compaction transaction typed.
+   */
+  summarizationMaxBytes?: number
 }
 
 /** Policy fields shared by the default policy and exact model overrides. */
@@ -1377,6 +1439,16 @@ export interface StdioConfig {
   cwd: string
   /** Per-tool-call timeout in milliseconds. */
   toolCallTimeoutMs: number
+  /** Maximum tools/list pages to drain before aborting (default 50). */
+  maxSyncPages?: number
+  /** Maximum tools per server before aborting the sync (default 2000). */
+  maxToolsPerServer?: number
+  /** Whole-sync deadline in ms (default 30000). */
+  syncTimeoutMs?: number
+  /** Maximum UTF-8 bytes of one tool's description before exclusion (default 4096). */
+  maxToolDescriptionBytes?: number
+  /** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion (default 65536). */
+  maxToolSchemaBytes?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
@@ -1399,6 +1471,16 @@ export interface StreamableHttpConfig {
   headers: Record<string, string>
   /** Per-tool-call timeout in milliseconds. */
   toolCallTimeoutMs: number
+  /** Maximum tools/list pages to drain before aborting (default 50). */
+  maxSyncPages?: number
+  /** Maximum tools per server before aborting the sync (default 2000). */
+  maxToolsPerServer?: number
+  /** Whole-sync deadline in ms (default 30000). */
+  syncTimeoutMs?: number
+  /** Maximum UTF-8 bytes of one tool's description before exclusion (default 4096). */
+  maxToolDescriptionBytes?: number
+  /** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion (default 65536). */
+  maxToolSchemaBytes?: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
