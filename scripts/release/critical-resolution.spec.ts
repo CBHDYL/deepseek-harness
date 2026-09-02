@@ -39,15 +39,30 @@ function scrubbedEnvironment(): NodeJS.ProcessEnv {
   return environment
 }
 
+/** A manifest for a member package at one version and optionally one revision. */
+function member(version: string, revision?: string): Record<string, unknown> {
+  return { name: TOOLS, version, ...(revision === undefined ? {} : { dsh: { sourceRevision: revision } }) }
+}
+
 /**
- * Build an installation whose core package nests its own dependency copies,
- * mirroring how the published `dsh` artifact carries its whole set.
+ * An install root whose core package sits in its own `node_modules` scope,
+ * mirroring the layouts the checker meets: global installs nest the whole
+ * dependency set inside the core package, while the packed-install consumer
+ * hoists every member beside the core in the same `node_modules` level.
  */
 function installation(options: {
   readonly coreRevision?: string | undefined
+  /** The core package's own nested copy, as a global install would have it. */
   readonly nested?: { readonly version: string; readonly revision?: string | undefined } | undefined
-  readonly pluginPin?: string | undefined
-}): { coreManifest: string; resolve: ManifestResolver } {
+  /** A copy hoisted beside the core in the same node_modules level. */
+  readonly hoisted?: { readonly version: string; readonly revision?: string | undefined } | undefined
+  /** A copy inside a sibling plugin's own node_modules. */
+  readonly sibling?: { readonly version: string } | undefined
+}): {
+  readonly coreManifest: string
+  readonly resolve: ManifestResolver
+  readonly siblingResolve: ManifestResolver
+} {
   const root = mkdtempSync(join(tmpdir(), 'dsh-resolution-'))
   roots.push(root)
 
@@ -60,17 +75,23 @@ function installation(options: {
   writeFileSync(join(coreRoot, 'bin.js'), '\n')
 
   if (options.nested !== undefined) {
-    manifest(join(coreRoot, 'node_modules', '@deepseek-ai', 'dsh-tools'), {
-      name: TOOLS,
-      version: options.nested.version,
-      ...(options.nested.revision === undefined ? {} : { dsh: { sourceRevision: options.nested.revision } }),
-    })
+    manifest(join(coreRoot, 'node_modules', '@deepseek-ai', 'dsh-tools'), member(options.nested.version, options.nested.revision))
   }
-  if (options.pluginPin !== undefined) {
-    manifest(join(root, 'node_modules', '@deepseek-ai', 'dsh-tools'), { name: TOOLS, version: options.pluginPin })
+  if (options.hoisted !== undefined) {
+    manifest(join(root, 'node_modules', '@deepseek-ai', 'dsh-tools'), member(options.hoisted.version, options.hoisted.revision))
+  }
+  if (options.sibling !== undefined) {
+    const siblingRoot = join(root, 'node_modules', '@linxin666', 'dsh-web-all')
+    manifest(siblingRoot, { name: '@linxin666/dsh-web-all', version: '0.3.12' })
+    manifest(join(siblingRoot, 'node_modules', '@deepseek-ai', 'dsh-tools'), member(options.sibling.version))
+    writeFileSync(join(siblingRoot, 'entry.js'), '\n')
   }
 
-  return { coreManifest, resolve: resolverFrom(join(coreRoot, 'bin.js')) }
+  return {
+    coreManifest,
+    resolve: resolverFrom(join(coreRoot, 'bin.js')),
+    siblingResolve: resolverFrom(join(root, 'node_modules', '@linxin666', 'dsh-web-all', 'entry.js')),
+  }
 }
 
 describe('critical dependency resolution', () => {
@@ -115,6 +136,47 @@ describe('critical dependency resolution', () => {
     expect(resolutionsAcceptable([result])).toBe(false)
   })
 
+  // The packed-install consumer shape: the core package has no nested copy, so
+  // its resolution walk lands on the hoisted sibling. That copy must still be
+  // judged against the candidate lineage — the vacuous pass this spec closes.
+  it('accepts a hoisted sibling on the candidate lineage', () => {
+    const { coreManifest, resolve } = installation({
+      coreRevision: CANDIDATE,
+      hoisted: { version: VERSION, revision: CANDIDATE },
+    })
+
+    const result = checkCriticalPackage(TOOLS, resolve, expectedCoreLineage(coreManifest))
+
+    expect(result.status).toBe('MATCH')
+    expect(result.domain).toBe('core-runtime')
+    expect(resolutionsAcceptable([result])).toBe(true)
+  })
+
+  it('rejects a hoisted sibling of the same version packed from a different source', () => {
+    const { coreManifest, resolve } = installation({
+      coreRevision: CANDIDATE,
+      hoisted: { version: VERSION, revision: OTHER },
+    })
+
+    const result = checkCriticalPackage(TOOLS, resolve, expectedCoreLineage(coreManifest))
+
+    expect(result.status).toBe('MISMATCH')
+    expect(result.domain).toBe('core-runtime')
+    expect(resolutionsAcceptable([result])).toBe(false)
+  })
+
+  it('fails an unstamped hoisted sibling exactly like a wrong one', () => {
+    const { coreManifest, resolve } = installation({
+      coreRevision: CANDIDATE,
+      hoisted: { version: VERSION },
+    })
+
+    const result = checkCriticalPackage(TOOLS, resolve, expectedCoreLineage(coreManifest))
+
+    expect(result.status).toBe('UNKNOWN')
+    expect(resolutionsAcceptable([result])).toBe(false)
+  })
+
   it('fails an unproven core lineage exactly like a wrong one', () => {
     const unstampedCopy = installation({ coreRevision: CANDIDATE, nested: { version: VERSION } })
     const unstampedCore = installation({ nested: { version: VERSION, revision: CANDIDATE } })
@@ -141,20 +203,14 @@ describe('critical dependency resolution', () => {
     expect(resolutionsAcceptable([result])).toBe(false)
   })
 
-  it('accepts a plugin-private compatibility pin without a lineage requirement', () => {
-    const { coreManifest } = installation({
+  it('accepts a sibling-plugin private copy as a compatibility pin without a lineage requirement', () => {
+    const { coreManifest, siblingResolve } = installation({
       coreRevision: CANDIDATE,
       nested: { version: VERSION, revision: CANDIDATE },
-      pluginPin: '0.1.1-rc.2',
+      sibling: { version: '0.1.1-rc.2' },
     })
-    const expected = expectedCoreLineage(coreManifest)
-    // Resolve as the plugin subtree would: the outer copy, not the core's.
-    const pluginResolve: ManifestResolver = () => join(
-      coreManifest.slice(0, coreManifest.lastIndexOf('/node_modules/@deepseek-ai/dsh')),
-      'node_modules', '@deepseek-ai', 'dsh-tools', 'package.json',
-    )
 
-    const result = checkCriticalPackage(TOOLS, pluginResolve, expected)
+    const result = checkCriticalPackage(TOOLS, siblingResolve, expectedCoreLineage(coreManifest))
 
     expect(result.status).toBe('ALLOWED_COMPATIBILITY')
     expect(result.domain).toBe('plugin-private')
@@ -162,12 +218,26 @@ describe('critical dependency resolution', () => {
     expect(resolutionsAcceptable([result])).toBe(true)
   })
 
-  // False-positive guard: a legitimate outer pin must not make the core RED.
-  it('does not let a plugin-private pin shadow the core runtime', () => {
+  // False-positive guard: a legitimate sibling copy must not make the core RED.
+  it('does not let a sibling-plugin pin shadow the core runtime', () => {
     const { coreManifest, resolve } = installation({
       coreRevision: CANDIDATE,
       nested: { version: VERSION, revision: CANDIDATE },
-      pluginPin: '0.1.1-rc.2',
+      sibling: { version: '0.1.1-rc.2' },
+    })
+
+    const result = checkCriticalPackage(TOOLS, resolve, expectedCoreLineage(coreManifest))
+
+    expect(result.status).toBe('MATCH')
+    expect(result.domain).toBe('core-runtime')
+    expect(result.resolvedVersion).toBe(VERSION)
+  })
+
+  it('prefers the hoisted sibling over a sibling-plugin pin when the core nests no copy', () => {
+    const { coreManifest, resolve } = installation({
+      coreRevision: CANDIDATE,
+      hoisted: { version: VERSION, revision: CANDIDATE },
+      sibling: { version: '0.1.1-rc.2' },
     })
 
     const result = checkCriticalPackage(TOOLS, resolve, expectedCoreLineage(coreManifest))

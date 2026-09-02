@@ -7,17 +7,20 @@
  * are owned by their own implementations and tests; nothing here inspects or
  * re-decides them.
  *
- * Two resolution domains matter and must not be conflated. The core runtime
- * carries its whole dependency set inside the installed `dsh` package, so every
- * authority-sensitive path resolves under the core root. Plugin subtrees may
- * legitimately keep older copies to satisfy a plugin's declared peer range;
- * those copies are private to the plugin and cannot supply the core runtime,
- * because a nested core dependency always resolves before any outer directory.
+ * Two resolution domains matter and must not be conflated. A copy is part of
+ * the core runtime when the core's own resolution walk can reach it as its
+ * dependency: either nested inside the installed `dsh` package (a global
+ * install), or hoisted beside the core package in the same `node_modules` level
+ * (the packed-install consumer). Plugin subtrees may legitimately keep older
+ * copies to satisfy a plugin's declared peer range; those copies live under
+ * some other package's own `node_modules` and cannot supply the core runtime,
+ * because the core's resolution walk never descends into them.
  */
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { dirname, sep } from 'node:path'
 import { declaredSourceRevision } from './source-revision.ts'
 
 /**
@@ -63,8 +66,10 @@ export interface CriticalResolution {
 
 /** The candidate lineage a core runtime is expected to resolve within. */
 export interface ExpectedCore {
-  /** Absolute path of the installed core package root. */
+  /** Absolute real path of the installed core package root. */
   readonly root: string
+  /** The `node_modules` directory that directly holds the core package. */
+  readonly hoist: string
   /** Version the core manifest declares. */
   readonly version: string
   /** Source revision the core artifact was packed from, when stamped. */
@@ -106,20 +111,38 @@ function canonical(path: string): string {
 export function expectedCoreLineage(coreManifestPath: string): ExpectedCore {
   const manifest = readManifest(coreManifestPath)
   const version = typeof manifest['version'] === 'string' ? manifest['version'] : ''
-  const root = coreManifestPath.slice(0, coreManifestPath.length - '/package.json'.length)
-  return { root: canonical(root), version, sourceRevision: declaredSourceRevision(manifest) }
+  const root = canonical(coreManifestPath.slice(0, coreManifestPath.length - '/package.json'.length))
+  // Walk up from the core package until the node_modules level that holds it.
+  let hoist = root
+  while (true) {
+    const parent = dirname(hoist)
+    if (parent === hoist) break
+    hoist = parent
+    if (hoist.endsWith(`${sep}node_modules`)) break
+  }
+  return { root, hoist: canonical(hoist), version, sourceRevision: declaredSourceRevision(manifest) }
 }
 
 /**
  * Classify which installation a resolved manifest belongs to.
  * @param resolvedPath - absolute path of the resolved manifest.
  * @param expected - the expected core lineage.
- * @returns `core-runtime` when the copy sits inside the core installation,
- * `plugin-private` when it sits inside a plugin's own dependency store.
+ * @returns `core-runtime` when the core's own resolution walk supplies the
+ * copy — nested inside the core package, or hoisted beside it in the same
+ * `node_modules` level — and `plugin-private` when the copy sits inside some
+ * other package's own `node_modules`.
  */
 export function resolutionDomain(resolvedPath: string, expected: ExpectedCore): ResolutionDomain {
-  if (canonical(resolvedPath).startsWith(`${expected.root}/`)) return 'core-runtime'
-  if (resolvedPath.includes('/node_modules/')) return 'plugin-private'
+  const real = canonical(resolvedPath)
+  if (real.startsWith(`${expected.root}/`)) return 'core-runtime'
+  if (real.startsWith(`${expected.hoist}/`)) {
+    // Inside the core's install level but outside the core package: either a
+    // direct hoist beside the core, or nested under a sibling package's own
+    // node_modules. Only the direct hoist is what the core would load.
+    const relative = real.slice(expected.hoist.length + 1)
+    return relative.includes('/node_modules/') ? 'plugin-private' : 'core-runtime'
+  }
+  if (real.includes('/node_modules/')) return 'plugin-private'
   return 'unknown'
 }
 
