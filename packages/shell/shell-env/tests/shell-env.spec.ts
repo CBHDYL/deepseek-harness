@@ -26,6 +26,7 @@ function execution(sessionId?: string): ToolExecution {
     rootCallId: ToolCallId('bash-env-call'),
     name: 'bash',
     arguments: { command: 'true' },
+    operationId: 'op-shell-env-test',
     ...(sessionId === undefined
       ? {}
       : { agent: { session: { header: { version: 0, id: sessionId, createdAt: 0 } } } as Agent }),

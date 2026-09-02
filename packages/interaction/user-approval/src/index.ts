@@ -180,6 +180,12 @@ interface AuthorizationGrantRecord {
   taken: boolean
 }
 
+/**
+ * Approval service that applies session policy before answerers and logs every
+ * ask/outcome pair to the requesting session. It exposes deterministic policy
+ * changes to the model through the runtime-context snapshot and switch notices,
+ * and mints the one-shot grants the tool registry consumes at dispatch.
+ */
 export class ApprovalService extends Service {
   static Config: z<Config> = z.object({
     policy: z.union(['ask', 'never'] as const).default('ask'),

@@ -62,7 +62,10 @@ async function setup(options: SetupOptions = {}) {
 
 /** Mint an agent scope configured like production that can register scoped tool policy. */
 async function mintAgentScope(ctx: Context, name = 'scoped'): Promise<{ scope: Scope; agent: Agent }> {
-  const agent = { id: SessionId(name) } as Agent
+  // The ported authorization pipeline seeds the per-session operation-id
+  // counter from `agent.session.events` at execution creation; the stub
+  // carries the minimal array-like the indexed scan tolerates.
+  const agent = { id: SessionId(name), session: { events: [] } } as unknown as Agent
   let scope!: Scope
   await ctx.plugin(Object.assign((inner: Context) => { scope = createScope(inner, agent) },
     { inject: ['tools', 'systemPrompt'] }))
@@ -832,12 +835,12 @@ describe('the run_code dispatch bridge', () => {
       {
         rootCallId: 'call-1', parentCallId: 'call-1', subCallId: 'call-1:code:1', name: 'echo',
         arguments: { value: 'one' }, isError: false, content: [{ type: 'text', text: 'echo:one' }],
-        operationId: '2',
+        operationId: 'op_2',
       },
       {
         rootCallId: 'call-1', parentCallId: 'call-1', subCallId: 'call-1:code:2', name: 'echo',
         arguments: { value: 'two' }, isError: false, content: [{ type: 'text', text: 'echo:two' }],
-        operationId: '3',
+        operationId: 'op_3',
       },
     ])
     expect(result.meta).toBeUndefined()

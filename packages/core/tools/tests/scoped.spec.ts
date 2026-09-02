@@ -21,9 +21,14 @@ async function mount(): Promise<Context> {
   return ctx
 }
 
+/** Minimal Agent-like scope key carrying the session events array the authorization pipeline seeds operation ids from. */
+function agentStub(name: string): Agent {
+  return { id: name as SessionId, session: { events: [] } } as unknown as Agent
+}
+
 /** Mint a scope whose key doubles as a minimal Agent-like object. */
 async function mintAgentScope(ctx: Context, name: string): Promise<{ scope: Scope; key: Agent }> {
-  const key = { id: name as SessionId } as Agent
+  const key = agentStub(name)
   let scope!: Scope
   // The scoped context resolves services through the MINTING plugin's
   // dependency chain — the minter must inject what scope holders will reach
@@ -70,7 +75,7 @@ describe('scoped tool registration', () => {
   it('files a scoped tool in its layer: visible/executable for that scope only', async () => {
     const ctx = await mount()
     const { scope, key } = await mintAgentScope(ctx, 'a')
-    const other = { id: 'other' as SessionId } as Agent
+    const other = agentStub('other')
     ctx.tools.register(tool('shared'))
     scope.ctx.tools.register(tool('mine'))
 
@@ -204,7 +209,7 @@ describe('restrict()', () => {
 describe('restrict() over an inherited scope layer', () => {
   /** Mint a child scope parented to `parent`, as a subagent's creation window does. */
   async function mintChild(ctx: Context, parentKey: Agent, name: string): Promise<{ scope: Scope; key: Agent }> {
-    const key = { id: name as SessionId } as Agent
+    const key = agentStub(name)
     bindScopeParent(key, parentKey)
     let scope!: Scope
     await ctx.plugin(Object.assign((inner: Context) => { scope = createScope(inner, key) },
@@ -266,7 +271,7 @@ describe('scoped execution dispatch', () => {
   it('an agent.ctx pre-execute listener gates only its own agent (and never subject-less calls)', async () => {
     const ctx = await mount()
     const { scope, key } = await mintAgentScope(ctx, 'a')
-    const other = { id: 'other' as SessionId } as Agent
+    const other = agentStub('other')
     ctx.tools.register(tool('t'))
 
     const seen: (string | undefined)[] = []
@@ -284,7 +289,7 @@ describe('scoped execution dispatch', () => {
   it('applies scoped guards after pre-execute and unwinds duplicate registrations independently', async () => {
     const ctx = await mount()
     const { scope, key } = await mintAgentScope(ctx, 'a')
-    const other = { id: 'other' as SessionId } as Agent
+    const other = agentStub('other')
     let bodyCalls = 0
     ctx.tools.register({
       ...tool('t'),
@@ -545,7 +550,7 @@ describe('scoped execution dispatch', () => {
   it('uses one input snapshot for the normalized error shell', async () => {
     const ctx = await mount()
     const { scope, key } = await mintAgentScope(ctx, 'accepted')
-    const driftAgent = { id: 'drift' as SessionId } as Agent
+    const driftAgent = agentStub('drift')
     ctx.tools.register(tool('parent'))
     ctx.tools.register(tool('t'))
     let parent!: ToolExecutionToken

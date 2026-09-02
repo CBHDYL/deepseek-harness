@@ -3,6 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import { createToolResultMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
+import type { ApprovalRequestId } from '@deepseek-ai/dsh-user-approval'
 import type { ToolExecution, ToolExecutionResult, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import * as ToolsInvariant from '@deepseek-ai/dsh-tools/invariant'
 import InvariantRegistry from '@deepseek-ai/dsh-invariants'
@@ -19,7 +20,7 @@ async function setup(): Promise<Context> {
 
 const execution = (overrides: Partial<ToolExecution> = {}): ToolExecution => ({
   token: Symbol('tool') as ToolExecutionToken,
-  operationId: 'op_1' as never,
+  operationId: 'op_1',
   callId: ToolCallId('call-1'),
   name: 'echo',
   arguments: Object.freeze({ text: 'hi' }),
@@ -207,7 +208,7 @@ describe('tool-pipeline invariants', () => {
           rootCallId: ToolCallId('root'),
           parentCallId: ToolCallId('root'),
           subCallId: ToolCallId('child'),
-      operationId: 'op_1',
+          operationId: 'op_1',
           name: 'echo',
           arguments: {},
         },
@@ -255,12 +256,12 @@ describe('tool-pipeline invariants', () => {
     const session = ctx.sessions.create()
     session.append('turn/start', { turn: 1 })
     session.append('tool/call', {
-      turn: 1, step: 1, callId: ToolCallId('call-1'), name: 'echo', arguments: '{}', operationId: 'op_1' as never,
+      turn: 1, step: 1, callId: ToolCallId('call-1'), name: 'echo', arguments: '{}', operationId: 'op_1',
     })
     session.append('tool/result', {
       turn: 1, step: 1,
       message: createToolResultMessage({ callId: ToolCallId('call-1'), content: [], isError: false }),
-      operationId: 'op_1' as never,
+      operationId: 'op_1',
     }, { surfaceOp: 'append' })
     const call = session.events.find(event => event.type === 'tool/call')
     const result = session.events.find(event => event.type === 'tool/result')
@@ -271,8 +272,8 @@ describe('tool-pipeline invariants', () => {
     const ctx = await setup()
     const session = ctx.sessions.create()
     session.append('turn/start', { turn: 1 })
-    session.append('approval/asked', { id: 'approval-1' as never, toolName: 'echo', operationId: 'op_1' as never })
-    session.append('approval/decided', { id: 'approval-1' as never, outcome: 'rejected', operationId: 'op_1' as never })
+    session.append('approval/asked', { id: 'approval-1' as ApprovalRequestId, toolName: 'echo', operationId: 'op_1' })
+    session.append('approval/decided', { id: 'approval-1' as ApprovalRequestId, outcome: 'rejected', operationId: 'op_1' })
     const asked = session.events.find(event => event.type === 'approval/asked')
     const decided = session.events.find(event => event.type === 'approval/decided')
     expect(asked?.data.operationId).toBe(decided?.data.operationId)

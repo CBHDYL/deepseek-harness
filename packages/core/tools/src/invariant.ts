@@ -68,7 +68,7 @@ const install: InvariantInstaller = Object.assign((ctx: Context, fail: Invariant
         pending.add(event.data.operationId)
       }
       if (event.type === 'tool/result' && event.data.operationId !== undefined) pending.delete(event.data.operationId)
-      if (event.type === 'tool/code-dispatch') pending.delete(event.data.operationId)
+      if (event.type === 'tool/code-dispatch' && event.data.operationId !== undefined) pending.delete(event.data.operationId)
     }
     pendingAllowed.set(session, pending)
     seenOperationIds.set(session, seen)

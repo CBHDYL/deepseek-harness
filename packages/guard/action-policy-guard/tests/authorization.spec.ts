@@ -8,11 +8,15 @@
 
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
+import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
@@ -281,12 +285,60 @@ describe('execution-attempt authorization', () => {
     ]))
     h.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     // Cancel mid-ask; the late allow settles after the attempt is dead.
-    setTimeout(() => h.agent.cancel({ kind: 'user' }), 20)
+    setTimeout(() => { h.agent.cancel({ kind: 'user' }) }, 20)
     await waitForIdle(h.ctx, h.agent)
     release('allowed-once')
     expect(h.ran()).toEqual([])
     const decided = h.decided()
     expect(decided).toHaveLength(1)
     expect((decided[0]?.data as { outcome?: string }).outcome).toBe('cancelled')
+  })
+
+  it('cross-invariant B: an authorized execution persists and survives reload with its full durable chain', async () => {
+    // PR-2 authorization + PR-3 persistence composition: the approved tool
+    // run and its asked/decided/call/result chain must survive a reload.
+    const root = await mkdtemp(join(tmpdir(), 'dsh-cross-b-'))
+    const ctx = new Context()
+    await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
+    await ctx.plugin(AgentLoop, { agents: [] })
+    await ctx.plugin(ApprovalService, {})
+    await ctx.plugin(ActionPolicyGuard, { mode: 'enforce' })
+    ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('allowed-once'))
+    const ran: string[] = []
+    ctx.tools.register(defineContentToolFixture({
+      name: 'declared',
+      description: 'd',
+      parameters: { token: { type: 'string' } },
+      effects: 'side-effectful',
+      async execute() { ran.push('declared'); return [{ type: 'text', text: 'ok' }] },
+    }))
+    ctx.llm.registerAdapter(['mock'], new MockAdapter([
+      toolCallResponse('cross-b-call', 'declared', { token: 't' }),
+      textResponse('done'),
+    ]))
+    const agent = ctx.agentLoop.create(SessionId('cross-b'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+    const call = agent.session.events.find(event => event.type === 'tool/call')
+    const result = agent.session.events.find(event => event.type === 'tool/result')
+    const operationId = call?.type === 'tool/call' ? call.data.operationId : undefined
+    expect(operationId).toBeTruthy()
+    expect(result?.type === 'tool/result' && result.data.operationId).toBe(operationId)
+    expect(ran).toEqual(['declared'])
+    await ctx.fiber.dispose()
+
+    // Reload from the same root: the authorized execution history is intact.
+    const ctx2 = new Context()
+    await ctx2.plugin(SessionStore)
+    await ctx2.plugin(JsonlSessionPersistence, { root, compression: 'none' })
+    const loaded = await ctx2.sessionPersistence.load(SessionId('cross-b'))
+    const loadedCall = loaded.events.find(event => event.type === 'tool/call')
+    const loadedResult = loaded.events.find(event => event.type === 'tool/result')
+    expect(loadedCall?.type === 'tool/call' && loadedCall.data.operationId).toBe(operationId)
+    expect(loadedResult?.type === 'tool/result' && loadedResult.data.operationId).toBe(operationId)
+    expect(loaded.events.filter(event => event.type === 'tool/result')).toHaveLength(1)
+    await ctx2.fiber.dispose()
+    await rm(root, { recursive: true, force: true })
   })
 })
