@@ -2,7 +2,7 @@
 
 English | [中文](remediation-requirements.zh.md)
 
-Confirmed requirements for the Harness remediation program. Canonical execution state lives in [REMEDIATION-IMPLEMENTATION.md](../REMEDIATION-IMPLEMENTATION.md); the normative design is the Remediation Plan Design Review in `docs/system-wide-audit.md`.
+Confirmed requirements for the Harness remediation program. Canonical execution state lives in [REMEDIATION-IMPLEMENTATION.md](../REMEDIATION-IMPLEMENTATION.md); the normative design is the Remediation Plan Design Review in [`docs/system-wide-audit.md`](system-wide-audit.md).
 
 - Goal: implement PR-0 through PR-6 of the remediation program as defined in the ledger, one PR per session, each with its documented closed loop and exit criteria.
 - Authority: the Design Review supersedes the earlier remediation plan wherever they conflict.
