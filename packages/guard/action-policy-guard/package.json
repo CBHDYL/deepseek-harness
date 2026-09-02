@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-action-policy-guard",
   "description": "Guard plugin: central mandatory action-policy interceptor — gates side-effectful tool calls through the approval seam instead of relying on each tool volunteering to request approval",
-  "version": "0.1.2-alpha.3",
+  "version": "0.1.2-alpha.5",
   "publishConfig": {
     "access": "public"
   },
