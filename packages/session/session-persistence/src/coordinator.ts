@@ -12,13 +12,14 @@ import {
   KNOWN_SESSION_EVENT_TYPES,
   SESSION_FORMAT_VERSION,
   SessionPreparation,
+  sessionRepairedEvent,
   snapshotSessionEvent,
 } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
 import type { BorrowedSessionSource, SessionInspection, SessionLocation } from './index.ts'
-import { SessionPersistenceNotFoundError } from './errors.ts'
+import { SessionPersistenceNotFoundError, StoredContentCorruptionError } from './errors.ts'
 import type { SessionPersistenceRevision } from './revision.ts'
 import { observeQueuedAbort, SessionPreparations } from './preparations.ts'
 import type { SessionPreparationReservation } from './preparations.ts'
@@ -972,7 +973,23 @@ export class PersistenceCoordinator<TornMarker = unknown> {
 
   /** Read, repair in memory, validate, and freeze one cold source once. */
   private async prepareCore(id: SessionId): Promise<PreparedSessionSource<TornMarker>> {
-    const stored = await this.backend.loadStored(id)
+    let stored: StoredPrefix<TornMarker> | undefined
+    try {
+      stored = await this.backend.loadStored(id)
+    } catch (error: unknown) {
+      // Classify by origin (PR-3 F1): only backend-declared content-validation
+      // failures become corruption. A format refusal keeps its own diagnostic,
+      // and infrastructure failures (filesystem errors, backend unavailability)
+      // pass through unwrapped — fail loud without mislabeling their cause.
+      if (error instanceof SessionFormatUnsupportedError) throw error
+      if (error instanceof StoredContentCorruptionError) {
+        throw new SessionPersistenceCorruptionError(
+          `stored session "${id}" failed validation: ${String(error)}`,
+          { cause: error },
+        )
+      }
+      throw error
+    }
     if (stored === undefined) throw new SessionPersistenceNotFoundError(id)
     try {
       const { meta, events, revision, tornMarker } = stored
@@ -1024,7 +1041,11 @@ export class PersistenceCoordinator<TornMarker = unknown> {
     }
     if (!await this.isPreparedSourceCurrent(source)) return undefined
     if (source.tornMarker !== undefined || source.closers.length > 0) {
-      await this.backend.commitRepair(source.inspection.meta, source.tornMarker, source.closers)
+      await this.backend.commitRepair(
+        source.inspection.meta,
+        source.tornMarker,
+        [...source.closers, sessionRepairedEvent(source.inspection.events, source.closers)],
+      )
       // The repair changed the durable revision. Reload the exact committed
       // graph instead of associating the old in-memory view with a newer revision.
       return undefined

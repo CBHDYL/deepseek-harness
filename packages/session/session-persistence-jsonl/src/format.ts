@@ -13,7 +13,7 @@ import {
   decodeSeqRanges, decodeStorageRecord, encodeSeqRanges, packChunkRuns, SESSION_FORMAT_VERSION,
 } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader, SessionId, StorageRecord } from '@deepseek-ai/dsh-session'
-import { SessionFormatUnsupportedError, sessionFormatVersionRefusal } from '@deepseek-ai/dsh-session-persistence'
+import { SessionFormatUnsupportedError, sessionFormatVersionRefusal, StoredContentCorruptionError } from '@deepseek-ai/dsh-session-persistence'
 
 /** Physical encoding selected for JSONL session artifacts. */
 export type JsonlCompression = 'zstd' | 'none'
@@ -72,7 +72,7 @@ export function toHeaderLine(header: SessionHeader): HeaderLine {
  */
 export function fromHeaderLine(line: HeaderLine): SessionHeader {
   if (Object.hasOwn(line, 'sandboxMode') || Object.hasOwn(line, 'approvalPolicy')) {
-    throw new Error('session header uses retired policy baseline fields')
+    throw new StoredContentCorruptionError('session header uses retired policy baseline fields')
   }
   return {
     version: line.version,
@@ -281,17 +281,17 @@ function refuseForeignFormatVersion(parsed: unknown): void {
 
 function parseHeaderRecord(record: Buffer): SessionHeader {
   if (record.length === 0 || record.at(-1) !== 0x0A || record.indexOf(0x0A) !== record.length - 1) {
-    throw new Error('empty or header-less session log')
+    throw new StoredContentCorruptionError('empty or header-less session log')
   }
   let parsed: unknown
   try {
     parsed = JSON.parse(record.subarray(0, -1).toString('utf8'))
   } catch {
-    throw new Error('corrupt session log: header line is not valid JSON')
+    throw new StoredContentCorruptionError('corrupt session log: header line is not valid JSON')
   }
   refuseForeignFormatVersion(parsed)
   if (!isHeaderLine(parsed)) {
-    throw new Error('corrupt session log: first line is not a session header')
+    throw new StoredContentCorruptionError('corrupt session log: first line is not a session header')
   }
   return fromHeaderLine(parsed)
 }
@@ -383,7 +383,7 @@ export class SessionLogScanner {
     try {
       decoded = decodeStorageRecord(expandProvenanceFromStorage(JSON.parse(line.toString('utf8'))))
     } catch {
-      this.issue ??= new Error(`corrupt session log: unparsable committed event at line ${this.eventLine}`)
+      this.issue ??= new StoredContentCorruptionError(`corrupt session log: unparsable committed event at line ${this.eventLine}`)
       return
     }
 
@@ -397,7 +397,7 @@ export class SessionLogScanner {
       if (event.seq !== this.events.length) {
         const expected = this.events.length
         this.events.length = rowStart
-        this.issue = new Error(
+        this.issue = new StoredContentCorruptionError(
           `corrupt session log: seq gap in committed region at line ${this.eventLine} `
           + `(expected ${expected}, got ${event.seq})`,
         )
@@ -420,7 +420,7 @@ export class SessionLogScanner {
  */
 export function scanLog(buffer: Buffer): SessionLogScan {
   const headerEnd = buffer.indexOf(0x0A)
-  if (headerEnd === -1) throw new Error('empty or header-less session log')
+  if (headerEnd === -1) throw new StoredContentCorruptionError('empty or header-less session log')
   const scanner = new SessionLogScanner(buffer.subarray(0, headerEnd + 1))
   scanner.write(buffer.subarray(headerEnd + 1))
   return scanner.finish()

@@ -165,8 +165,6 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
         const notices = resumed.deriveMessages().filter(message =>
           message.content.some(block => block.type === 'text' && block.text.includes('damaged and has been repaired')))
         expect(notices).toHaveLength(1)
-        expect(loaded.integrity).toBe('repaired')
-        expect(inspected.integrity).toBe('unknown')
 
         // The closed log is durable and continuable: a fresh append continues at
         // the balanced length (seq 11), and a reload round-trips identically.
@@ -176,7 +174,6 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
         ])
         const reloaded = await persistence.load(m.id)
         expect(reloaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
-        expect(reloaded.integrity).toBe('repaired')
       } finally {
         await dispose()
       }
@@ -217,7 +214,6 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
           'turn/start', 'user/message', 'step/start', 'assistant/message', 'step/end', 'turn/end', // turn 1
           'turn/start', 'step/start', 'assistant/message', 'tool/result', 'step/end', 'turn/end', 'session/repaired', // turn 2
         ])
-        expect(loaded.integrity).toBe('repaired')
         const synthetic = loaded.events.find(e => e.type === 'tool/result')
         expect(synthetic?.type === 'tool/result' && synthetic.data).toMatchObject({
           message: {

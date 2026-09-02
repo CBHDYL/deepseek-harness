@@ -375,7 +375,7 @@ abstract borrowSession(id: SessionId, signal?: AbortSignal): Promise<BorrowedSes
  * @param signal - optional cancellation for queued and backend read work.
  * @returns the header and the stored events with `seq >= fromSeq`.
  */
-abstract readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }>
+abstract readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }>
 
 /**
  * Lightweight listing from metadata, without a full-log parse.

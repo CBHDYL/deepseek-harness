@@ -570,12 +570,13 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
     await appendFile(path, partial)
 
     const loaded = await ctx.sessionPersistence.load(header.id)
-    expect(loaded.events.map(event => event.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+    expect(loaded.events.map(event => event.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     expect(loaded.events[6]).toEqual(openTurn[0])
     expect(loaded.events[7]).toEqual(openTurn[1])
     expect(loaded.events.some(event => event.type === 'assistant/chunk' && event.seq === 8)).toBe(false)
     expect(loaded.events[8]?.type).toBe('step/end')
     expect(loaded.events[9]?.type).toBe('turn/end')
+    expect(loaded.events[10]?.type).toBe('session/repaired')
     expect(warn).toHaveBeenCalledWith('session-persistence-jsonl: session "recover-torn" recovered from a torn tail; incomplete tail bytes were discarded')
 
     const repaired = await readFile(path)
@@ -594,8 +595,15 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
     const committed = await readFile(path)
     await appendFile(path, MAGIC.subarray(0, 2))
 
-    expect((await ctx.sessionPersistence.load(header.id)).events).toEqual(oneTurnLog())
-    expect(await readFile(path)).toEqual(committed)
+    const loaded = (await ctx.sessionPersistence.load(header.id)).events
+    expect(loaded.map(event => event.type)).toEqual([
+      ...oneTurnLog().map(event => event.type), 'session/repaired',
+    ])
+    // The torn frame is truncated and the evidence record appended after the
+    // committed bytes — the committed prefix is byte-for-byte intact.
+    const repaired = await readFile(path)
+    expect(repaired.subarray(0, committed.length)).toEqual(committed)
+    expect(scanZstdFrames(repaired).tornStart).toBeUndefined()
   })
 
   it('recovers complete events when EOF tears only the final frame checksum', async () => {
@@ -613,7 +621,11 @@ describe('JsonlSessionPersistence: default Zstandard encoding', () => {
     await appendFile(path, frame.subarray(0, -1))
 
     const loaded = await ctx.sessionPersistence.load(header.id)
-    expect(loaded.events).toEqual([...oneTurnLog(), ...secondTurn])
+    expect(loaded.events.map(event => event.type)).toEqual([
+      ...oneTurnLog().map(event => event.type),
+      ...secondTurn.map(event => event.type),
+      'session/repaired',
+    ])
     const repaired = await readFile(path)
     expect(scanZstdFrames(repaired).tornStart).toBeUndefined()
     expect(scanLog(await decodeCompleteFrames(repaired)).events).toEqual(loaded.events)

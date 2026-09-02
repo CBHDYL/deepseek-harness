@@ -1,5 +1,4 @@
 import { createUserMessage, createMessage } from '@deepseek-ai/dsh-llm'
-import type { SessionIntegrity } from '@deepseek-ai/dsh-session-persistence'
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { SESSION_FORMAT_VERSION, SessionId } from '@deepseek-ai/dsh-session'
@@ -72,21 +71,21 @@ class TracePersistence extends SessionPersistence {
     return Promise.resolve()
   }
 
-  load(id: SessionIdType): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
+  load(id: SessionIdType): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
     return this.inspect(id)
   }
 
-  inspect(id: SessionIdType): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
+  inspect(id: SessionIdType): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
     TracePersistence.inspectCalls += 1
     if (TracePersistence.inspectFailure !== undefined) return Promise.reject(TracePersistence.inspectFailure)
     const entry = TracePersistence.entries.get(id)
     if (entry === undefined) return Promise.reject(new Error('missing test session'))
-    return Promise.resolve({ ...structuredClone(entry), integrity: 'unknown' as const })
+    return Promise.resolve(structuredClone(entry))
   }
 
-  async readFrom(id: SessionIdType, fromSeq: number): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }> {
+  async readFrom(id: SessionIdType, fromSeq: number): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
     const whole = await this.inspect(id)
-    return { meta: whole.meta, events: whole.events.filter(event => event.seq >= fromSeq), integrity: 'unknown' as const }
+    return { meta: whole.meta, events: whole.events.filter(event => event.seq >= fromSeq) }
   }
 
   list(): Promise<SessionHeader[]> {

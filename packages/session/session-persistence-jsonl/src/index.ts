@@ -17,6 +17,7 @@ import { randomBytes } from 'node:crypto'
 import {
   DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS, MAX_WRITE_BATCH_DELAY_MS,
   SessionPersistence, SessionPersistenceRevision, PersistenceCoordinator, SessionFormatUnsupportedError,
+  StoredContentCorruptionError,
   type BorrowedSessionSource,
   type PersistenceBackend, type SessionLocation, type SessionPersistenceSnapshot,
   type SessionInspection,
@@ -48,7 +49,7 @@ const ZSTD_DECODE_YIELD_INTERVAL_MS = 500
 /** Assert that the independently decodable first frame contains only the header record. */
 function assertZstdHeaderFrame(plaintext: Buffer): void {
   if (plaintext.length === 0 || plaintext.indexOf(0x0A) !== plaintext.length - 1) {
-    throw new Error('corrupt Zstandard session log: first frame is not exactly one header line')
+    throw new StoredContentCorruptionError('corrupt Zstandard session log: first frame is not exactly one header line')
   }
 }
 
@@ -269,7 +270,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     let content: string
     if (this.compression === 'zstd') {
       const { frames } = scanZstdFrames(buffer)
-      if (frames.length === 0) throw new Error('empty or header-less Zstandard session log')
+      if (frames.length === 0) throw new StoredContentCorruptionError('empty or header-less Zstandard session log')
       const decoder = createZstdFrameDecoder()
       const plaintexts: Buffer[] = []
       // The decoder yields views into a reused buffer; copy each frame's
@@ -284,7 +285,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     }
     const meta = parseHeaderMeta(content.split('\n', 1)[0] as string)
     if (meta === undefined || meta.id !== id) {
-      throw new Error(`corrupt session log: invalid header line in "${path}"`)
+      throw new StoredContentCorruptionError(`corrupt session log: invalid header line in "${path}"`)
     }
     // The logical artifact name is `session.jsonl` regardless of the physical
     // encoding suffix (`.jsonl.zstd` marks compression only).
@@ -362,7 +363,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     signal?.throwIfAborted()
     const { frames, tornStart } = scanZstdFrames(buffer)
     signal?.throwIfAborted()
-    if (frames.length === 0) throw new Error('empty or header-less Zstandard session log')
+    if (frames.length === 0) throw new StoredContentCorruptionError('empty or header-less Zstandard session log')
 
     const decoder = createZstdFrameDecoder()
     let yieldDeadline = performance.now() + ZSTD_DECODE_YIELD_INTERVAL_MS
@@ -372,7 +373,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
       const headerFrame = decodedFrames.next()
       signal?.throwIfAborted()
       /* v8 ignore next -- a non-empty structural frame list makes the decoder yield its first frame or throw. */
-      if (headerFrame.done) throw new Error('empty or header-less Zstandard session log')
+      if (headerFrame.done) throw new StoredContentCorruptionError('empty or header-less Zstandard session log')
       assertZstdHeaderFrame(headerFrame.value)
       const scanner = new SessionLogScanner(headerFrame.value)
 
@@ -390,7 +391,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
       signal?.throwIfAborted()
       const complete = scanner.checkpoint()
       if (complete.committedBytes !== complete.inputBytes) {
-        throw new Error('corrupt Zstandard session log: complete frame contains a torn JSONL record')
+        throw new StoredContentCorruptionError('corrupt Zstandard session log: complete frame contains a torn JSONL record')
       }
       if (tornStart === undefined) {
         const prefix = scanner.finish()
@@ -778,7 +779,7 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
         } catch (error) {
           /* v8 ignore next -- decoder failure plus concurrent abort is timing-dependent */
           if (signal?.aborted) signal.throwIfAborted()
-          throw new Error('corrupt Zstandard session log: header frame failed validation', { cause: error })
+          throw new StoredContentCorruptionError('corrupt Zstandard session log: header frame failed validation', { cause: error })
         }
         signal?.throwIfAborted()
         assertZstdHeaderFrame(plaintext)
@@ -832,16 +833,16 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
   ): Promise<void> {
     signal?.throwIfAborted()
     if (expectedId !== undefined && meta.id !== expectedId) {
-      throw new Error(`corrupt session log "${path}": requested id "${expectedId}" does not match header id "${meta.id}"`)
+      throw new StoredContentCorruptionError(`corrupt session log "${path}": requested id "${expectedId}" does not match header id "${meta.id}"`)
     }
     let expectedPath: string
     try {
       expectedPath = logPath(this.root, meta.cwd, meta.id, this.compression)
     } catch (error) {
-      throw new Error(`corrupt session log "${path}": header id cannot name a storage path`, { cause: error })
+      throw new StoredContentCorruptionError(`corrupt session log "${path}": header id cannot name a storage path`, { cause: error })
     }
     if (path !== expectedPath && !await this.sameFile(path, expectedPath, signal)) {
-      throw new Error(`corrupt session log "${path}": header id "${meta.id}" and cwd identify "${expectedPath}"`)
+      throw new StoredContentCorruptionError(`corrupt session log "${path}": header id "${meta.id}" and cwd identify "${expectedPath}"`)
     }
     signal?.throwIfAborted()
   }

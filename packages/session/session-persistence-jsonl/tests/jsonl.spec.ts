@@ -619,24 +619,27 @@ describe('JsonlSessionPersistence: durability and crash semantics', () => {
 
     // load PRESERVES the interrupted turn's real events (turn/start 6, step/start
     // 7) — a turn can be huge, so they must not be truncated — and durably closes
-    // the orphaned turn with synthetic step/end (8) + turn/end {interrupted} (9).
+    // the orphaned turn with synthetic step/end (8) + turn/end {interrupted} (9)
+    // plus the required repair evidence record (10).
     const loaded = await ctx.sessionPersistence.load(m.id)
-    expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
-    const last = loaded.events.at(-1)!
+    expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    const last = loaded.events.at(-2)!
     expect(last.type === 'turn/end' && last.data.reason).toEqual({ kind: 'interrupted' })
+    const repaired = loaded.events.at(-1)!
+    expect(repaired?.type).toBe('session/repaired')
     const stepEnd = loaded.events[8]!
     expect(stepEnd.type).toBe('step/end')
     // the torn seq-8 chunk fragment did not survive
     expect(loaded.events.some(e => e.type === 'assistant/chunk' && e.seq === 8)).toBe(false)
 
-    // The next append continues at seq 10 (the balanced length).
+    // The next append continues at seq 11 (the balanced length, notice included).
     const turn3 = [
-      { type: 'turn/start', seq: 10, time: 11, data: { turn: 3 } },
-      { type: 'turn/end', seq: 11, time: 12, data: { turn: 3, reason: { kind: 'completed' } } },
+      { type: 'turn/start', seq: 11, time: 11, data: { turn: 3 } },
+      { type: 'turn/end', seq: 12, time: 12, data: { turn: 3, reason: { kind: 'completed' } } },
     ] as SessionEvent[]
     await ctx.sessionPersistence.append(m.id, turn3)
     const reloaded = await ctx.sessionPersistence.load(m.id)
-    expect(reloaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+    expect(reloaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
   })
 
   it('committed events are never rewritten: only the crash tail is repaired', async () => {
@@ -646,12 +649,12 @@ describe('JsonlSessionPersistence: durability and crash semantics', () => {
     const before = await readFile(rawLogPath(root, undefined, m.id), 'utf8')
     const committedPrefix = before // the whole committed log
 
-    // A crash tail then a repair-append.
+    // A crash tail then a repair-append (the notice consumes seq 6).
     await writeFile(rawLogPath(root, undefined, m.id), '\n{"partial', { flag: 'a' })
     await ctx.sessionPersistence.load(m.id)
     await ctx.sessionPersistence.append(m.id, [
-      { type: 'turn/start', seq: 6, time: 9, data: { turn: 2 } },
-      { type: 'turn/end', seq: 7, time: 10, data: { turn: 2, reason: { kind: 'completed' } } },
+      { type: 'turn/start', seq: 7, time: 9, data: { turn: 2 } },
+      { type: 'turn/end', seq: 8, time: 10, data: { turn: 2, reason: { kind: 'completed' } } },
     ] as SessionEvent[])
     const after = await readFile(rawLogPath(root, undefined, m.id), 'utf8')
     // the committed prefix is byte-for-byte intact at the head of the file
@@ -1540,11 +1543,12 @@ describe('JsonlSessionPersistence: edge cases', () => {
     await ctx2.plugin(SessionStore)
     await ctx2.plugin(JsonlSessionPersistence, { root, compression: 'none' })
     await ctx2.sessionPersistence.append(m.id, [
-      { type: 'turn/start', seq: 6, time: 9, data: { turn: 2 } },
-      { type: 'turn/end', seq: 7, time: 10, data: { turn: 2, reason: { kind: 'completed' } } },
+      { type: 'turn/start', seq: 7, time: 9, data: { turn: 2 } },
+      { type: 'turn/end', seq: 8, time: 10, data: { turn: 2, reason: { kind: 'completed' } } },
     ] as SessionEvent[])
     const loaded = await ctx2.sessionPersistence.load(m.id)
-    expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
+    expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8])
+    expect(loaded.events[6]?.type).toBe('session/repaired')
     await ctx2.fiber.dispose()
   })
 
@@ -1558,7 +1562,7 @@ describe('JsonlSessionPersistence: edge cases', () => {
       { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
     ] as SessionEvent[])
     const { events } = await ctx.sessionPersistence.load(m.id)
-    expect(events.map(e => e.type)).toEqual(['turn/start', 'turn/end'])
+    expect(events.map(e => e.type)).toEqual(['turn/start', 'turn/end', 'session/repaired'])
     const end = events[1]!
     expect(end.type === 'turn/end' && end.data.reason).toEqual({ kind: 'interrupted' })
   })

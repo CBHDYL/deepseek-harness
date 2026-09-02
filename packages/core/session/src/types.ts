@@ -318,6 +318,22 @@ export interface SessionEventMap {
    * so tolerating concurrent writers needs a signal beyond the log.
    */
   'session/end-seed': Record<string, never>
+  /**
+   * Durable repair evidence (PR-3 port): the ONLY record a torn-tail recovery
+   * transaction appends besides the synthetic closers. Required-on-read —
+   * a build that does not know this event refuses the log rather than
+   * silently reconstructing a shorter history. The message joins the ordered
+   * surface through the standard envelope contract, so the resumed model sees
+   * that earlier history may be incomplete.
+   */
+  'session/repaired': {
+    /** Model-facing repair notice. */
+    message: UserMessage
+    /** Recovery category — currently always `torn-tail`. */
+    reason: string
+    /** Synthetic terminal closers the repair appended after the notice's log position. */
+    synthesizedClosers: number
+  }
 }
 
 /** The appendable event-type keys of {@link SessionEventMap}, plugin-merged extensions included. */
@@ -332,6 +348,7 @@ export type SurfaceEventType =
   | 'user/message'
   | 'assistant/message'
   | 'tool/result'
+  | 'session/repaired'
 
 /**
  * A {@link SessionEvent} that is **on** the ordered surface — its

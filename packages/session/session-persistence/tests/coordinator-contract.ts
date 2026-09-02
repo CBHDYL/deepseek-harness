@@ -1350,7 +1350,7 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
         await ctx.sessionPersistence.append(m.id, oneTurnLog())
         const failure = await ctx.sessionPersistence.load(m.id).then(() => undefined, (error: unknown) => error as Error)
         expect(failure?.name).toBe('SessionFormatUnsupportedError')
-        expect(failure?.message).toMatch(/which this build does not support/)
+        expect(failure?.message).toMatch(/older than the supported v0.*no upgrade path/)
       } finally {
         await fiber.dispose()
         await fix.cleanup()
@@ -1466,7 +1466,6 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
         expect(last.type === 'turn/end' && last.data.reason).toEqual({ kind: 'interrupted' })
         const repaired = loaded.events.at(-1)!
         expect(repaired?.type === 'session/repaired' && repaired.data).toMatchObject({ reason: 'torn-tail' })
-        expect(loaded.integrity).toBe('repaired')
 
         // The repair is durable: the next append continues at the balanced length
         // (seq 11) and a reload round-trips identically.
@@ -1476,7 +1475,6 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
         ])
         const reloaded = await second.ctx.sessionPersistence.load(SessionId('torn'))
         expect(reloaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
-        expect(reloaded.integrity).toBe('repaired')
       } finally {
         await second.fiber.dispose()
         await fix.cleanup()

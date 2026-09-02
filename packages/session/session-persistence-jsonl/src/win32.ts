@@ -28,7 +28,6 @@ interface Win32ErrnoException extends NodeJS.ErrnoException {
 }
 
 const MOVEFILE_WRITE_THROUGH = 0x00000008
-const MOVEFILE_REPLACE_EXISTING = 0x00000001
 const ERROR_FILE_NOT_FOUND = 2
 const ERROR_PATH_NOT_FOUND = 3
 const ERROR_ACCESS_DENIED = 5
@@ -117,23 +116,6 @@ async function assertDirectory(path: string): Promise<boolean> {
 export async function publishNewFileWin32(existing: string, replacement: string): Promise<void> {
   const api = await win32()
   const ok = api.moveFileExW(toNamespacedPath(existing), toNamespacedPath(replacement), MOVEFILE_WRITE_THROUGH)
-  if (ok === 0) throw win32Error('MoveFileExW', api.getLastError(), existing, replacement)
-}
-
-/**
- * Atomically replace `replacement` with the synced `existing` using the
- * Windows write-through rename WITH replacement — the repair commit's
- * publish primitive (the final log already exists; replacement is the point).
- * @param existing - the synced staging path to move.
- * @param replacement - the final path, replaced atomically.
- */
-export async function replaceFileWin32(existing: string, replacement: string): Promise<void> {
-  const api = await win32()
-  const ok = api.moveFileExW(
-    toNamespacedPath(existing),
-    toNamespacedPath(replacement),
-    MOVEFILE_WRITE_THROUGH | MOVEFILE_REPLACE_EXISTING,
-  )
   if (ok === 0) throw win32Error('MoveFileExW', api.getLastError(), existing, replacement)
 }
 

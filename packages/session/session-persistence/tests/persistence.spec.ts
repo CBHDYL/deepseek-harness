@@ -361,6 +361,33 @@ describe('PersistenceCoordinator bounded writes', () => {
     }
   })
 
+  it('a generic backend read failure passes through with its original identity — never re-labeled as content corruption (F1)', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const backend = new ControlledBackend()
+    const failure = new Error('backend unavailable')
+    backend.beforeLoadStored = () => Promise.reject(failure)
+    let coordinator!: PersistenceCoordinator<never>
+    const fiber = await ctx.plugin(Object.assign((inner: Context) => {
+      coordinator = new PersistenceCoordinator(inner, backend, {
+        preparedSessionCacheSize: DEFAULT_PREPARED_SESSION_CACHE_SIZE,
+        writeBatchMaxDelayMs: MAX_WRITE_BATCH_DELAY_MS,
+      })
+    }, { inject: ['sessions'] }))
+
+    try {
+      const observed = await coordinator.load(SessionId('backend-down')).then(() => undefined, (error: unknown) => error)
+      // The SAME error object escapes unwrapped: infrastructure failure keeps
+      // its identity; only backend-declared content corruption wraps.
+      expect(observed).toBe(failure)
+      expect((observed as Error)?.name).toBe('Error')
+      expect((observed as Error)?.name).not.toBe('SessionPersistenceCorruptionError')
+    } finally {
+      await fiber.dispose()
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('starts a follow-up batch for events admitted during an in-flight write', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
@@ -495,7 +522,7 @@ describe('PersistenceCoordinator stored identity', () => {
 
       loadGate.resolve(true)
       const loaded = await loading
-      expect(loaded.events.map(event => event.type)).toEqual(['turn/start', 'turn/end'])
+      expect(loaded.events.map(event => event.type)).toEqual(['turn/start', 'turn/end', 'session/repaired'])
 
       const resumed = ctx.sessions.create(id, { seed: loaded.events, meta: loaded.meta })
       await expect(ctx.sessions.flush(resumed)).resolves.toBe(true)
@@ -1027,7 +1054,7 @@ describe('PersistenceCoordinator session preparations', () => {
 
       first = await coordinator.prepare(id)
       expect(backend.repairAttempts).toBe(1)
-      expect(backend.store.get(id)?.events.map(event => event.type)).toEqual(['turn/start', 'turn/end'])
+      expect(backend.store.get(id)?.events.map(event => event.type)).toEqual(['turn/start', 'turn/end', 'session/repaired'])
       first[Symbol.dispose]()
 
       second = await coordinator.prepare(id)
@@ -1074,6 +1101,7 @@ describe('PersistenceCoordinator session preparations', () => {
       expect(preparation.session.events.map(event => event.type)).toEqual([
         'turn/start',
         'turn/end',
+        'session/repaired',
         'turn/start',
         'turn/end',
         'session/end-seed',

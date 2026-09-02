@@ -6,7 +6,7 @@
  */
 
 import { brandString } from '@deepseek-ai/dsh-brand'
-import type { MessageId, ToolCallId, ToolResultMessage } from '@deepseek-ai/dsh-llm'
+import type { MessageId, ToolCallId, ToolResultMessage, UserMessage } from '@deepseek-ai/dsh-llm'
 import { deepFreeze } from '@deepseek-ai/dsh-util-values'
 import type { SessionEvent } from './types.ts'
 
@@ -131,4 +131,34 @@ export function interruptedTurnClosers(events: readonly SessionEvent[]): Session
   }
   closers.push({ type: 'turn/end', seq: seq++, time, data: { turn: openTurn, reason: { kind: 'interrupted' } } })
   return closers
+}
+
+/**
+ * Build the durable repair-evidence event one recovery transaction appends,
+ * after its synthetic closers (PR-3 port). Only a committed repair writes it —
+ * a clean log never does, and a failed repair commit never publishes it. The
+ * notice joins the ordered surface through the standard envelope contract, so
+ * the resumed model reads that earlier history may be incomplete.
+ * @param balanced - the balanced inspection events (stored prefix + closers).
+ * @param closers - the synthetic terminal closers the same transaction appends.
+ * @returns one `session/repaired` event continuing `balanced`'s seq and time.
+ */
+export function sessionRepairedEvent(balanced: readonly SessionEvent[], closers: readonly SessionEvent[]): SessionEvent {
+  const last = balanced.at(-1)
+  const text = closers.length > 0
+    ? 'The session history was damaged and has been repaired: the interrupted turn was closed with synthetic terminal events. Treat earlier history as possibly incomplete.'
+    : 'The session history was damaged and has been repaired: an incomplete tail was discarded. Treat earlier history as possibly incomplete.'
+  const message: UserMessage = deepFreeze({
+    id: brandString<MessageId>(`session-repaired-${balanced.length}`),
+    role: 'user',
+    source: { kind: 'plugin', plugin: 'session-persistence' },
+    content: [{ type: 'text', text }],
+  })
+  return {
+    type: 'session/repaired',
+    seq: balanced.length,
+    time: last?.time ?? Date.now(),
+    data: { message, reason: 'torn-tail', synthesizedClosers: closers.length },
+    surfaceOp: 'append' as const,
+  }
 }
