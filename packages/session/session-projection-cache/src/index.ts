@@ -57,12 +57,37 @@ export const Config: z<Config> = z.object({
   writeIntervalMs: z.natural().min(1).required(),
 })
 
-/** Per-session write-behind bookkeeping (live sessions only; dropped at retire). */
+/** Bounded automatic retry budget per session after failed mandatory writes. */
+const MAX_WRITE_RETRIES = 3
+
+/** Per-session dirty bookkeeping shared by every write state. */
 interface DirtyState {
   /** Committed events since the last durable write. */
   pending: number
   /** Interval trigger armed at the first dirty event after a clean write. */
   timer: ReturnType<typeof setTimeout> | undefined
+}
+
+/**
+ * Per-session write-behind bookkeeping (live sessions only; dropped at
+ * retire). `tail` is the single-flight chain: every write for one session
+ * runs as one ordered task, so concurrent triggers can never interleave two
+ * checkpoint writes for the same session. `queued` marks a task whose
+ * checkpoint cut is NOT yet taken (later non-final triggers coalesce onto
+ * it); `detached` blocks new live work once the ordered final task owns the
+ * last cut.
+ */
+interface SessionWriteState extends DirtyState {
+  /** Promise settling after the last enqueued task (never rejects). */
+  tail: Promise<void>
+  /** A task is queued but has not taken its checkpoint cut yet. */
+  queued: boolean
+  /** The session detached: the final task owns the last checkpoint; no new live writes enqueue. */
+  detached: boolean
+  /** Consecutive failed write attempts since the last success. */
+  failures: number
+  /** Remaining automatic retry budget (restored by every successful write). */
+  retries: number
 }
 
 /**
@@ -80,7 +105,7 @@ export class SessionProjectionCache extends Service {
   static Config: z<Config> = Config
 
   private table?: KvTable<SessionId, CheckpointRecord>
-  private readonly dirty = new Map<Session, DirtyState>()
+  private readonly dirty = new Map<Session, SessionWriteState>()
 
   constructor(ctx: Context, public config: Config) {
     super(ctx, 'sessionProjectionCache')
@@ -172,15 +197,27 @@ export class SessionProjectionCache extends Service {
   /**
    * Durably checkpoint one live session NOW (all mandatory points call
    * this; tests and carriers may too). The registry cut is snapshotted at
-   * this boundary (states are live references), then the session's record is
-   * replaced on the domain's write chain. NOT fail-soft — callers on the
-   * fail-soft paths contain it.
+   * this task's turn, then the session's record is replaced on the domain's
+   * write chain. NOT fail-soft — callers on the fail-soft paths contain it.
    * @param session - the live session to checkpoint.
+   * @param _trigger - the trigger name for diagnostics (unused: the enqueueing caller owns the failure log).
+   * @param final - the ordered detach task: skips the post-flush lifecycle
+   *   recheck (the session is already detached; the last cut must land).
+   * @param captured - a cut snapshotted at detach time (the disposal cascade
+   *   unregisters projection units while the task is queued, so a task-time
+   *   checkpoint would be empty).
    * @returns resolution after durability and event emission.
    */
-  async write(session: Session): Promise<void> {
-    const rows = this.ctx.sessionProjections.checkpoint(session)
-    this.markClean(session)
+  async write(session: Session, _trigger?: string, final: boolean = false, captured?: ProjectionCheckpoint): Promise<void> {
+    // The checkpoint cut snapshots the LIVE registry state at this ordered
+    // task's turn: a cut taken later is never older than an earlier task's
+    // cut, so the last write in the tail always carries the newest state.
+    const state = this.dirty.get(session)
+    const rows = captured ?? this.ctx.sessionProjections.checkpoint(session)
+    // The cut covers every event committed up to this task's turn. Only
+    // those pending events become durable when this write succeeds; events
+    // committed during the flush stay pending for the next task.
+    const covered = state?.pending ?? 0
     // Durability barrier: the checkpoint cut was taken above, so flushing
     // AFTER it guarantees every event inside the cut is durably logged
     // before the cache row lands — a crash can leave the cache behind the
@@ -188,8 +225,25 @@ export class SessionProjectionCache extends Service {
     // from events no stored log contains). At detach the store entry is
     // already gone; persistence's own retirement drain covers that path and
     // any residual overreach is caught by the cold read's anchored floor.
-    if (this.ctx.sessions.get(session.id) === session) await this.ctx.sessions.flush(session)
+    const liveBeforeFlush = this.ctx.sessions.get(session.id) === session
+    if (liveBeforeFlush) await this.ctx.sessions.flush(session)
+    // Lifecycle recheck AFTER the await gap: a non-final write whose session
+    // detached while it flushed must not publish a stale mid-flight
+    // checkpoint after the final task's cut — the ordered final (detach)
+    // task owns the last durable cut, so this task stands down.
+    if (!final && this.ctx.sessions.get(session.id) !== session) return
+    // An empty cut names no registered units. Writing it would only REPLACE
+    // a good row with an empty one (the captured-final fallback after the
+    // registry unloaded at teardown): skip the put instead — absent beats
+    // wiped, and the stale row is ver-discarded or tail-corrected on read.
+    if (Object.keys(rows).length === 0) return
     await this.put(session.id, identityOf(session.header), rows)
+    // Only a SUCCESSFUL durability barrier may retire dirty bookkeeping:
+    // clearing it before the flush/put would leave a failed mandatory
+    // checkpoint permanently stale (no retry trigger, no later event). The
+    // final task's bookkeeping is dropped by the disposal handler after the
+    // task settles.
+    if (!final && state !== undefined) this.markClean(session, covered)
   }
 
   /**
@@ -220,20 +274,32 @@ export class SessionProjectionCache extends Service {
   private installWritePath(): void {
     // Every committed event advances the dirty counter; turn/end is a
     // mandatory point (the durable value most reads want is the turn-final
-    // one), count/interval throttle the in-turn stream.
+    // one), count/interval throttle the in-turn stream. Every trigger enters
+    // the SAME per-session single-flight tail: concurrent triggers can never
+    // run two checkpoints for one session at once, and each queued write
+    // captures the newest registry cut when its turn arrives (a later cut
+    // never loses to an earlier one).
     this.ctx.on('session/event', (session: Session, event: SessionEvent) => {
+      // A detached session emits no further live events; if one arrives
+      // anyway, its state entry is already deleted and re-creating it here
+      // would resurrect bookkeeping for a retired session. The final task
+      // already owns the last cut.
+      if (this.ctx.sessions.get(session.id) !== session) return
       if (event.type === 'turn/end') {
         void this.flushSoft(session, 'turn/end')
         return
       }
-      const state = this.dirty.get(session) ?? { pending: 0, timer: undefined }
-      this.dirty.set(session, state)
+      const state = this.stateFor(session)
       state.pending += 1
       if (state.pending >= this.config.writeEveryEvents) {
         void this.flushSoft(session, 'count threshold')
         return
       }
       state.timer ??= setTimeout(() => {
+        // Vacate the slot before flushing: a successful write can leave
+        // mid-flight events dirty, and markClean re-arms the interval only
+        // when the slot is free (a stale fired id would strand them).
+        state.timer = undefined
         void this.flushSoft(session, 'interval')
       }, this.config.writeIntervalMs)
     })
@@ -247,27 +313,110 @@ export class SessionProjectionCache extends Service {
       void this.flushSoft(session, 'create')
     })
 
-    // Detach (the live-to-cold moment): the final mandatory point. After
-    // this write the cold-read ladder serves the session from the cache.
-    // flushSoft's synchronous prefix reads and resets the dirty state, so
-    // dropping it (timer already cleared by markClean) right after is safe.
+    // Detach (the live-to-cold moment): the final mandatory point. The final
+    // checkpoint is an ORDERED task on the same tail (it runs after any
+    // queued/in-flight write, so the last durable cut is the newest), and the
+    // dirty bookkeeping is dropped only after that task settles — a failed
+    // final write still cleans up, but never before its write actually ran.
+    // The final cut is captured SYNCHRONOUSLY here: during the disposal
+    // cascade the projection units unregister concurrently with this queue
+    // draining, so a task-time checkpoint would read an empty registry and
+    // wipe the last good row with an empty one.
     this.ctx.on('session/disposed', (session: Session) => {
-      void this.flushSoft(session, 'detach')
-      this.markClean(session)
-      this.dirty.delete(session)
+      let finalCheckpoint: ProjectionCheckpoint | undefined
+      try {
+        finalCheckpoint = this.ctx.sessionProjections.checkpoint(session)
+      } catch (error) {
+        // checkpoint is total for contract-following units; a throwing one
+        // must not break the disposal handler — the task falls back to a
+        // task-time cut.
+        this.ctx.logger.warn(`session projection cache: detach checkpoint capture for "${session.id}" failed: ${String(error)}`)
+      }
+      void this.enqueue(session, 'detach', { final: true, checkpoint: finalCheckpoint }).finally(() => {
+        const state = this.dirty.get(session)
+        if (state?.timer !== undefined) clearTimeout(state.timer)
+        this.dirty.delete(session)
+      })
     })
 
     // With the plugin (their sessions outlive the cache): clear pending
-    // timers and stop accepting new work. The domain-close effect registered
-    // in init runs after this disposer and drains already-queued writes, so
-    // a late flush can never land after disposal (it rejects `closed` into
-    // flushSoft's warning instead).
-    this.ctx.effect(() => () => {
+    // timers, drain every per-session tail while the domain is still open
+    // (the domain-close effect registered earlier in init runs after this
+    // disposer, so a late flush can never land after disposal), and drop the
+    // bookkeeping.
+    this.ctx.effect(() => async () => {
       for (const state of this.dirty.values()) {
         if (state.timer !== undefined) clearTimeout(state.timer)
       }
+      await Promise.all([...this.dirty.values()].map(state => state.tail))
       this.dirty.clear()
     }, 'sessionProjectionCache.timers')
+  }
+
+  /** Fetch or create one session's dirty bookkeeping (write-tail fields initialized). */
+  private stateFor(session: Session): SessionWriteState {
+    const existing = this.dirty.get(session)
+    if (existing !== undefined) return existing
+    const state: SessionWriteState = {
+      pending: 0, timer: undefined, failures: 0, retries: MAX_WRITE_RETRIES,
+      tail: Promise.resolve(), queued: false, detached: false,
+    }
+    this.dirty.set(session, state)
+    return state
+  }
+
+  /**
+   * Enqueue one write onto the session's single-flight tail. Coalescing: when
+   * a write is queued but has NOT yet taken its checkpoint cut, later
+   * non-final triggers ride the same task (that write snapshots the newest
+   * cut when it runs), so trigger storms cannot grow the queue or lose an
+   * update. A trigger that arrives while a task is already past its cut
+   * enqueues a follow-up task instead — its events are not in the running
+   * task's cut. The final (detach) task is never coalesced away: it always
+   * runs last, after every prior write. A rejected tail never poisons the
+   * chain — the next task starts from the settled state regardless of how
+   * the previous one settled.
+   */
+  private enqueue(
+    session: Session,
+    trigger: string,
+    options: { final?: boolean; checkpoint?: ProjectionCheckpoint | undefined } = {},
+  ): Promise<void> {
+    const state = this.stateFor(session)
+    if (state.detached && options.final !== true) return state.tail
+    if (options.final === true) state.detached = true
+    // `queued` means a task whose checkpoint cut is NOT yet taken: safe to
+    // coalesce onto. The running task clears it when it takes its cut, so a
+    // trigger arriving mid-flight schedules a follow-up task instead of
+    // silently riding a cut that can never include its events.
+    if (options.final !== true && state.queued) return state.tail
+
+    state.queued = true
+    const run = async (): Promise<void> => {
+      state.queued = false // the cut is taken inside write(): no more coalescing onto this task
+      try {
+        await this.write(session, trigger, options.final === true, options.checkpoint)
+      } catch (error) {
+        // Fail-soft, contained per task: the failure is logged and the
+        // automatic retry budget re-arms on the dirty counter, but the next
+        // legitimate write starts from the settled tail, never a rejected one.
+        this.ctx.logger.warn(`session projection cache: ${trigger} write for "${session.id}" failed (cache stays stale): ${String(error)}`)
+        state.failures += 1
+        if (state.retries > 0 && options.final !== true && state.pending > 0) {
+          state.retries -= 1
+          if (state.timer !== undefined) clearTimeout(state.timer)
+          state.timer = setTimeout(() => {
+            state.timer = undefined
+            void this.flushSoft(session, 'retry')
+          }, this.config.writeIntervalMs)
+        }
+      }
+    }
+    // Tail reset: `then(run, run)` schedules the next task after the
+    // previous one settles either way — a rejection cannot strand the tail.
+    const next = state.tail.then(run, run)
+    state.tail = next.catch(() => {})
+    return next
   }
 
   /**
@@ -276,22 +425,42 @@ export class SessionProjectionCache extends Service {
    * the counter) and the mandatory points write unconditionally.
    */
   private async flushSoft(session: Session, trigger: string): Promise<void> {
-    try {
-      await this.write(session)
-    } catch (error) {
-      this.ctx.logger.warn(`session projection cache: ${trigger} write for "${session.id}" failed (cache stays stale): ${String(error)}`)
-    }
+    await this.enqueue(session, trigger)
   }
 
-  /** Reset one session's dirty bookkeeping (its checkpoint is being written). */
-  private markClean(session: Session): void {
+  /**
+   * Retire one successful write's dirty bookkeeping. Only the `covered`
+   * pending events folded into the settled checkpoint are retired: events
+   * committed during the write's flush remain pending, and the trigger that
+   * counted them has already scheduled (or will schedule) a follow-up write
+   * covering them. A successful checkpoint restores the retry budget, so one
+   * transient failure does not leave a session without automatic retries
+   * forever. The interval timer is cleared only once nothing remains dirty.
+   */
+  private markClean(session: Session, covered: number): void {
     const state = this.dirty.get(session)
     if (state === undefined) return
-    state.pending = 0
-    if (state.timer !== undefined) {
+    state.pending = Math.max(0, state.pending - covered)
+    state.failures = 0
+    state.retries = MAX_WRITE_RETRIES
+    if (state.pending === 0 && state.timer !== undefined) {
       clearTimeout(state.timer)
       state.timer = undefined
     }
+  }
+
+  /**
+   * Write-behind health for one live session: pending count (0 = clean),
+   * consecutive failures, and remaining automatic retries. A nonzero
+   * `failures` with `pending > 0` means a checkpoint is stale and being
+   * retried.
+   * @param session - the live session to inspect.
+   * @returns the write-behind health for that session.
+   */
+  dirtyStats(session: Session): { pending: number; failures: number; retriesLeft: number } {
+    const state = this.dirty.get(session)
+    if (state === undefined) return { pending: 0, failures: 0, retriesLeft: MAX_WRITE_RETRIES }
+    return { pending: state.pending, failures: state.failures, retriesLeft: state.retries }
   }
 
   /** Replace one session's stored record with its log identity and a detached snapshot of `rows`. */

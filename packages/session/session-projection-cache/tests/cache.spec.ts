@@ -151,12 +151,12 @@ describe('SessionProjectionCache write policy', () => {
   it('writes a durable checkpoint at turn/end (mandatory point)', async () => {
     const { ctx, root } = await harness()
     const session = ctx.sessions.create(SessionId('turn-end'))
-    mark(session, ['a'])
-    // Creation already wrote the init cut; the mark is throttled, so the
-    // stored row is still the creation-time cut (no marks folded).
+    // The creation write lands first (single-flight: the ordered task takes
+    // its cut at its turn — before any later event arrives, the init cut).
     await vi.waitFor(async () => {
       expect((await storedRows(root, session.id))?.['cache-test/marks']?.seq).toBe(-1)
     }, { timeout: 5_000 })
+    mark(session, ['a'])
     const end = endTurn(session)
     await vi.waitFor(async () => {
       expect((await storedRows(root, session.id))?.['cache-test/marks'])
@@ -197,6 +197,11 @@ describe('SessionProjectionCache write policy', () => {
   it('flushes when the in-turn event count reaches the configured threshold', async () => {
     const { ctx, root } = await harness({ config: { writeEveryEvents: 3, writeIntervalMs: 60_000 } })
     const session = ctx.sessions.create(SessionId('count'))
+    // The creation write lands before any mark arrives (single-flight task
+    // takes its cut at its turn).
+    await vi.waitFor(async () => {
+      expect((await storedRows(root, session.id))?.['cache-test/marks']?.seq).toBe(-1)
+    }, { timeout: 5_000 })
     mark(session, ['1'])
     mark(session, ['2'])
     await vi.waitFor(async () => {
@@ -210,26 +215,36 @@ describe('SessionProjectionCache write policy', () => {
 
   it('retains dirty state and retries after a failed mandatory write (no silent stale checkpoint)', async () => {
     vi.useFakeTimers()
-    const { ctx, pool } = await harness({ config: { writeEveryEvents: 100, writeIntervalMs: 1000 } })
+    const { ctx, root } = await harness({ config: { writeEveryEvents: 100, writeIntervalMs: 1000 } })
+    // The store flush is the write's durability barrier; mock it so the fake
+    // clock cannot strand the chain, then fail exactly one later call.
+    const flush = vi.spyOn(ctx.sessions, 'flush').mockResolvedValue(true)
     const session = ctx.sessions.create(SessionId('retry'))
+    await vi.waitFor(async () => {
+      expect((await storedRows(root, session.id))?.['cache-test/marks']?.seq).toBe(-1)
+    }, { timeout: 5_000 }) // the creation write settles first (clean baseline)
+    flush.mockClear()
     mark(session, ['a'])
     // Force the mandatory write to fail once: flush rejects before the put.
-    const flush = vi.spyOn(ctx.sessions, 'flush').mockRejectedValueOnce(new Error('storage hiccup'))
+    flush.mockRejectedValueOnce(new Error('storage hiccup'))
     endTurn(session)
     await vi.advanceTimersByTimeAsync(0)
 
-    // Dirty state is retained (pending > 0) and the failure is counted.
+    // The failure is recorded synchronously in the task's catch (before any
+    // I/O): dirty state retained and the failure counted.
     const afterFailure = ctx.sessionProjectionCache.dirtyStats(session)
     expect(afterFailure.pending).toBeGreaterThan(0)
     expect(afterFailure.failures).toBeGreaterThanOrEqual(1)
-    expect(storedRows(pool, session.id)).toBeUndefined() // nothing durable yet
+    // Nothing durable beyond the creation cut: the mark never landed.
+    expect((await storedRows(root, session.id))?.['cache-test/marks']?.seq).toBe(-1)
 
     // The bounded retry re-arms the interval and succeeds on the next tick.
     await vi.advanceTimersByTimeAsync(1000)
-    await vi.advanceTimersByTimeAsync(0)
-    expect(flush).toHaveBeenCalledTimes(2) // attempt 1 rejected, retry succeeded
-    expect(storedRows(pool, session.id)?.['cache-test/marks']?.val).toEqual({ marks: ['a'] })
-    expect(ctx.sessionProjectionCache.dirtyStats(session).pending).toBe(0)
+    await vi.waitFor(async () => {
+      expect((await storedRows(root, session.id))?.['cache-test/marks']?.val).toEqual({ marks: ['a'] })
+      expect(ctx.sessionProjectionCache.dirtyStats(session).pending).toBe(0)
+    }, { timeout: 5_000 })
+    expect(flush.mock.calls.length).toBeGreaterThanOrEqual(2) // attempt 1 rejected, retry succeeded
     vi.useRealTimers()
   })
 
@@ -238,12 +253,13 @@ describe('SessionProjectionCache write policy', () => {
     const write = vi.spyOn(cache, 'write').mockResolvedValue()
     vi.useFakeTimers()
     const session = ctx.sessions.create(SessionId('interval'))
+    await vi.advanceTimersByTimeAsync(0) // the creation task's mocked write call settles
     write.mockClear()
     mark(session, ['slow'])
     await vi.advanceTimersByTimeAsync(19)
     expect(write).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
-    expect(write).toHaveBeenCalledExactlyOnceWith(session)
+    expect(write).toHaveBeenCalledExactlyOnceWith(session, 'interval', false, undefined)
   })
 
   it('write() on a never-dirty session checkpoints directly and rejects a non-JSON unit state', async () => {
@@ -268,15 +284,16 @@ describe('SessionProjectionCache write policy', () => {
     const { ctx, root, fiber } = await harness({ config: { writeEveryEvents: 100, writeIntervalMs: 5000 } })
     const armed = ctx.sessions.create(SessionId('armed'))
     const cleaned = ctx.sessions.create(SessionId('cleaned'))
-    mark(armed, ['pending']) // timer armed, no write yet
+    mark(armed, ['pending']) // timer armed; the coalesced creation task folds the newest cut
     mark(cleaned, ['done'])
     endTurn(cleaned) // mandatory write; markClean leaves {pending: 0, timer: undefined} in the map
     await vi.advanceTimersByTimeAsync(0)
     await fiber.dispose()
     // The armed timer died with the plugin: advancing time writes nothing.
+    const landed = await storedRows(root, armed.id)
+    expect(landed?.['cache-test/marks']).toEqual({ ver: 1, seq: 0, val: { marks: ['pending'] } })
     await vi.advanceTimersByTimeAsync(10_000)
-    // Only the creation cut exists: the armed mark never wrote.
-    expect((await storedRows(root, armed.id))?.['cache-test/marks']?.seq).toBe(-1)
+    expect(JSON.stringify(await storedRows(root, armed.id))).toBe(JSON.stringify(landed))
   })
 
   it('contains a durable write failure: logs a warning, event path unharmed, next write self-heals', async () => {
@@ -299,11 +316,11 @@ describe('SessionProjectionCache write policy', () => {
     const session = ctx.sessions.create(SessionId('fail-soft'))
     mark(session, ['x'])
     endTurn(session)
-    // The failed creation/turn-end writes are fire-and-forget: wait for the
-    // warn (the write actually failed), then assert no row landed — the
-    // property under test is that a failed write leaves no partial row.
+    // The failed write is fire-and-forget: poll for the warn instead of
+    // assuming a fixed settle window (slow runners exceed it). The failing
+    // task's trigger is whichever mandatory point coalesced first.
     await vi.waitFor(() => {
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('turn/end write for "fail-soft" failed'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('"fail-soft" failed'))
     }, { timeout: 5_000 })
     await vi.waitFor(async () => {
       expect(await storedRows(root, session.id)).toBeUndefined()
