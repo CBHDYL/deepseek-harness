@@ -13,7 +13,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { createToolResultMessage, type ToolCallBlock } from '@deepseek-ai/dsh-llm'
-import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
+import type { Session, SessionSeq, UserMessage } from '@deepseek-ai/dsh-session'
 import { TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER, type ToolExecutionInput, type ToolExecutionMode, type ToolExecutionResult, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 
@@ -135,7 +135,7 @@ async function runGroup(
   const { maxParallelToolCalls } = ctx.agentLoop.config
   const slots: (Slot | undefined)[] = group.map(() => undefined)
   // Started slots retain their `tool/call` seq so the result can cite it.
-  const callSeqs: number[] = group.map(() => -1)
+  const callSeqs: Array<SessionSeq | undefined> = group.map(() => undefined)
   let nextToStart = 0
   let committed = 0
   let started = 0
@@ -249,7 +249,7 @@ async function runGroup(
       // close, and the result re-cites the row's own operationId.
       const callSeq = callSeqs[committed]
       if (callSeq !== undefined && callSeq >= 0) {
-        const row = session.events[callSeq]
+        const row = session.eventAt(callSeq)
         const operationId = row?.type === 'tool/call' ? (row.data as { operationId?: string }).operationId : undefined
         appendToolResult(session, turn, step, call.block, {
           content: [{ type: 'text', text: 'Error: tool execution outcome unknown (internal scheduler failure)' }],
@@ -287,7 +287,7 @@ function appendSkippedToolCall(session: Session, turn: number, step: number, blo
 }
 
 /** Append a started call and return the event seq that its result must cite. */
-function appendToolCall(session: Session, turn: number, step: number, block: ToolCallBlock, operationId?: string): number {
+function appendToolCall(session: Session, turn: number, step: number, block: ToolCallBlock, operationId?: string): SessionSeq {
   const event = session.append('tool/call', {
     turn,
     step,
@@ -306,7 +306,7 @@ function appendToolResult(
   step: number,
   block: ToolCallBlock,
   result: ToolExecutionResult,
-  callSeq: number,
+  callSeq: SessionSeq,
   operationId?: string,
 ): void {
   const message = createToolResultMessage({

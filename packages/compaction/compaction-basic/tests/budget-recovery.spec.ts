@@ -20,9 +20,10 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
@@ -53,20 +54,20 @@ const SUMMARIZATION_ALLOWANCE = 512
 function oversizedSeed(): SessionEvent[] {
   const events: SessionEvent[] = []
   let seq = 0
-  events.push({ type: 'turn/start', seq: seq++, time: seq, data: { turn: 1 } })
+  events.push({ type: 'turn/start', seq: SessionSeq(seq++), time: seq, data: { turn: 1 } })
   events.push({
-    type: 'request/header', seq: seq++, time: seq,
+    type: 'request/header', seq: SessionSeq(seq++), time: seq,
     data: { header: { config: { provider: 'mock', model: 'mock' } }, reason: 'initial' },
   })
   for (let i = 0; i < 4; i++) {
     events.push({
-      type: 'user/message', seq: seq++, time: seq,
+      type: 'user/message', seq: SessionSeq(seq++), time: seq,
       data: createUserMessage({ content: [{ type: 'text', text: 'x'.repeat(2048) }], source: { kind: 'user' } }),
       surfaceOp: 'append',
     })
-    events.push({ type: 'step/start', seq: seq++, time: seq, data: { turn: 1, step: i + 1 } })
+    events.push({ type: 'step/start', seq: SessionSeq(seq++), time: seq, data: { turn: 1, step: i + 1 } })
     events.push({
-      type: 'assistant/message', seq: seq++, time: seq,
+      type: 'assistant/message', seq: SessionSeq(seq++), time: seq,
       data: {
         turn: 1,
         step: i + 1,
@@ -78,9 +79,9 @@ function oversizedSeed(): SessionEvent[] {
       },
       surfaceOp: 'append',
     })
-    events.push({ type: 'step/end', seq: seq++, time: seq, data: { turn: 1, step: i + 1 } })
+    events.push({ type: 'step/end', seq: SessionSeq(seq++), time: seq, data: { turn: 1, step: i + 1 } })
   }
-  events.push({ type: 'turn/end', seq: seq++, time: seq, data: { turn: 1, reason: { kind: 'completed' } } })
+  events.push({ type: 'turn/end', seq: SessionSeq(seq++), time: seq, data: { turn: 1, reason: { kind: 'completed' } } })
   return events
 }
 
@@ -101,6 +102,7 @@ describe('P6-16 / E30 compaction cannot bypass the request budget', () => {
     const ctx = new Context()
     contexts.push(ctx)
     await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(TokenMeter)
     await ctx.plugin(AgentLoop, { agents: [] })
     // The compaction reserve is tiny on purpose: the auxiliary summarizer call
@@ -152,9 +154,9 @@ describe('P6-16 / E30 compaction cannot bypass the request budget', () => {
     expect(adapter.requests.some(request => request.purpose === 'compaction')).toBe(false)
     // No summary landed: the surface was not replaced without a successful summary.
     expect(agent.session.surface.replaceGeneration).toBe(surfaceBefore)
-    expect(agent.session.events.some(event => event.type === 'compaction/summary')).toBe(false)
+    expect(agent.session.snapshotEvents().some(event => event.type === 'compaction/summary')).toBe(false)
     // The typed request rejection survived the failed recovery.
-    const end = agent.session.events.filter(event => event.type === 'turn/end').at(-1)
+    const end = agent.session.snapshotEvents().filter(event => event.type === 'turn/end').at(-1)
     expect(end?.type === 'turn/end' && end.data.reason.kind === 'error' && end.data.reason.error.code).toBe('PROMPT_BUDGET_EXCEEDED')
   })
 })

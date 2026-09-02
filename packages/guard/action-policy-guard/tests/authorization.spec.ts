@@ -15,6 +15,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
@@ -35,6 +36,7 @@ interface Harness {
 async function harness(): Promise<Harness> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(ApprovalService, {})
   await ctx.plugin(ActionPolicyGuard, { mode: 'enforce' })
@@ -57,8 +59,8 @@ async function harness(): Promise<Harness> {
     ctx,
     agent,
     ran: () => ran,
-    asked: () => agent.session.events.filter(event => event.type === 'approval/asked'),
-    decided: () => agent.session.events.filter(event => event.type === 'approval/decided'),
+    asked: () => agent.session.snapshotEvents().filter(event => event.type === 'approval/asked'),
+    decided: () => agent.session.snapshotEvents().filter(event => event.type === 'approval/decided'),
   }
 }
 
@@ -126,7 +128,7 @@ describe('execution-attempt authorization', () => {
     await waitForIdle(h.ctx, h.agent)
     expect(h.ran()).toEqual([])
     expect(h.asked()).toHaveLength(0)
-    const result = h.agent.session.events.find(event => event.type === 'tool/result')
+    const result = h.agent.session.snapshotEvents().find(event => event.type === 'tool/result')
     const text = result?.type === 'tool/result' && result.data.message.content[0]?.type === 'tool-result'
       ? (result.data.message.content[0].content[0]?.type === 'text' ? result.data.message.content[0].content[0].text : '')
       : ''
@@ -201,14 +203,14 @@ describe('execution-attempt authorization', () => {
     await waitForIdle(h.ctx, h.agent)
     const asked = h.asked()[0]?.data as { operationId?: string }
     const decided = h.decided()[0]?.data as { operationId?: string }
-    const call = h.agent.session.events.find(event => event.type === 'tool/call')
-    const result = h.agent.session.events.find(event => event.type === 'tool/result')
+    const call = h.agent.session.snapshotEvents().find(event => event.type === 'tool/call')
+    const result = h.agent.session.snapshotEvents().find(event => event.type === 'tool/result')
     expect(asked?.operationId).toBeTruthy()
     expect(decided?.operationId).toBe(asked?.operationId)
     expect(call?.type === 'tool/call' && call.data.operationId).toBe(asked?.operationId)
     expect(result?.type === 'tool/result' && result.data.operationId).toBe(asked?.operationId)
     // Exactly one terminal disposition per allowed-once decision.
-    expect(h.agent.session.events.filter(event => event.type === 'tool/result')).toHaveLength(1)
+    expect(h.agent.session.snapshotEvents().filter(event => event.type === 'tool/result')).toHaveLength(1)
   })
 
   it('merges the sandbox escalation dimension into the single execution approval (no second human question)', async () => {
@@ -300,6 +302,7 @@ describe('execution-attempt authorization', () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-cross-b-'))
     const ctx = new Context()
     await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
     await ctx.plugin(AgentLoop, { agents: [] })
     await ctx.plugin(ApprovalService, {})
@@ -320,8 +323,8 @@ describe('execution-attempt authorization', () => {
     const agent = ctx.agentLoop.create(SessionId('cross-b'), { provider: 'mock', model: 'mock' })
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
-    const call = agent.session.events.find(event => event.type === 'tool/call')
-    const result = agent.session.events.find(event => event.type === 'tool/result')
+    const call = agent.session.snapshotEvents().find(event => event.type === 'tool/call')
+    const result = agent.session.snapshotEvents().find(event => event.type === 'tool/result')
     const operationId = call?.type === 'tool/call' ? call.data.operationId : undefined
     expect(operationId).toBeTruthy()
     expect(result?.type === 'tool/result' && result.data.operationId).toBe(operationId)

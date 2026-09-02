@@ -68,10 +68,13 @@ describe('ACP machine permission policy', () => {
   it('delegates a same-id foreign agent', async () => {
     harness = await makeBridgeHarness()
     const request = await ownedRequest()
+    const events = [{ type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } }]
     const foreign = {
       session: {
         id: request.agent.session.id,
-        events: [{ type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } }],
+        seq: events.length,
+        eventAt: (seq: number) => events[seq],
+        snapshotEvents: () => events,
         append: () => ({}),
       },
     } as unknown as Agent
@@ -106,7 +109,7 @@ describe('ACP machine permission policy', () => {
         { optionId: 'reject-once', kind: 'reject_once' },
       ],
     })
-    expect(request.agent.session.events.find(event => event.type === 'approval/asked')).toMatchObject({
+    expect(request.agent.session.snapshotEvents().find(event => event.type === 'approval/asked')).toMatchObject({
       data: { reason: 'escalate sandbox to danger-full-access: need wider' },
     })
   })

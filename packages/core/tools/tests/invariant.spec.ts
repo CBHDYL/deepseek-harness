@@ -160,7 +160,7 @@ describe('tool-pipeline invariants', () => {
       name: 'echo',
       arguments: {},
     })).toThrow(/parentCallId child does not belong to rootCallId another-root/)
-    expect(session.events.some(event => event.type === 'tool/code-dispatch-start'
+    expect(session.snapshotEvents().some(event => event.type === 'tool/code-dispatch-start'
       && String(event.data.subCallId) === 'invalid-grandchild')).toBe(false)
   })
 
@@ -263,8 +263,8 @@ describe('tool-pipeline invariants', () => {
       message: createToolResultMessage({ callId: ToolCallId('call-1'), content: [], isError: false }),
       operationId: 'op_1',
     }, { surfaceOp: 'append' })
-    const call = session.events.find(event => event.type === 'tool/call')
-    const result = session.events.find(event => event.type === 'tool/result')
+    const call = session.snapshotEvents().find(event => event.type === 'tool/call')
+    const result = session.snapshotEvents().find(event => event.type === 'tool/result')
     expect(call?.data.operationId).toBe(result?.data.operationId)
   })
 
@@ -274,8 +274,8 @@ describe('tool-pipeline invariants', () => {
     session.append('turn/start', { turn: 1 })
     session.append('approval/asked', { id: 'approval-1' as ApprovalRequestId, toolName: 'echo', operationId: 'op_1' })
     session.append('approval/decided', { id: 'approval-1' as ApprovalRequestId, outcome: 'rejected', operationId: 'op_1' })
-    const asked = session.events.find(event => event.type === 'approval/asked')
-    const decided = session.events.find(event => event.type === 'approval/decided')
+    const asked = session.snapshotEvents().find(event => event.type === 'approval/asked')
+    const decided = session.snapshotEvents().find(event => event.type === 'approval/decided')
     expect(asked?.data.operationId).toBe(decided?.data.operationId)
   })
 
@@ -300,7 +300,7 @@ describe('tool-pipeline invariants', () => {
     }
     session.append('tool/code-dispatch-start', { ...identity, arguments: {} })
     session.append('tool/code-dispatch', { ...identity, arguments: {}, isError: false, content: [] })
-    const rows = session.events.filter(event => event.type === 'tool/code-dispatch-start' || event.type === 'tool/code-dispatch')
+    const rows = session.snapshotEvents().filter(event => event.type === 'tool/code-dispatch-start' || event.type === 'tool/code-dispatch')
     expect(rows.map(row => row.data.operationId)).toEqual(['op_1', 'op_1'])
   })
 })

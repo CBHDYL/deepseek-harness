@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import SessionStore, { SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId, SessionSeq, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import ToolRuntime, {
@@ -37,6 +37,11 @@ function agentWith(events: SessionEvent[] = []) {
   const session = {
     id: 'session-1',
     events,
+    // Upstream reads the log through the Session surface (seq + eventAt), not a
+    // bare `events` array — the stub mirrors both so turn-scoped checks work.
+    get seq() { return this.events.length },
+    eventAt(seq: number) { return this.events[seq] },
+    snapshotEvents() { return this.events },
     append(type: string, data: Record<string, unknown>) {
       const event = { type, data, seq: this.events.length + 1, time: 0 } as SessionEvent
       this.events.push(event)
@@ -47,7 +52,7 @@ function agentWith(events: SessionEvent[] = []) {
 }
 
 function openTurnEvents(): SessionEvent[] {
-  return [{ type: 'turn/start', seq: 1, time: 0, data: { turn: 1 } }]
+  return [{ type: 'turn/start', seq: SessionSeq(1), time: 0, data: { turn: 1 } }]
 }
 
 function askPolicy(_exec: ToolExecution, _next: () => Promise<PreToolDecision>): Promise<PreToolDecision> {
@@ -243,7 +248,7 @@ describe('execution lifecycle', () => {
     const pctx = new Context()
     await pctx.plugin(SessionStore)
     await pctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
-    const meta: SessionHeader = { version: 0, id: SessionId('cross-a'), createdAt: 1, cwd: '/work', delegationDepth: 0 }
+    const meta: SessionHeader = { version: 0, id: SessionId('cross-a'), createdAt: 1, cwd: '/work', delegationDepth: 0, isSeeded: false }
     await pctx.sessionPersistence.create(meta)
     await pctx.sessionPersistence.append(meta.id, [
       { type: 'turn/start', seq: 0, time: 0, data: { turn: 1 } },

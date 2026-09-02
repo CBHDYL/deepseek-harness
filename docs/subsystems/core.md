@@ -46,7 +46,7 @@ interface AgentHandle {
 }
 ```
 
-`CreateAgentOptions` carries the shared identity and everything a fresh agent needs before publication: session metadata (`meta` — validated `cwd`, fork lineage, seed boundary, origin classification, delegation depth), an optional `seed` replay prefix for forks, per-agent `AgentOptions`, a creation-only cancellation `signal`, and `setup`. `ResumeAgentOptions` is the persisted-identity counterpart: `resumeSessionId`, `agentOptions`, `signal`, and `setup`. The `setup` callback (`AgentSetup`) composes the agent's scoped world while both ids are still unpublished — everything registered through `agentCtx` exists before `agent/created` and the first prompt assembly — and may return a synchronous commit invoked immediately before publication; a setup rejection, commit throw, or owner disposal rolls the transaction back without publishing either id.
+`CreateAgentOptions` carries the shared identity and everything a fresh agent needs before publication: session metadata (`meta` — validated `cwd`, fork lineage, the `isSeeded` marker, origin classification, delegation depth, and `agentPreset`), the exact fork cut in sibling field `inheritedEventCount`, an optional `seed` replay prefix, per-agent `AgentOptions`, a creation-only cancellation `signal`, and `setup`. `ResumeAgentOptions` is the persisted-identity counterpart: `resumeSessionId`, `agentOptions`, `signal`, and `setup`. The `setup` callback (`AgentSetup`) composes the agent's scoped world while both ids are still unpublished — everything registered through `agentCtx` exists before `agent/created` and the first prompt assembly — and may return a synchronous commit invoked immediately before publication; a setup rejection, commit throw, or owner disposal rolls the transaction back without publishing either id.
 
 `AgentFactory` is the creation interface behind the registry: the loop registers its factory via `ctx.agents.setFactory()`, so consumers use `ctx.agents` without depending on the concrete loop package. The exact `create`/`resume` signatures and rollback contracts are in the [generated section](#ctxagents--agentregistry) below.
 
@@ -993,6 +993,36 @@ Replace the frozen call configuration. `await next()` yields the config the mach
 ```
 
 Types: [LlmCallConfig](llm-streaming.md) · [Scoped](scope.md)
+
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
+
+<a id="agentrequest-budget--waterfall"></a>
+
+#### `agent/request-budget` — waterfall
+
+The local prompt budget refused the composed request BEFORE any provider dispatch. The default action rejects (typed PROMPT_BUDGET_EXCEEDED); a listener that actually reduces the model-visible surface (compaction) returns `retry` so the loop rebuilds and re-measures. The loop bounds recovery retries per step (`budgetCompactionRetries`).
+
+```ts cordis-catalog
+/**
+ * The local prompt budget refused the composed request BEFORE any provider
+ * dispatch. The default action rejects (typed PROMPT_BUDGET_EXCEEDED); a
+ * listener that actually reduces the model-visible surface (compaction)
+ * returns `retry` so the loop rebuilds and re-measures. The loop bounds
+ * recovery retries per step (`budgetCompactionRetries`).
+ * @param payload.agent - the agent whose request was refused.
+ * @param payload.turn - the turn owning the refused step.
+ * @param payload.step - the step that composed the refused request.
+ * @param payload.provider - the provider route the request would have used.
+ * @param payload.bytes - exact UTF-8 bytes of the refused request envelope.
+ * @param payload.estimateTokens - advisory heuristic token estimate of the same envelope.
+ * @param payload.signal - the turn abort signal.
+ * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+ * @mode waterfall
+ */
+'agent/request-budget'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; bytes: number; estimateTokens: number; signal: AbortSignal }, next: () => Promise<RequestBudgetAction>): Promise<RequestBudgetAction>
+```
+
+Types: [Scoped](scope.md)
 
 Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 

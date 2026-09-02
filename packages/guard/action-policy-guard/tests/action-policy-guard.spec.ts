@@ -5,6 +5,7 @@ import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import * as ActionPolicyGuard from '@deepseek-ai/dsh-action-policy-guard'
@@ -13,6 +14,7 @@ import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent
 async function harness(mode: 'observe' | 'enforce'): Promise<{ ctx: Context; agent: Agent; ran: () => string[] }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(ActionPolicyGuard, { mode })
   const ran: string[] = []
@@ -61,7 +63,7 @@ describe('action-policy guard', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     expect(ran()).toEqual([toolName])
-    const candidates = agent.session.events.filter(event => event.type === 'action-policy/candidate')
+    const candidates = agent.session.snapshotEvents().filter(event => event.type === 'action-policy/candidate')
     expect(candidates).toHaveLength(1)
     expect(candidates[0]).toMatchObject({
       data: { toolName, callId: 'c1', effectSource },
@@ -79,8 +81,8 @@ describe('action-policy guard', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     expect(ran()).toEqual([]) // body never ran
-    expect(agent.session.events.some(event => event.type === 'action-policy/candidate')).toBe(false)
-    const results = [...agent.session.events].filter((e): e is SessionEvent<'tool/result'> => e.type === 'tool/result')
+    expect(agent.session.snapshotEvents().some(event => event.type === 'action-policy/candidate')).toBe(false)
+    const results = [...agent.session.snapshotEvents()].filter((e): e is SessionEvent<'tool/result'> => e.type === 'tool/result')
     const text = (results[0]!.data.message.content[0] as { content: { text?: string }[] }).content.map(b => b.text ?? '').join('')
     expect(text).toContain('action-policy')
   })
@@ -94,8 +96,8 @@ describe('action-policy guard', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     expect(ran()).toEqual(['readonly']) // the declared read-only exemption skipped the gate
-    expect(agent.session.events.some(event => event.type === 'action-policy/candidate')).toBe(false)
-    expect(agent.session.events.some(event => event.type === 'approval/asked')).toBe(false)
+    expect(agent.session.snapshotEvents().some(event => event.type === 'action-policy/candidate')).toBe(false)
+    expect(agent.session.snapshotEvents().some(event => event.type === 'approval/asked')).toBe(false)
   })
 
   it('observe mode records no candidate for a declared read-only tool', async () => {
@@ -107,7 +109,7 @@ describe('action-policy guard', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     expect(ran()).toEqual(['readonly'])
-    expect(agent.session.events.filter(event => event.type === 'action-policy/candidate')).toHaveLength(0)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'action-policy/candidate')).toHaveLength(0)
   })
 
   it('an agent-less execution neither crashes nor appends a candidate', async () => {
@@ -125,6 +127,7 @@ describe('action-policy guard', () => {
   it('rejects an invalid mode fail-loud', async () => {
     const ctx = new Context()
     await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(AgentLoop, { agents: [] })
     await expect(ctx.plugin(ActionPolicyGuard, { mode: 'banana' }))
       .rejects.toThrow(/mode/)

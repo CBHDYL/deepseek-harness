@@ -11,7 +11,7 @@ import { createMessage, createUserMessage, type Message } from '@deepseek-ai/dsh
 import { describe, expect, it, afterEach } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import SessionStore, { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId, SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
@@ -40,15 +40,15 @@ async function harness(config: Record<string, unknown> = {}): Promise<{ ctx: Con
 function seedEvents(pairs: number, text: (index: number) => string): SessionEvent[] {
   const events: SessionEvent[] = []
   let seq = 0
-  events.push({ type: 'turn/start', seq: seq++, time: seq, data: { turn: 1 } })
+  events.push({ type: 'turn/start', seq: SessionSeq(seq++), time: seq, data: { turn: 1 } })
   for (let i = 0; i < pairs; i++) {
     events.push({
-      type: 'user/message', seq: seq++, time: seq,
+      type: 'user/message', seq: SessionSeq(seq++), time: seq,
       data: createUserMessage({ content: [{ type: 'text', text: text(i) }], source: { kind: 'user' } }),
       surfaceOp: 'append',
     })
     events.push({
-      type: 'assistant/message', seq: seq++, time: seq,
+      type: 'assistant/message', seq: SessionSeq(seq++), time: seq,
       data: {
         turn: 1,
         step: i + 1,
@@ -61,7 +61,7 @@ function seedEvents(pairs: number, text: (index: number) => string): SessionEven
       surfaceOp: 'append',
     })
   }
-  events.push({ type: 'turn/end', seq: seq++, time: seq, data: { turn: 1, reason: { kind: 'completed' } } })
+  events.push({ type: 'turn/end', seq: SessionSeq(seq++), time: seq, data: { turn: 1, reason: { kind: 'completed' } } })
   return events
 }
 
@@ -74,7 +74,7 @@ function waitForIdle(ctx: Context, agent: Agent): Promise<void> {
 }
 
 function turnError(agent: Agent): { code: string; message: string } | undefined {
-  const end = agent.session.events.filter(e => e.type === 'turn/end').at(-1)
+  const end = agent.session.snapshotEvents().filter(e => e.type === 'turn/end').at(-1)
   if (end?.type !== 'turn/end' || end.data.reason.kind !== 'error') return undefined
   return { code: end.data.reason.error.code, message: end.data.reason.error.message }
 }
@@ -105,7 +105,7 @@ describe('PR-6 prompt budget (L7 / E30)', () => {
     expect(turnError(agent)?.message).toContain('bytes')
     // A rejected request was never loop-built: no request/header names it
     // (headers <=> sent requests, the reconstruction theorem).
-    expect(agent.session.events.some(e => e.type === 'request/header')).toBe(false)
+    expect(agent.session.snapshotEvents().some(e => e.type === 'request/header')).toBe(false)
   })
 
   it('L7-4: the estimate ceiling fires at the final boundary even when the byte ceiling would pass', async () => {
@@ -191,10 +191,10 @@ describe('PR-6 prompt budget (L7 / E30)', () => {
     // The second turn also exceeds the tiny ceiling (history still large) —
     // but the point is the machine keeps serving bounded failures instead of
     // hanging; both turns produced typed ends.
-    const errors = agent.session.events
+    const errors = agent.session.snapshotEvents()
       .filter(e => e.type === 'turn/end' && e.data.reason.kind === 'error')
     expect(errors).toHaveLength(2)
-    expect(agent.session.events.filter(e => e.type === 'user/message').map(
+    expect(agent.session.snapshotEvents().filter(e => e.type === 'user/message').map(
       e => e.type === 'user/message' ? e.data.content.filter(b => b.type === 'text').map(b => b.text).join('') : '',
     )).toContain('again')
   })

@@ -60,7 +60,7 @@ const install: InvariantInstaller = Object.assign((ctx: Context, fail: Invariant
   const seedOperationIds = (session: Session): { pending: Set<string>; seen: Set<string> } => {
     const pending = new Set<string>()
     const seen = new Set<string>()
-    for (const event of session.events) {
+    for (const event of session.snapshotEvents()) {
       const openingId = openingOperationIdOf(event)
       if (openingId !== undefined) seen.add(openingId)
       if (event.type === 'approval/decided' && event.data.outcome === 'allowed-once'
@@ -103,7 +103,7 @@ const install: InvariantInstaller = Object.assign((ctx: Context, fail: Invariant
   const seed = (session: Session): number | null => {
     let openTurn: number | null = null
     dispatchRoots.set(session, new Map())
-    for (const event of session.events) {
+    for (const event of session.snapshotEvents()) {
       validateDispatch(session, event)
       commitDispatch(session, event)
       if (event.type === 'turn/start') openTurn = event.data.turn

@@ -176,7 +176,7 @@ describe('PR-4 single-flight projection', () => {
     await settle()
     const stored = rowOf(pool, 'race')?.rows?.['cache-test/race'] as { seq: number; val: { n: number } } | undefined
     expect(stored?.val.n).toBe(5)
-    expect(stored?.seq).toBe(session.events.at(-1)?.seq)
+    expect(stored?.seq).toBe(session.snapshotEvents().at(-1)?.seq)
   })
 
   it('P2/P6: an event committed while a write is in flight survives its stale cut; dirty stays set until the follow-up settles', async () => {
@@ -214,7 +214,7 @@ describe('PR-4 single-flight projection', () => {
     await settle()
     const stored = rowOf(pool, 'race')?.rows?.['cache-test/race'] as { seq: number; val: { n: number } } | undefined
     expect(stored?.val.n).toBe(2)
-    expect(stored?.seq).toBe(session.events.at(-1)?.seq)
+    expect(stored?.seq).toBe(session.snapshotEvents().at(-1)?.seq)
     expect(cache.dirtyStats(session).pending).toBe(0)
     expect(cache.dirtyStats(session).failures).toBe(0)
   })
@@ -322,7 +322,7 @@ describe('PR-4 single-flight projection', () => {
     expect(warns).toEqual([])
     const stored = rowOf(pool, 'race')?.rows?.['cache-test/race'] as { seq: number; val: { n: number } } | undefined
     expect(stored?.val.n).toBe(2)
-    expect(stored?.seq).toBe(session.events.at(-1)?.seq)
+    expect(stored?.seq).toBe(session.snapshotEvents().at(-1)?.seq)
   })
 
   it('queue reuse after drain: a second burst on the settled tail lands without residue', async () => {
@@ -359,7 +359,7 @@ describe('PR-4 single-flight projection', () => {
     await settle(); await settle()
     const stored = rowOf(pool, 'race')?.rows?.['cache-test/race'] as { seq: number; val: { n: number } } | undefined
     expect(stored?.val.n).toBe(2)
-    expect(stored?.seq).toBe(session.events.at(-1)?.seq)
+    expect(stored?.seq).toBe(session.snapshotEvents().at(-1)?.seq)
   })
 
   it('teardown: pre-dispose writes land while the domain is open; the post-close detach task fails soft (composition residual)', async () => {

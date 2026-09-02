@@ -1171,9 +1171,9 @@ export class ToolRuntime extends Service {
    * A restriction filters what a scope inherits — the global layer and every
    * ancestor layer on its chain — and never what its OWN layer registers.
    * That exemption is what a per-child capability filter has to keep intact:
-   * the delegation runtime registers a child's reporting and structured-output
-   * tools into the child's own layer, and a filter naming the capabilities the
-   * child may use must not strip the machinery it answers through.
+   * the delegation runtime registers a child's structured-output tool into the
+   * child's own layer, and a filter naming the capabilities the child may use
+   * must not strip the machinery it answers through.
    *
    * Reading the exempt set as "the global layer" instead of "not mine" held
    * only while every model-facing tool sat in the host composition. Once
@@ -1570,7 +1570,12 @@ export class ToolRuntime extends Service {
       counter = 0
       // Indexed scan: real logs are arrays, and stubbed sessions in consumer
       // tests may expose an array-like (or nothing) rather than an iterable.
-      const events = session.events as unknown as { readonly length?: number; readonly [index: number]: unknown } | undefined
+      const source = session as unknown as {
+        readonly snapshotEvents?: () => readonly unknown[]
+        readonly events?: unknown
+      }
+      const events = (source.snapshotEvents?.() ?? source.events) as
+        { readonly length?: number; readonly [index: number]: unknown } | undefined
       for (let i = 0; i < (events?.length ?? 0); i += 1) {
         const event = events?.[i] as { readonly type?: string; readonly data?: { operationId?: string } } | undefined
         if (event?.type !== 'tool/call' && event?.type !== 'tool/code-dispatch') continue

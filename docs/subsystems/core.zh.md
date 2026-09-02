@@ -48,7 +48,7 @@ interface AgentHandle {
 }
 ```
 
-`CreateAgentOptions` 携带共享标识以及新 agent 发布前所需的一切：会话元数据（`meta`——已校验的 `cwd`、fork 谱系、seed 边界、来源分类、委派深度）、fork 用的可选 `seed` 回放前缀、按 agent 的 `AgentOptions`、仅创建期有效的取消 `signal`，以及 `setup`。`ResumeAgentOptions` 是持久标识的对应项：`resumeSessionId`、`agentOptions`、`signal` 与 `setup`。`setup` 回调（`AgentSetup`）在两个 id 都尚未发布时组装 agent 的作用域世界——凡经 `agentCtx` 注册的内容都先于 `agent/created` 与第一次提示词组装存在——并可返回一个在发布前一刻调用的同步 commit；setup 拒绝、commit 抛出或所有者 dispose（资源释放）都会回滚事务，两个 id 均不发布。
+`CreateAgentOptions` 携带共享标识以及新 agent 发布前所需的一切：会话元数据（`meta`——已校验的 `cwd`、fork 谱系、`isSeeded` 标记、来源分类、委派深度与 `agentPreset`）、同级字段 `inheritedEventCount` 所表示的精确 fork cut、可选的 `seed` 回放前缀、按 agent 的 `AgentOptions`、仅创建期有效的取消 `signal`，以及 `setup`。`ResumeAgentOptions` 是持久标识的对应项：`resumeSessionId`、`agentOptions`、`signal` 与 `setup`。`setup` 回调（`AgentSetup`）在两个 id 都尚未发布时组装 agent 的作用域世界——凡经 `agentCtx` 注册的内容都先于 `agent/created` 与第一次提示词组装存在——并可返回一个在发布前一刻调用的同步 commit；setup 拒绝、commit 抛出或所有者 dispose（资源释放）都会回滚事务，两个 id 均不发布。
 
 `AgentFactory` 是注册表背后的创建接口：循环经 `ctx.agents.setFactory()` 注册其工厂，因此消费方使用 `ctx.agents` 时无需依赖具体循环包。确切的 `create`/`resume` 签名及回滚约定见下方[生成区块](#ctxagents--agentregistry)。
 
@@ -1003,6 +1003,36 @@ Replace the frozen call configuration. `await next()` yields the config the mach
 ```
 
 Types: [LlmCallConfig](llm-streaming.zh.md) · [Scoped](scope.zh.md)
+
+Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
+
+<a id="agentrequest-budget--waterfall"></a>
+
+#### `agent/request-budget` — waterfall
+
+The local prompt budget refused the composed request BEFORE any provider dispatch. The default action rejects (typed PROMPT_BUDGET_EXCEEDED); a listener that actually reduces the model-visible surface (compaction) returns `retry` so the loop rebuilds and re-measures. The loop bounds recovery retries per step (`budgetCompactionRetries`).
+
+```ts cordis-catalog
+/**
+ * The local prompt budget refused the composed request BEFORE any provider
+ * dispatch. The default action rejects (typed PROMPT_BUDGET_EXCEEDED); a
+ * listener that actually reduces the model-visible surface (compaction)
+ * returns `retry` so the loop rebuilds and re-measures. The loop bounds
+ * recovery retries per step (`budgetCompactionRetries`).
+ * @param payload.agent - the agent whose request was refused.
+ * @param payload.turn - the turn owning the refused step.
+ * @param payload.step - the step that composed the refused request.
+ * @param payload.provider - the provider route the request would have used.
+ * @param payload.bytes - exact UTF-8 bytes of the refused request envelope.
+ * @param payload.estimateTokens - advisory heuristic token estimate of the same envelope.
+ * @param payload.signal - the turn abort signal.
+ * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+ * @mode waterfall
+ */
+'agent/request-budget'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; bytes: number; estimateTokens: number; signal: AbortSignal }, next: () => Promise<RequestBudgetAction>): Promise<RequestBudgetAction>
+```
+
+Types: [Scoped](scope.zh.md)
 
 Source: [`packages/core/agent/src/runtime-types.ts`](../../packages/core/agent/src/runtime-types.ts)
 

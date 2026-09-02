@@ -57,7 +57,7 @@ const CWD = '/work'
 const path = (id: string): string => logPath(root, CWD, SessionId(id), 'none')
 
 function meta(id: string) {
-  return { version: 0, id: SessionId(id), createdAt: 1, cwd: CWD, delegationDepth: 0 }
+  return { version: 0, id: SessionId(id), createdAt: 1, cwd: CWD, delegationDepth: 0, isSeeded: false }
 }
 
 function turn(seq: number): SessionEvent[] {
@@ -247,7 +247,7 @@ describe('PR-3 repair seam: committed corruption fails loud, torn tails bounded-
     // Restoring a valid artifact afterwards loads cleanly: the failed attempt
     // mutated nothing.
     await rm(path(m.id), { recursive: true })
-    await writeFile(path(m.id), JSON.stringify({ type: 'session', version: 0, id: m.id, createdAt: 1, cwd: CWD, delegationDepth: 0 }) + '\n' + turn(0).map(event => JSON.stringify(event)).join('\n') + '\n')
+    await writeFile(path(m.id), JSON.stringify({ type: 'session', version: 0, id: m.id, createdAt: 1, cwd: CWD, delegationDepth: 0, isSeeded: false }) + '\n' + turn(0).map(event => JSON.stringify(event)).join('\n') + '\n')
     const loaded = await ctx.sessionPersistence.load(m.id)
     expect(loaded.events.map(event => event.type)).toEqual(['turn/start', 'step/start', 'step/end', 'turn/end'])
     expect(loaded.events.some(event => event.type === 'session/repaired')).toBe(false)
