@@ -227,6 +227,19 @@ function assertAgentOptions(options: AgentOptions): void {
     && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0)) {
     throw new TypeError('agent maxTokens must be a positive safe integer')
   }
+  if (options.maxRequestBytes !== undefined
+    && (!Number.isSafeInteger(options.maxRequestBytes) || options.maxRequestBytes < 1)) {
+    throw new TypeError('agent maxRequestBytes must be a positive safe integer')
+  }
+  if (options.maxEstimateTokens !== undefined
+    && (!Number.isSafeInteger(options.maxEstimateTokens) || options.maxEstimateTokens < 1)) {
+    throw new TypeError('agent maxEstimateTokens must be a positive safe integer')
+  }
+  if (options.budgetCompactionRetries !== undefined
+    && (!Number.isInteger(options.budgetCompactionRetries)
+      || options.budgetCompactionRetries < 0 || options.budgetCompactionRetries > 16)) {
+    throw new TypeError('agent budgetCompactionRetries must be an integer from 0 through 16')
+  }
 }
 
 /** Prepared-but-unpublished agent resources sharing one memoized teardown. */
@@ -280,10 +293,8 @@ export const DEFAULT_MAX_REQUEST_ATTEMPTS = 16
  * PR-6 product constant — the Design Review prescribes the mechanism, not the
  * number.
  */
-export const DEFAULT_MAX_REQUEST_BYTES = 4 * 1024 * 1024
-
-/** Default recovery retries per step when a budget rejection is answered by compaction. */
-export const DEFAULT_BUDGET_COMPACTION_RETRIES = 1
+import { DEFAULT_BUDGET_COMPACTION_RETRIES, DEFAULT_MAX_REQUEST_BYTES } from './budget.ts'
+export { DEFAULT_BUDGET_COMPACTION_RETRIES, DEFAULT_MAX_REQUEST_BYTES }
 
 export { DEFAULT_MAX_PARALLEL_TOOL_CALLS }
 
@@ -745,12 +756,22 @@ export class AgentLoop extends Service implements AgentFactory {
    */
   create(id: SessionId, options: AgentOptions = {}, meta: Pick<SessionHeader, 'cwd'> = {}): Agent {
     using preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(id, { meta }))
-    const prepared = this.prepare(this.ctx, id, options, preparation.session)
+    const prepared = this.prepare(this.ctx, id, this.withBudgetDefaults(options), preparation.session)
     try {
       return prepared.publish('startup').agent
     } catch (error: unknown) {
       void prepared.dispose()
       throw error
+    }
+  }
+
+  /** Deployment budget defaults from the loop config; agent-level values win. */
+  private withBudgetDefaults(options: AgentOptions): AgentOptions {
+    return {
+      maxRequestBytes: this.config.maxRequestBytes,
+      ...this.config.maxEstimateTokens === undefined ? {} : { maxEstimateTokens: this.config.maxEstimateTokens },
+      budgetCompactionRetries: this.config.budgetCompactionRetries,
+      ...options,
     }
   }
 
@@ -769,7 +790,7 @@ export class AgentLoop extends Service implements AgentFactory {
       ownerCtx,
       options.sessionId,
       preparation,
-      options.agentOptions ?? {},
+      this.withBudgetDefaults(options.agentOptions ?? {}),
       options.setup,
       options.signal,
       'startup',
@@ -853,7 +874,7 @@ export class AgentLoop extends Service implements AgentFactory {
           ownerCtx,
           id,
           preparation,
-          options.agentOptions ?? {},
+          this.withBudgetDefaults(options.agentOptions ?? {}),
           options.setup,
           options.signal,
           'resume',

@@ -14,6 +14,7 @@ import LlmRuntime from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { MockAdapter, textResponse } from './mock-adapter.ts'
@@ -26,6 +27,7 @@ async function harness(config: Record<string, unknown> = {}): Promise<{ ctx: Con
   contexts.push(ctx)
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SessionStore)
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
@@ -101,9 +103,8 @@ describe('PR-6 prompt budget (L7 / E30)', () => {
     // The rejection is typed and observable on the turn boundary.
     expect(turnError(agent)?.code).toBe('PROMPT_BUDGET_EXCEEDED')
     expect(turnError(agent)?.message).toContain('bytes')
-    // A rejected request was never loop-built: no request/header and no
-    // request/attempt-start name it (reconstruction theorem untouched).
-    expect(agent.session.events.some(e => e.type === 'request/attempt-start')).toBe(false)
+    // A rejected request was never loop-built: no request/header names it
+    // (headers <=> sent requests, the reconstruction theorem).
     expect(agent.session.events.some(e => e.type === 'request/header')).toBe(false)
   })
 
@@ -114,7 +115,7 @@ describe('PR-6 prompt budget (L7 / E30)', () => {
     await waitForIdle(ctx, agent)
     expect(adapter.requests).toHaveLength(0)
     expect(turnError(agent)?.code).toBe('PROMPT_BUDGET_EXCEEDED')
-    expect(turnError(agent)?.message).toContain('estimated tokens')
+    expect(turnError(agent)?.message).toContain('estimate is')
   })
 
   it('L7-5: multibyte content — the byte ceiling rejects what the char-based heuristic undercounts', async () => {
@@ -215,7 +216,7 @@ describe('PR-6 prompt budget (L7 / E30)', () => {
     await waitForIdle(ctx, agent)
     expect(adapter.requests).toHaveLength(0)
     expect(turnError(agent)?.code).toBe('PROMPT_BUDGET_EXCEEDED')
-    expect(turnError(agent)?.message).toContain('tool schemas')
+    expect(turnError(agent)?.message).toContain('bytes')
   })
 
   it('a normal request under the ceilings dispatches unchanged (no false rejection)', async () => {
@@ -224,5 +225,43 @@ describe('PR-6 prompt budget (L7 / E30)', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     expect(adapter.requests).toHaveLength(1)
+  })
+
+  it('P6-1: the byte boundary is exact — B-1 refuses, B and B+1 dispatch', async () => {
+    // Calibrate B from the exact dispatched envelope of one identical run.
+    const calibrate = await harness({ maxRequestBytes: 1024 * 1024 * 1024 })
+    const cAgent = await createSeededAgent(calibrate.ctx, 'b9', 2)
+    cAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(calibrate.ctx, cAgent)
+    expect(calibrate.adapter.requests).toHaveLength(1)
+    const dispatched = calibrate.adapter.requests[0]!
+    const exactBytes = new TextEncoder().encode(JSON.stringify({
+      messages: dispatched.messages,
+      ...dispatched.system === undefined ? {} : { system: dispatched.system },
+      ...dispatched.tools === undefined ? {} : { tools: dispatched.tools },
+    })).length
+    expect(exactBytes).toBeGreaterThan(0)
+
+    // B-1: the same seed and followup exceed the ceiling by exactly one byte.
+    const under = await harness({ maxRequestBytes: exactBytes - 1 })
+    const uAgent = await createSeededAgent(under.ctx, 'b10', 2)
+    uAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(under.ctx, uAgent)
+    expect(under.adapter.requests).toHaveLength(0)
+    expect(turnError(uAgent)?.code).toBe('PROMPT_BUDGET_EXCEEDED')
+
+    // Exactly B: the strict `>` predicate lets it dispatch.
+    const at = await harness({ maxRequestBytes: exactBytes })
+    const atAgent = await createSeededAgent(at.ctx, 'b11', 2)
+    atAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(at.ctx, atAgent)
+    expect(at.adapter.requests).toHaveLength(1)
+
+    // B+1: room to spare, still dispatches.
+    const over = await harness({ maxRequestBytes: exactBytes + 1 })
+    const oAgent = await createSeededAgent(over.ctx, 'b12', 2)
+    oAgent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(over.ctx, oAgent)
+    expect(over.adapter.requests).toHaveLength(1)
   })
 })

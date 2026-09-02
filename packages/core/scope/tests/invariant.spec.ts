@@ -79,7 +79,6 @@ describe('scoped-dispatch invariants', () => {
         () => Promise.resolve({ kind: 'reject' }),
       ],
       'agent/turn-stopping': [{ agent, turn: 1, signal }],
-      'agent/stream-chunk': [{ agent, turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'x' } }],
       'agent/error': [{ agent, turn: 1, step: 0, error: new Error('x') }],
     } satisfies { [K in AgentEventName]: EventArgs<K> }
     const rows: Array<[string, unknown[]]> = [

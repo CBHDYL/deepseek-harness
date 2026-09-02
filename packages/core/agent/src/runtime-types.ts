@@ -31,6 +31,12 @@ export interface AgentOptions {
   reasoningEffort?: ReasoningEffortId
   /** Maximum output tokens for each conversation-model request. */
   maxTokens?: number
+  /** Hard UTF-8 byte ceiling for each conversation-model request (default 4 MiB — the normative enforcement). */
+  maxRequestBytes?: number
+  /** Optional advisory heuristic estimate ceiling; the byte ceiling stays normative (Option B). */
+  maxEstimateTokens?: number
+  /** Bounded budget-recovery (compaction) retries per step, 0–16 (default 1). */
+  budgetCompactionRetries?: number
 }
 
 /** Options for {@link Agent.cancel}. */
@@ -64,6 +70,9 @@ export type PreStepDecision =
 
 /** Action returned by a listener that owns model-request recovery. */
 export type RequestErrorAction = { kind: 'retry' } | undefined
+
+/** Action the {@link 'agent/request-budget'} waterfall yields for one refused request. */
+export type RequestBudgetAction = { kind: 'retry' } | { kind: 'reject' }
 
 /** Why a session lifecycle began; seeded creates are `startup`, while persisted loads are `resume`. */
 export type SessionStartSource = 'startup' | 'resume' | 'clear' | 'compact'
@@ -265,6 +274,23 @@ declare module '@deepseek-ai/cordis' {
      * @mode waterfall
      */
     'agent/request-error'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; failure: LlmFailure; retryPolicy: ResolvedRetryPolicy | undefined; signal: AbortSignal }, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction>
+    /**
+     * The local prompt budget refused the composed request BEFORE any provider
+     * dispatch. The default action rejects (typed PROMPT_BUDGET_EXCEEDED); a
+     * listener that actually reduces the model-visible surface (compaction)
+     * returns `retry` so the loop rebuilds and re-measures. The loop bounds
+     * recovery retries per step (`budgetCompactionRetries`).
+     * @param payload.agent - the agent whose request was refused.
+     * @param payload.turn - the turn owning the refused step.
+     * @param payload.step - the step that composed the refused request.
+     * @param payload.provider - the provider route the request would have used.
+     * @param payload.bytes - exact UTF-8 bytes of the refused request envelope.
+     * @param payload.estimateTokens - advisory heuristic token estimate of the same envelope.
+     * @param payload.signal - the turn abort signal.
+     * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+     * @mode waterfall
+     */
+    'agent/request-budget'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; provider: string; bytes: number; estimateTokens: number; signal: AbortSignal }, next: () => Promise<RequestBudgetAction>): Promise<RequestBudgetAction>
     /**
      * The turn is about to close: the model owes no response (no live tool
      * calls, no fresh steering). Awaited before the boundary commits — a

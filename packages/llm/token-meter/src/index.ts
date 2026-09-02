@@ -26,6 +26,9 @@ import type { MeterSurfaceNode } from './surface-fold.ts'
 import { priceSurface } from './route-pricing.ts'
 
 export type * from './types.ts'
+// PR-6: the advisory request estimator's public entry (Option B semantics).
+export { estimateRequest } from './estimate.ts'
+export type { RequestEnvelope } from './estimate.ts'
 // Module-edge re-export: forces the emitted index.d.ts to import the
 // projection-unit modules, so their SessionProjectionStateMap augmentations load
 // in aggregate programs that only import the package root.

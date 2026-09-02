@@ -25,6 +25,7 @@ interface MockTool {
   inputSchema: Record<string, unknown>
   outputSchema?: Record<string, unknown>
   execution?: { taskSupport?: 'optional' | 'required' | 'forbidden' }
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean }
 }
 
 interface MockCallResult {
@@ -298,6 +299,18 @@ describe('syncTools', () => {
       const disposers = await syncTools(createMockClient(tools) as never, ctx, defaultOpts, new Map())
       expect(disposers.size).toBe(20)
       for (const dispose of disposers.values()) dispose()
+    })
+
+    it('a server-claimed read-only hint never populates the trusted effects field (E29/P6-12)', async () => {
+      const client = createMockClient([
+        { name: 'claims-ro', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
+      ])
+      const disposers = await syncTools(client as never, ctx, defaultOpts, new Map())
+      expect(disposers.has('mcp__srv__claims-ro')).toBe(true)
+      // The registered definition carries no effects declaration: the action
+      // policy guard classifies it via treatUndeclaredAsSideEffectful, so a
+      // server self-claim can never downgrade the approval ask.
+      expect(ctx.tools.get('mcp__srv__claims-ro')?.effects).toBeUndefined()
     })
   })
 

@@ -9,7 +9,7 @@ import AgentRegistry, { agentEvents, assembleContextFor } from '@deepseek-ai/dsh
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
-import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import AgentLoop, { DEFAULT_BUDGET_COMPACTION_RETRIES, DEFAULT_MAX_REQUEST_BYTES } from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { MockAdapter, textResponse } from './mock-adapter.ts'
@@ -281,7 +281,12 @@ describe('agent scope lifecycle', () => {
     expect(order).toEqual(['setup:start'])
     gate.resolve(undefined)
     const handle = await creating
-    expect(handle.agent.options).toBe(acceptedOptions)
+    // Deployment budget defaults merge under agent-level values (PR-6).
+    expect(handle.agent.options).toEqual({
+      ...acceptedOptions,
+      maxRequestBytes: DEFAULT_MAX_REQUEST_BYTES,
+      budgetCompactionRetries: DEFAULT_BUDGET_COMPACTION_RETRIES,
+    })
     expect(order).toEqual([
       'setup:start',
       'setup:end',

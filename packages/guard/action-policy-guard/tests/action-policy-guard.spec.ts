@@ -51,7 +51,7 @@ function waitForIdle(ctx: Context, agent: Agent): Promise<void> {
 describe('action-policy guard', () => {
   it.each([
     ['undeclared', 'undeclared', {}],
-    ['declared', 'undeclared', { token: 'do-not-copy-this-secret' }],
+    ['declared', 'declared', { token: 'do-not-copy-this-secret' }],
   ] as const)('observe mode records the minimal %s candidate and lets it run', async (toolName, effectSource, args) => {
     const { ctx, agent, ran } = await harness('observe')
     ctx.llm.registerAdapter(['mock'], new MockAdapter([
@@ -85,7 +85,7 @@ describe('action-policy guard', () => {
     expect(text).toContain('action-policy')
   })
 
-  it('enforce mode gates every tool — upstream declares no read-only effects yet (PR-6 re-attaches declarations)', async () => {
+  it('enforce mode exempts a declared read-only tool (PR-6 effects port): runs with no ask', async () => {
     const { ctx, agent, ran } = await harness('enforce')
     ctx.llm.registerAdapter(['mock'], new MockAdapter([
       toolCallResponse('c1', 'readonly', {}),
@@ -93,13 +93,12 @@ describe('action-policy guard', () => {
     ]))
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
-    expect(ran()).toEqual([]) // the undeclared gate asked; without an answerer the call is denied
-    const results = [...agent.session.events].filter((e): e is SessionEvent<'tool/result'> => e.type === 'tool/result')
-    const text = (results[0]!.data.message.content[0] as { content: { text?: string }[] }).content.map(b => b.text ?? '').join('')
-    expect(text).toContain('action-policy')
+    expect(ran()).toEqual(['readonly']) // the declared read-only exemption skipped the gate
+    expect(agent.session.events.some(event => event.type === 'action-policy/candidate')).toBe(false)
+    expect(agent.session.events.some(event => event.type === 'approval/asked')).toBe(false)
   })
 
-  it('observe mode records a candidate for every tool (no declared read-only upstream yet)', async () => {
+  it('observe mode records no candidate for a declared read-only tool', async () => {
     const { ctx, agent, ran } = await harness('observe')
     ctx.llm.registerAdapter(['mock'], new MockAdapter([
       toolCallResponse('c1', 'readonly', {}),
@@ -108,7 +107,7 @@ describe('action-policy guard', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
     await waitForIdle(ctx, agent)
     expect(ran()).toEqual(['readonly'])
-    expect(agent.session.events.filter(event => event.type === 'action-policy/candidate')).toHaveLength(1)
+    expect(agent.session.events.filter(event => event.type === 'action-policy/candidate')).toHaveLength(0)
   })
 
   it('an agent-less execution neither crashes nor appends a candidate', async () => {
@@ -127,7 +126,7 @@ describe('action-policy guard', () => {
     const ctx = new Context()
     await mountAgentLoopTestDependencies(ctx)
     await ctx.plugin(AgentLoop, { agents: [] })
-    await expect(ctx.plugin(ActionPolicyGuard, { mode: 'banana' as never }))
+    await expect(ctx.plugin(ActionPolicyGuard, { mode: 'banana' }))
       .rejects.toThrow(/mode/)
   })
 })

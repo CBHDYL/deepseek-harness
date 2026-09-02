@@ -119,6 +119,37 @@ export class LlmError extends HarnessError {
   }
 }
 
+/** Canonical provider-neutral code for a request refused by the local prompt budget BEFORE dispatch. */
+export const PROMPT_BUDGET_EXCEEDED_CODE = 'PROMPT_BUDGET_EXCEEDED'
+
+/**
+ * Typed failure for a request refused by the local hard byte ceiling (or the
+ * optional heuristic estimate ceiling) BEFORE any provider dispatch. Distinct
+ * from a provider-reported `CONTEXT_WINDOW_EXCEEDED`: this class never reached
+ * the provider, so its recovery is the compaction/request-budget path, and the
+ * session is always recoverable.
+ */
+export class PromptBudgetError extends LlmError {
+  /** Exact UTF-8 bytes of the refused request envelope. */
+  readonly bytes: number
+  /** Advisory heuristic token estimate of the same envelope (Option B semantics). */
+  readonly estimateTokens: number
+  /** The provider route the request would have used. */
+  readonly provider: string
+
+  /**
+   * @param message - non-empty human-readable summary naming the exceeded bound.
+   * @param options - byte/estimate/provider facts plus the standard error options.
+   */
+  constructor(message: string, options: { bytes: number; estimateTokens: number; provider: string } & ErrorOptions) {
+    super(message, PROMPT_BUDGET_EXCEEDED_CODE, { cause: options.cause })
+    this.name = 'PromptBudgetError'
+    this.bytes = options.bytes
+    this.estimateTokens = options.estimateTokens
+    this.provider = options.provider
+  }
+}
+
 /**
  * Accept one supplied credential, or refuse it as unusable.
  *

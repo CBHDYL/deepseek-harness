@@ -13,6 +13,7 @@ import type {
   CancelOptions,
   InboxTarget,
   PreStepDecision,
+  RequestBudgetAction,
   RequestErrorAction,
 } from '@deepseek-ai/dsh-agent'
 import { Inbox, agentEvents, assembleContextFor } from '@deepseek-ai/dsh-agent'
@@ -20,10 +21,12 @@ import type { GenerateOptions, LlmCallConfig, Message, PreparedLlmCall } from '@
 import {
   BlockAssembler,
   LlmError,
+  PromptBudgetError,
   createAssistantMessage,
   errorChain,
   markAgentLoopRequest,
 } from '@deepseek-ai/dsh-llm'
+import { estimateRequest } from '@deepseek-ai/dsh-token-meter'
 import { deepFreeze } from '@deepseek-ai/dsh-util-values'
 import type { Scope } from '@deepseek-ai/dsh-scope'
 import { createScope } from '@deepseek-ai/dsh-scope'
@@ -35,6 +38,7 @@ import type {} from '@deepseek-ai/dsh-session-projection'
 import type { Context } from '@deepseek-ai/cordis'
 import { RuntimeContextProjection } from './runtime-context.ts'
 import { executeToolCalls } from './tool-calls.ts'
+import { DEFAULT_BUDGET_COMPACTION_RETRIES, DEFAULT_MAX_REQUEST_BYTES, measureRequestBytes } from './budget.ts'
 
 type Phase =
   | { kind: 'idle'; lastTurn: number }
@@ -346,15 +350,12 @@ export class ReactLoopAgent implements Agent {
     const system = renderPrompt(assembly)
 
     while (true) {
-      const surfaceGeneration = this.session.surface.replaceGeneration
-      const { request, preparedCall } = await this.buildRequest(
+      const { request, preparedCall } = await this.buildRequestBudgeted(
         turn,
         step,
         assembly.tools,
         system,
-        this.session.deriveMessages(),
         startsRequestSeries,
-        surfaceGeneration,
         signal,
       )
       startsRequestSeries = false
@@ -438,6 +439,53 @@ export class ReactLoopAgent implements Agent {
   }
 
   /**
+   * Compose one request under the prompt budget: a refused request gets one
+   * bounded compaction-recovery opportunity per step (the `agent/request-budget`
+   * waterfall) before the typed rejection surfaces. The retry only re-runs
+   * when a listener actually advanced the surface — the loop re-measures the
+   * rebuilt envelope, so a retry that changed nothing hits the ceiling again
+   * and spends the remaining budget (bounded).
+   */
+  private async buildRequestBudgeted(
+    turn: number,
+    step: number,
+    tools: GenerateOptions['tools'] & object,
+    system: string,
+    startsRequestSeries: boolean,
+    signal: AbortSignal,
+  ): Promise<{ request: GenerateOptions; preparedCall?: PreparedLlmCall }> {
+    const budgetRetries = this.options.budgetCompactionRetries ?? DEFAULT_BUDGET_COMPACTION_RETRIES
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        // Re-derived per attempt: a budget listener may have replaced the
+        // surface, and the rebuilt request must measure what it will send.
+        return await this.buildRequest(
+          turn, step, tools, system,
+          this.session.deriveMessages(),
+          startsRequestSeries,
+          this.session.surface.replaceGeneration,
+          signal,
+        )
+      } catch (error: unknown) {
+        if (!(error instanceof PromptBudgetError) || attempt >= budgetRetries) throw error
+        const action = await this.dispatch.waterfall(
+          'agent/request-budget', {
+            turn,
+            step,
+            provider: error.provider,
+            bytes: error.bytes,
+            estimateTokens: error.estimateTokens,
+            signal,
+          },
+          () => Promise.resolve<RequestBudgetAction>({ kind: 'reject' }),
+        )
+        signal.throwIfAborted()
+        if (action.kind === 'reject') throw error
+      }
+    }
+  }
+
+  /**
    * Compose one frozen request and bind it to the adapter registration that
    * resolved its exact-model defaults.
    */
@@ -501,6 +549,29 @@ export class ReactLoopAgent implements Agent {
       ...system ? { system } : {},
       ...tools.length > 0 ? { tools } : {},
     })
+
+    // PR-6 prompt budget: measure the EXACT dispatched model-facing envelope
+    // in UTF-8 bytes (TextEncoder) and compare both ceilings BEFORE any
+    // durable header/context row and any provider dispatch. A rejected request
+    // logs no header — headers ⇔ sent requests (the E4/E5/E6 theorem).
+    const budgetEnvelope = {
+      messages: boundaryMessages,
+      ...header.system === undefined ? {} : { system: header.system },
+      ...header.tools === undefined || header.tools.length === 0 ? {} : { tools: header.tools },
+    }
+    const bytes = measureRequestBytes(budgetEnvelope)
+    const estimateTokens = estimateRequest(budgetEnvelope)
+    const maxRequestBytes = this.options.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES
+    const maxEstimateTokens = this.options.maxEstimateTokens
+    if (bytes > maxRequestBytes || (maxEstimateTokens !== undefined && estimateTokens > maxEstimateTokens)) {
+      throw new PromptBudgetError(
+        bytes > maxRequestBytes
+          ? `request is ${bytes} bytes (ceiling ${maxRequestBytes}) — refusing to dispatch`
+          : `request estimate is ${estimateTokens} tokens (ceiling ${maxEstimateTokens}) — refusing to dispatch`,
+        { bytes, estimateTokens, provider: config.provider },
+      )
+    }
+
     const baseline = this.session.requestHeader()
     const startsSeries = startsRequestSeries
       || this.requestSurfaceGeneration !== surfaceGeneration

@@ -217,6 +217,16 @@ export interface ToolDefinition extends ToolSchema {
   /** Mandatory canonical output declaration. */
   readonly output: ToolOutputDefinition
   /**
+   * Optional: the tool's declared authority effect. `'read-only'` claims the
+   * tool never mutates external state; `'side-effectful'` claims it may.
+   * Omission means undeclared — the action-policy guard then applies its
+   * `treatUndeclaredAsSideEffectful` rule. This metadata is NEVER model-visible
+   * (`schemas()` whitelists only name/description/parameters) and MCP/self-declared
+   * sources never populate it: only the shipped tool catalog and the
+   * implementing plugin carry the declaration the guard reads.
+   */
+  readonly effects?: 'read-only' | 'side-effectful'
+  /**
    * Run one accepted call and return only its canonical lossless-JSON value.
    * Async work must observe or forward `exec.signal` and settle only after its
    * owned work reaches quiescence. The registry preserves caller cancellation
@@ -425,6 +435,21 @@ export interface ToolRunContext extends ToolExecution {
 
 /** Registry-owned live execution object; public pipeline views stay readonly. */
 type MutableToolRunContext = Omit<ToolRunContext, 'signal'> & { signal: AbortSignal }
+
+/**
+ * Authority-bound execution semantics, minted once at creation (PR-2 P1
+ * remediation). Approval, grant binding, tool resolution, body dispatch, and
+ * result projection all read THIS snapshot, never the around-wrapper-mutable
+ * `exec` fields — a `tools/execute` wrapper reassigning `exec.arguments` or
+ * `exec.name` cannot change what an approved call executes. `arguments` is the
+ * same deep-frozen lossless-JSON value carried on the live execution.
+ */
+interface AuthoritativeExecutionSnapshot {
+  readonly operationId: OperationId
+  readonly name: string
+  readonly callId: ToolCallId
+  readonly arguments: unknown
+}
 
 /**
  * Scheduler-only result after ordered pre-execute and guards. A `post-result`
@@ -817,6 +842,8 @@ export class ToolRuntime extends Service {
   private agentlessOperationCounter = 0
   /** Executions whose policy stage asked and were answered allowed-once: dispatch must consume their grant. */
   private grantRequired = new WeakSet<ToolExecution>()
+  /** Creation-time authority-bound execution semantics, the only source the dispatch chain reads (PR-2 P1). */
+  private executionSnapshots = new WeakMap<ToolExecution, AuthoritativeExecutionSnapshot>()
   private readonly layers = new ScopedLayers(
     scope => new ToolLayer(scope),
     () => { this.ctx.emit('tools/change') },
@@ -1421,7 +1448,18 @@ export class ToolRuntime extends Service {
       if (detached === undefined) {
         throw new TypeError('tool execution arguments must be losslessly JSON-serializable')
       }
-      const execution: MutableToolRunContext = { ...base, arguments: deepFreeze(detached) }
+      const frozenArguments = deepFreeze(detached)
+      const execution: MutableToolRunContext = { ...base, arguments: frozenArguments }
+      // Authority snapshot: approval, grant consume, tool resolution, and the
+      // body all read these creation-time values; wrapper mutations to the
+      // live exec fields cannot re-target an approved execution (PR-2 P1).
+      const snapshot: AuthoritativeExecutionSnapshot = Object.freeze({
+        operationId: base.operationId,
+        name,
+        callId,
+        arguments: frozenArguments,
+      })
+      this.executionSnapshots.set(execution, snapshot)
       this.deferredContexts.set(execution, deferredContexts)
       this.contentFinalizers.set(execution, finalizerFor())
       this.cancellationStates.set(execution, {
@@ -1553,6 +1591,14 @@ export class ToolRuntime extends Service {
     return createHash('sha256').update(JSON.stringify(arguments_)).digest('hex')
   }
 
+  /** The creation-time authority snapshot this execution's dispatch chain reads (PR-2 P1). */
+  private authoritativeSnapshotOf(exec: ToolExecution): AuthoritativeExecutionSnapshot {
+    const snapshot = this.executionSnapshots.get(exec)
+    /* v8 ignore next -- only registry-minted executions reach the staged scheduler methods */
+    if (snapshot === undefined) throw new Error('tool registry scheduler invariant violated: missing authoritative execution snapshot')
+    return snapshot
+  }
+
   /**
    * Atomically consume this attempt's authorization grant at the dispatch
    * boundary (PR-2 port). A call whose policy stage asked must consume its
@@ -1566,11 +1612,12 @@ export class ToolRuntime extends Service {
     this.grantRequired.delete(exec)
     const approval = this.ctx.get('approval')
     if (approval === undefined) return false
+    const snapshot = this.authoritativeSnapshotOf(exec)
     return approval.takeGrant({
-      operationId: exec.operationId,
-      toolName: exec.name,
-      callId: exec.callId,
-      argsDigest: this.argsDigestOf(exec.arguments),
+      operationId: snapshot.operationId,
+      toolName: snapshot.name,
+      callId: snapshot.callId,
+      argsDigest: this.argsDigestOf(snapshot.arguments),
     })
   }
 
@@ -1611,10 +1658,14 @@ export class ToolRuntime extends Service {
     }
     exec.signal = signal
     try {
-      const tool = this.resolveExecution(exec.name, exec.agent, exec.parent !== undefined)
-      if (!tool) throw new ToolNotFoundError(exec.name)
+      // Tool resolution and body arguments come from the authority snapshot:
+      // a wrapper's reassignment of exec.name/exec.arguments above cannot
+      // re-target or re-argument the approved execution (PR-2 P1).
+      const snapshot = this.authoritativeSnapshotOf(exec)
+      const tool = this.resolveExecution(snapshot.name, exec.agent, exec.parent !== undefined)
+      if (!tool) throw new ToolNotFoundError(snapshot.name)
       state.bodyInvoked = true
-      const returned = await tool.execute(exec.arguments, exec)
+      const returned = await tool.execute(snapshot.arguments, exec)
       const result = this.createSuccessResult(exec, tool, returned)
       return isAborted(signal)
         ? toolAbortedResult(result)
@@ -1784,12 +1835,13 @@ export class ToolRuntime extends Service {
         approvalCancelled: false,
       }
     }
+    const snapshot = this.authoritativeSnapshotOf(exec)
     const outcome = await approval.request({
       agent: exec.agent,
-      toolName: exec.name,
-      callId: exec.callId,
-      operationId: exec.operationId,
-      argsDigest: this.argsDigestOf(exec.arguments),
+      toolName: snapshot.name,
+      callId: snapshot.callId,
+      operationId: snapshot.operationId,
+      argsDigest: this.argsDigestOf(snapshot.arguments),
       ...ask.reason !== undefined ? { reason: ask.reason } : {},
       signal: exec.signal,
     })
@@ -1850,8 +1902,9 @@ export class ToolRuntime extends Service {
       if (result.isError) {
         throw new TypeError('tools/post-execute cannot replace the value of a failed result')
       }
-      const tool = this.resolveExecution(exec.name, exec.agent, exec.parent !== undefined)
-      if (tool === undefined) throw new ToolNotFoundError(exec.name)
+      const snapshotName = this.authoritativeSnapshotOf(exec).name
+      const tool = this.resolveExecution(snapshotName, exec.agent, exec.parent !== undefined)
+      if (tool === undefined) throw new ToolNotFoundError(snapshotName)
       const replaced = this.createSuccessResult(exec, tool, decision.value)
       return this.markCanonical(exec, {
         ...replaced,
@@ -1880,9 +1933,10 @@ export class ToolRuntime extends Service {
     const violations = validateJsonSchemaValue(tool.output.schema, detached, 'value')
     if (violations.length > 0) throw new ToolOutputError(tool.name, violations)
     const value = deepFreeze(detached)
+    const snapshotArguments = this.authoritativeSnapshotOf(exec).arguments
     let rendered: ContentBlock[]
     try {
-      rendered = tool.output.render(exec.arguments, value)
+      rendered = tool.output.render(snapshotArguments, value)
     } catch (error: unknown) {
       throw projectionError(tool.name, 'render', error)
     }
@@ -1891,7 +1945,7 @@ export class ToolRuntime extends Service {
     if (exec.parent === undefined && tool.output.presentationMeta !== undefined) {
       let projected: JsonValue
       try {
-        projected = tool.output.presentationMeta(exec.arguments, value)
+        projected = tool.output.presentationMeta(snapshotArguments, value)
       } catch (error: unknown) {
         throw projectionError(tool.name, 'presentationMeta', error)
       }
@@ -1919,8 +1973,9 @@ export class ToolRuntime extends Service {
         ...result.additionalContexts !== undefined ? { additionalContexts: result.additionalContexts } : {},
       })
     }
-    const tool = this.resolveExecution(exec.name, exec.agent, exec.parent !== undefined)
-    if (tool === undefined) throw new ToolNotFoundError(exec.name)
+    const snapshotName = this.authoritativeSnapshotOf(exec).name
+    const tool = this.resolveExecution(snapshotName, exec.agent, exec.parent !== undefined)
+    if (tool === undefined) throw new ToolNotFoundError(snapshotName)
     const normalized = this.createSuccessResult(exec, tool, result.value)
     return this.markCanonical(exec, {
       ...normalized,

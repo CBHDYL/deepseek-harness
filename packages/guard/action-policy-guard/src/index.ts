@@ -4,10 +4,11 @@
  * approval inside the tool body — a tool or hook that performs a sensitive
  * action without requesting approval bypasses the policy entirely. This guard
  * moves the decision to `tools/pre-execute`: every tool call is gated through
- * the approval seam (upstream declares no per-tool `effects` classifications
- * yet, so the `treatUndeclaredAsSideEffectful` default treats every tool as
- * side-effectful; the PR-6 effects port re-attaches declared classifications
- * here).
+ * the approval seam. Tools that declare `effects: 'read-only'` on their
+ * shipped definition skip the gate; tools declaring `'side-effectful'` and
+ * tools with no declaration (the `treatUndeclaredAsSideEffectful` default)
+ * fold through it. MCP/self-declared effects are never trusted: the
+ * classification is read from the tool registry's shipped `ToolDefinition`.
  *
  * `observe` mode (default) only logs, so enabling it first surfaces which
  * tools are ungoverned without changing behavior; `enforce` mode denies any
@@ -67,10 +68,16 @@ export function apply(ctx: Context, config: Config): void {
   // child context (the same injection the tool-facing plugins use).
   ctx.inject(['tools'], (toolCtx: Context) => {
     toolCtx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
-      // Upstream ships no declared `effects` yet: every tool is undeclared, so
-      // the classification is the policy knob itself (the PR-6 effects port
-      // re-attaches declared read-only exemptions here).
-      const effectSource: ActionPolicyEffectSource | undefined = treatUndeclared ? 'undeclared' : undefined
+      // The declared classification lives on the SHIPPED tool definition, read
+      // from the registry — MCP/self-declared sources never populate `effects`.
+      const declared = toolCtx.tools.get(exec.name, exec.agent)?.effects
+      const effectSource: ActionPolicyEffectSource | undefined = declared === 'side-effectful'
+        ? 'declared'
+        : declared === 'read-only'
+          ? undefined
+          : treatUndeclared
+            ? 'undeclared'
+            : undefined
       const mine: PreToolDecision = effectSource === undefined
         ? { kind: 'allow' }
         : mode === 'observe'
