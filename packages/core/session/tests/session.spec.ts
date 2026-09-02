@@ -807,10 +807,11 @@ describe('Session', () => {
     expect(session.events).toEqual([])
   })
 
-  it('accepts ignorable:true on a log-only append and freezes it into the event', () => {
+  it('freezes a log-only append with no ignorable marker (build-authored events default to required-on-read)', () => {
     const session = Session.create(SessionId('append-ignorable'))
-    const event = session.append('todo/write', { todos: [] }, { ignorable: true })
-    expect(event).toMatchObject({ type: 'todo/write', ignorable: true })
+    const event = session.append('todo/write', { todos: [] })
+    expect(event).toMatchObject({ type: 'todo/write' })
+    expect((event as { ignorable?: unknown }).ignorable).toBeUndefined()
     expect(Object.isFrozen(event)).toBe(true)
     expect(Object.isFrozen(event.data)).toBe(true)
   })
