@@ -26,7 +26,7 @@ Status: implemented
 
 `scripts/release/critical-resolution.ts` 从已安装核心入口解析七个授权敏感包，判定每份副本的归属域：
 
-- `core-runtime`：嵌套在核心包内（全局安装），或与核心并列提升在同一 `node_modules` 层（打包安装 consumer）。核心副本必须携带核心的版本与其精确 `sourceRevision`；缺戳为 `UNKNOWN`，同版本不同戳为 `MISMATCH`——两者都判负。
+- `core-runtime`：核心自身的 Node 解析链可供给的任何副本——嵌套在核心包内（全局安装）、与核心并列提升在同一 `node_modules` 层（打包安装 consumer）、或提升在核心安装层之上的祖先级（仅当核心缺少自有成员时被触达）。核心副本必须携带核心的版本与其精确 `sourceRevision`；缺戳为 `UNKNOWN`，同版本不同戳为 `MISMATCH`——两者都判负。
 - `plugin-private`：嵌套在其它包自己的 `node_modules` 下。作为 `ALLOWED_COMPATIBILITY` 接受，不要求血统；核心的解析链不会进入这些目录，它们无法供给授权能力。
 - `unknown` / 不可解析：判负。
 

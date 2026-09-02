@@ -26,7 +26,7 @@ An installed `dsh` could not prove which source produced it, and could not prove
 
 `scripts/release/critical-resolution.ts` resolves seven authority-sensitive packages from the installed core entry and judges each copy's domain:
 
-- `core-runtime`: nested inside the core package (global install), or hoisted beside the core in the same `node_modules` level (the packed-install consumer). A core copy must carry the core's version and its exact `sourceRevision`; missing stamp is `UNKNOWN`, same version with a different stamp is `MISMATCH` — both fail.
+- `core-runtime`: any copy the core's own Node resolution walk can supply — nested inside the core package (global install), hoisted beside the core in the same `node_modules` level (the packed-install consumer), or hoisted at an ancestor level above the core's install level (reached when the core lacks its own member). A core copy must carry the core's version and its exact `sourceRevision`; missing stamp is `UNKNOWN`, same version with a different stamp is `MISMATCH` — both fail.
 - `plugin-private`: nested under another package's own `node_modules`. Accepted as `ALLOWED_COMPATIBILITY` without a lineage requirement; the core's resolution walk never descends into these, so they cannot supply authority.
 - `unknown` / unresolvable: fails.
 

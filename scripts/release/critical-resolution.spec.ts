@@ -47,15 +47,20 @@ function member(version: string, revision?: string): Record<string, unknown> {
 /**
  * An install root whose core package sits in its own `node_modules` scope,
  * mirroring the layouts the checker meets: global installs nest the whole
- * dependency set inside the core package, while the packed-install consumer
- * hoists every member beside the core in the same `node_modules` level.
+ * dependency set inside the core package, the packed-install consumer hoists
+ * every member beside the core, and a broken install can let the core's walk
+ * ascend to an ancestor level above the install.
  */
 function installation(options: {
   readonly coreRevision?: string | undefined
+  /** Extra path depth under the install root, placing the core deeper. */
+  readonly coreSuffix?: string | undefined
   /** The core package's own nested copy, as a global install would have it. */
   readonly nested?: { readonly version: string; readonly revision?: string | undefined } | undefined
   /** A copy hoisted beside the core in the same node_modules level. */
   readonly hoisted?: { readonly version: string; readonly revision?: string | undefined } | undefined
+  /** A copy at an ancestor node_modules level above the core's install. */
+  readonly ancestor?: { readonly version: string; readonly revision?: string | undefined } | undefined
   /** A copy inside a sibling plugin's own node_modules. */
   readonly sibling?: { readonly version: string } | undefined
 }): {
@@ -66,7 +71,7 @@ function installation(options: {
   const root = mkdtempSync(join(tmpdir(), 'dsh-resolution-'))
   roots.push(root)
 
-  const coreRoot = join(root, 'node_modules', '@deepseek-ai', 'dsh')
+  const coreRoot = join(root, ...(options.coreSuffix === undefined ? [] : options.coreSuffix.split('/')), 'node_modules', '@deepseek-ai', 'dsh')
   const coreManifest = manifest(coreRoot, {
     name: '@deepseek-ai/dsh',
     version: VERSION,
@@ -78,7 +83,13 @@ function installation(options: {
     manifest(join(coreRoot, 'node_modules', '@deepseek-ai', 'dsh-tools'), member(options.nested.version, options.nested.revision))
   }
   if (options.hoisted !== undefined) {
-    manifest(join(root, 'node_modules', '@deepseek-ai', 'dsh-tools'), member(options.hoisted.version, options.hoisted.revision))
+    const hoistLevel = options.coreSuffix === undefined
+      ? root
+      : join(root, ...options.coreSuffix.split('/'))
+    manifest(join(hoistLevel, 'node_modules', '@deepseek-ai', 'dsh-tools'), member(options.hoisted.version, options.hoisted.revision))
+  }
+  if (options.ancestor !== undefined) {
+    manifest(join(root, 'node_modules', '@deepseek-ai', 'dsh-tools'), member(options.ancestor.version, options.ancestor.revision))
   }
   if (options.sibling !== undefined) {
     const siblingRoot = join(root, 'node_modules', '@linxin666', 'dsh-web-all')
@@ -175,6 +186,65 @@ describe('critical dependency resolution', () => {
 
     expect(result.status).toBe('UNKNOWN')
     expect(resolutionsAcceptable([result])).toBe(false)
+  })
+
+  // The P1 this suite pins: when the core lacks its own member, Node's walk
+  // ascends to ancestor node_modules levels, so an ancestor copy supplies the
+  // core runtime and must be lineage-checked, never accepted as plugin-private.
+  it('accepts an ancestor-level copy on the candidate lineage', () => {
+    const { coreManifest, resolve } = installation({
+      coreRevision: CANDIDATE,
+      coreSuffix: 'a/b',
+      ancestor: { version: VERSION, revision: CANDIDATE },
+    })
+
+    const result = checkCriticalPackage(TOOLS, resolve, expectedCoreLineage(coreManifest))
+
+    expect(result.status).toBe('MATCH')
+    expect(result.domain).toBe('core-runtime')
+    expect(resolutionsAcceptable([result])).toBe(true)
+  })
+
+  it('rejects an ancestor-level copy of the same version packed from a different source', () => {
+    const { coreManifest, resolve } = installation({
+      coreRevision: CANDIDATE,
+      coreSuffix: 'a/b',
+      ancestor: { version: VERSION, revision: OTHER },
+    })
+
+    const result = checkCriticalPackage(TOOLS, resolve, expectedCoreLineage(coreManifest))
+
+    expect(result.status).toBe('MISMATCH')
+    expect(result.domain).toBe('core-runtime')
+    expect(resolutionsAcceptable([result])).toBe(false)
+  })
+
+  it('fails an unstamped ancestor-level copy exactly like a wrong one', () => {
+    const { coreManifest, resolve } = installation({
+      coreRevision: CANDIDATE,
+      coreSuffix: 'a/b',
+      ancestor: { version: VERSION },
+    })
+
+    const result = checkCriticalPackage(TOOLS, resolve, expectedCoreLineage(coreManifest))
+
+    expect(result.status).toBe('UNKNOWN')
+    expect(resolutionsAcceptable([result])).toBe(false)
+  })
+
+  it('prefers the core nested copy over an ancestor-level wrong copy', () => {
+    const { coreManifest, resolve } = installation({
+      coreRevision: CANDIDATE,
+      coreSuffix: 'a/b',
+      nested: { version: VERSION, revision: CANDIDATE },
+      ancestor: { version: VERSION, revision: OTHER },
+    })
+
+    const result = checkCriticalPackage(TOOLS, resolve, expectedCoreLineage(coreManifest))
+
+    expect(result.status).toBe('MATCH')
+    expect(result.domain).toBe('core-runtime')
+    expect(result.resolvedSourceRevision).toBe(CANDIDATE)
   })
 
   it('fails an unproven core lineage exactly like a wrong one', () => {

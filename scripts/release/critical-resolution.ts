@@ -9,12 +9,14 @@
  *
  * Two resolution domains matter and must not be conflated. A copy is part of
  * the core runtime when the core's own resolution walk can reach it as its
- * dependency: either nested inside the installed `dsh` package (a global
- * install), or hoisted beside the core package in the same `node_modules` level
- * (the packed-install consumer). Plugin subtrees may legitimately keep older
- * copies to satisfy a plugin's declared peer range; those copies live under
- * some other package's own `node_modules` and cannot supply the core runtime,
- * because the core's resolution walk never descends into them.
+ * dependency: nested inside the installed `dsh` package (a global install),
+ * hoisted beside the core package in the same `node_modules` level (the
+ * packed-install consumer), or hoisted at an ancestor level above the core's
+ * install level (reached only when the core lacks its own member). Plugin
+ * subtrees may legitimately keep older copies to satisfy a plugin's declared
+ * peer range; those copies live under some other package's own `node_modules`
+ * and cannot supply the core runtime, because the core's resolution walk
+ * never descends into them.
  */
 
 import { execFileSync } from 'node:child_process'
@@ -124,13 +126,31 @@ export function expectedCoreLineage(coreManifestPath: string): ExpectedCore {
 }
 
 /**
+ * The directory level that owns a resolved copy: the path prefix before the
+ * last `/node_modules/` segment. The copy lives directly inside that level's
+ * `node_modules`, so Node's resolution walk finds it when it checks
+ * `<level>/node_modules`.
+ * @param resolvedPath - absolute path of the resolved manifest.
+ * @returns The owning level, or `undefined` for a path outside any
+ * `node_modules` tree.
+ */
+function owningNodeModulesLevel(resolvedPath: string): string | undefined {
+  const last = resolvedPath.lastIndexOf('/node_modules/')
+  return last === -1 ? undefined : resolvedPath.slice(0, last)
+}
+
+/**
  * Classify which installation a resolved manifest belongs to.
  * @param resolvedPath - absolute path of the resolved manifest.
  * @param expected - the expected core lineage.
- * @returns `core-runtime` when the core's own resolution walk supplies the
- * copy — nested inside the core package, or hoisted beside it in the same
- * `node_modules` level — and `plugin-private` when the copy sits inside some
- * other package's own `node_modules`.
+ * @returns `core-runtime` when the core's own resolution walk can supply the
+ * copy, and `plugin-private` when it cannot. The walk ascends from the core
+ * entry through every ancestor directory's `node_modules`, so a copy is
+ * core-supplying in three shapes: nested inside the core package, hoisted
+ * beside the core in the same `node_modules` level, or hoisted at any
+ * ancestor level above the core's install level (reached when the core lacks
+ * its own member). A copy whose owning level is some other package's own
+ * directory is never reached by that walk.
  */
 export function resolutionDomain(resolvedPath: string, expected: ExpectedCore): ResolutionDomain {
   const real = canonical(resolvedPath)
@@ -141,6 +161,14 @@ export function resolutionDomain(resolvedPath: string, expected: ExpectedCore): 
     // node_modules. Only the direct hoist is what the core would load.
     const relative = real.slice(expected.hoist.length + 1)
     return relative.includes('/node_modules/') ? 'plugin-private' : 'core-runtime'
+  }
+  // Above the install level: the walk still ascends, so a copy owned by the
+  // core's install level or any of its ancestors supplies the core runtime
+  // when the core lacks its own member. Such a copy must be lineage-checked,
+  // not accepted as a plugin-private compatibility pin.
+  const owningLevel = owningNodeModulesLevel(real)
+  if (owningLevel !== undefined && (owningLevel === expected.hoist || expected.hoist.startsWith(`${owningLevel}/`))) {
+    return 'core-runtime'
   }
   if (real.includes('/node_modules/')) return 'plugin-private'
   return 'unknown'
