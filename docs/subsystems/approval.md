@@ -99,7 +99,7 @@ Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnp
 
 ### `ctx.approval` — `ApprovalService`
 
-Approval service that applies session policy before answerers and logs every ask/outcome pair to the requesting session. It exposes deterministic policy changes to the model through the runtime-context snapshot and switch notices.
+Approval service that applies session policy before answerers and logs every ask/outcome pair to the requesting session. It exposes deterministic policy changes to the model through the runtime-context snapshot and switch notices, and mints the one-shot grants the tool registry consumes at dispatch.
 
 ```ts cordis-catalog
 /**
@@ -132,6 +132,16 @@ setPolicy(agent: Agent, policy: ApprovalPolicy): void
 async request(req: ApprovalRequest): Promise<ApprovalOutcome>
 
 /**
+ * Atomically consume the one-shot grant this service minted for an
+ * allowed-once decision (PR-2 port). The identity must match the recorded
+ * grant field-for-field — a substituted execution, tool, arguments digest,
+ * or session fails closed — and the grant is consumed exactly once.
+ * @param identity - the dispatch-time execution identity to verify.
+ * @returns true only for the first exact match.
+ */
+takeGrant(identity: { readonly operationId: string readonly toolName: string readonly callId: ToolCallId readonly argsDigest: string }): boolean
+
+/**
  * Read the session override without applying the configured default.
  * @param session - session whose log supplies the override.
  * @returns the last logged policy, or `undefined` without one.
@@ -139,7 +149,7 @@ async request(req: ApprovalRequest): Promise<ApprovalOutcome>
 overrideOf(session: Session): ApprovalPolicy | undefined
 ```
 
-Types: [Agent](core.md) · [Session](session.md)
+Types: [Agent](core.md) · [Session](session.md) · [ToolCallId](llm-streaming.md)
 
 Source: [`packages/interaction/user-approval/src/index.ts`](../../packages/interaction/user-approval/src/index.ts)
 

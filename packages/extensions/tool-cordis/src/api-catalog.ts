@@ -438,7 +438,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
   {
     key: 'approval',
     summary: 'Approval service that applies session policy before answerers and logs every ask/outcome pair to the requesting session.',
-    description: 'Approval service that applies session policy before answerers and logs every ask/outcome pair to the requesting session. It exposes deterministic policy changes to the model through the runtime-context snapshot and switch notices.',
+    description: 'Approval service that applies session policy before answerers and logs every ask/outcome pair to the requesting session. It exposes deterministic policy changes to the model through the runtime-context snapshot and switch notices, and mints the one-shot grants the tool registry consumes at dispatch.',
     methods: [
       {
         signature: 'setPolicy(agent: Agent, policy: ApprovalPolicy): void',
@@ -451,6 +451,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'req', description: 'the pending decision (agent, tool identity, reason, signal).' }],
         returns: 'the closed outcome; `\'allowed-once\'` is the only grant.',
         throws: ['when no turn is open or either audit event fails before the session append commit point.'],
+      },
+      {
+        signature: 'takeGrant(identity: { readonly operationId: string readonly toolName: string readonly callId: ToolCallId readonly argsDigest: string }): boolean',
+        description: 'Atomically consume the one-shot grant this service minted for an allowed-once decision (PR-2 port). The identity must match the recorded grant field-for-field — a substituted execution, tool, arguments digest, or session fails closed — and the grant is consumed exactly once.',
+        parameters: [{ name: 'identity', description: 'the dispatch-time execution identity to verify.' }],
+        returns: 'true only for the first exact match.',
       },
       {
         signature: 'overrideOf(session: Session): ApprovalPolicy | undefined',
@@ -1532,7 +1538,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'a disposable immutable observation.',
       },
       {
-        signature: 'abstract readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[]; integrity: SessionIntegrity }>',
+        signature: 'abstract readFrom(id: SessionId, fromSeq: number, signal?: AbortSignal): Promise<{ meta: SessionHeader; events: SessionEvent[] }>',
         description: 'Read the stored events from `fromSeq` onward — the read-from-seq primitive for read models that resume from a watermark (e.g. a persisted projection cache folding only the tail past its checkpoint). Unlike inspect, it is a detached physical suffix read: no preparation cache, torn-tail truncation, synthetic closers, or coordinator-state publication. Only events from the valid contiguous stored prefix are returned, so a torn fragment never reaches the caller. `fromSeq` at or beyond the stored prefix returns an empty event list (never an error). A backend whose medium can seek by seq may read only the suffix; sequential media such as JSONL still parse the whole artifact and skip forward. The primitive bounds what is returned and refolded, not every backend\'s physical read.',
         parameters: [{ name: 'id', description: 'the persisted session to read.' }, { name: 'fromSeq', description: 'first event seq to include; a non-negative safe integer.' }, { name: 'signal', description: 'optional cancellation for queued and backend read work.' }],
         returns: 'the header and the stored events with `seq >= fromSeq`.',
@@ -3508,7 +3514,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ApprovalRequest',
-    declaration: 'export interface ApprovalRequest extends ApprovalRequestEvent {\n    readonly agent: Agent;\n    readonly toolName: string;\n    readonly callId?: ToolCallId;\n    readonly reason?: string;\n    readonly signal?: AbortSignal;\n}',
+    declaration: 'export interface ApprovalRequest extends ApprovalRequestEvent {\n    readonly agent: Agent;\n    readonly toolName: string;\n    readonly callId?: ToolCallId;\n    readonly operationId?: string;\n    readonly argsDigest?: string;\n    readonly reason?: string;\n    readonly signal?: AbortSignal;\n}',
   },
   {
     name: 'ApprovalRequestEvent',
@@ -4539,6 +4545,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface OneShotSubagentDescriptorData extends SubagentDescriptorBase {\n    readonly mode: \'one-shot\';\n    readonly label?: string;\n}',
   },
   {
+    name: 'OperationId',
+    declaration: 'export type OperationId = string;',
+  },
+  {
     name: 'PermissionSelect',
     declaration: 'export interface PermissionSelect {\n    options: PresetOption[];\n    currentValue: string;\n}',
   },
@@ -4872,7 +4882,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionEventMap',
-    declaration: 'export interface SessionEventMap {\n    \'turn/start\': {\n        turn: number;\n    };\n    \'turn/end\': {\n        turn: number;\n        reason: TurnEndReason;\n    };\n    \'step/start\': {\n        turn: number;\n        step: number;\n    };\n    \'step/end\': {\n        turn: number;\n        step: number;\n    };\n    \'user/message\': UserMessage;\n    \'assistant/chunk\': {\n        turn: number;\n        step: number;\n        chunk: StreamChunk;\n    };\n    \'assistant/message\': {\n        turn: number;\n        step: number;\n        message: AssistantMessage;\n        usage?: TokenUsage;\n        interrupted?: true;\n    };\n    \'tool/call\': {\n        turn: number;\n        step: number;\n        callId: ToolCallId;\n        name: string;\n        arguments: string;\n    };\n    \'tool/result\': {\n        turn: number;\n        step: number;\n        message: ToolResultMessage;\n        error?: {\n            name: string;\n            code: string;\n        };\n        meta?: JsonValue;\n    };\n    \'request/header\': {\n        header: EpochHeader;\n        reason: RequestHeaderReason;\n        startsSeries?: true;\n    };\n    \'request/context\': RequestContext;\n    \'session/end-seed\': Record<string, never>;\n}',
+    declaration: 'export interface SessionEventMap {\n    \'turn/start\': {\n        turn: number;\n    };\n    \'turn/end\': {\n        turn: number;\n        reason: TurnEndReason;\n    };\n    \'step/start\': {\n        turn: number;\n        step: number;\n    };\n    \'step/end\': {\n        turn: number;\n        step: number;\n    };\n    \'user/message\': UserMessage;\n    \'assistant/chunk\': {\n        turn: number;\n        step: number;\n        chunk: StreamChunk;\n    };\n    \'assistant/message\': {\n        turn: number;\n        step: number;\n        message: AssistantMessage;\n        usage?: TokenUsage;\n        interrupted?: true;\n    };\n    \'tool/call\': {\n        turn: number;\n        step: number;\n        callId: ToolCallId;\n        name: string;\n        arguments: string;\n        operationId?: string;\n    };\n    \'tool/result\': {\n        turn: number;\n        step: number;\n        message: ToolResultMessage;\n        error?: {\n            name: string;\n            code: string;\n        };\n        meta?: JsonValue;\n        operationId?: string;\n    };\n    \'request/header\': {\n        header: EpochHeader;\n        reason: RequestHeaderReason;\n        startsSeries?: true;\n    };\n    \'request/context\': RequestContext;\n    \'session/end-seed\': Record<string, never>;\n    \'session/repaired\': {\n        message: UserMessage;\n        reason: string;\n        synthesizedClosers: number;\n    };\n}',
   },
   {
     name: 'SessionEventMetadataFilter',
@@ -4964,11 +4974,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionInspection',
-    declaration: 'export interface SessionInspection {\n    readonly meta: SessionHeader;\n    readonly events: readonly SessionEvent[];\n    readonly integrity: SessionIntegrity;\n}',
-  },
-  {
-    name: 'SessionIntegrity',
-    declaration: 'export type SessionIntegrity = \'intact\' | \'repaired\' | \'unknown\';',
+    declaration: 'export interface SessionInspection {\n    readonly meta: SessionHeader;\n    readonly events: readonly SessionEvent[];\n}',
   },
   {
     name: 'SessionJob',
@@ -5572,7 +5578,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SurfaceEventType',
-    declaration: 'export type SurfaceEventType = \'user/message\' | \'assistant/message\' | \'tool/result\';',
+    declaration: 'export type SurfaceEventType = \'user/message\' | \'assistant/message\' | \'tool/result\' | \'session/repaired\';',
   },
   {
     name: 'SurfaceIntent',
@@ -5756,7 +5762,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolExecution',
-    declaration: 'export interface ToolExecution extends ToolExecutionInput {\n    readonly rootCallId: ToolCallId;\n    readonly token: ToolExecutionToken;\n}',
+    declaration: 'export interface ToolExecution extends ToolExecutionInput {\n    readonly operationId: OperationId;\n    readonly rootCallId: ToolCallId;\n    readonly token: ToolExecutionToken;\n}',
   },
   {
     name: 'ToolExecutionFailure',

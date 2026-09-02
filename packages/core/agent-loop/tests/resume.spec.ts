@@ -280,6 +280,7 @@ describe('the session-persistence Agent Note: AgentLoop factory create/resume', 
     const ctx2 = new Context()
     await ctx2.plugin(LlmRuntime)
     await ctx2.plugin(SessionStore)
+    await ctx2.plugin(SessionProjectionRegistry)
     await ctx2.plugin(SystemPrompt)
     await ctx2.plugin(ToolRuntime)
     await ctx2.plugin(AgentRegistry)
