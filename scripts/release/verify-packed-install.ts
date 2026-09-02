@@ -21,6 +21,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
+import {
+  checkCriticalResolutions, expectedCoreLineage, resolutionsAcceptable, subprocessResolver,
+} from './critical-resolution.ts'
 import { releaseFamily } from './families.ts'
 import { capture, isEntry } from './process.ts'
 import { packedIdentity } from './tarball.ts'
@@ -107,12 +110,37 @@ function main(): void {
     capture('npm', ['install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=optional'],
       { cwd: consumerRoot, env: environment })
 
-    const bin = join(consumerRoot, 'node_modules', ...entry.packageName.split('/'), entry.binPath)
-    const version = capture(process.execPath, [bin, '--version'], { cwd: consumerRoot, env: environment })
-    if (version !== expected.version) {
-      throw new Error(`installed ${entry.packageName} --version reported ${JSON.stringify(version)}, expected ${expected.version}`)
+    const installedRoot = join(consumerRoot, 'node_modules', ...entry.packageName.split('/'))
+    const bin = join(installedRoot, entry.binPath)
+    const reported = capture(process.execPath, [bin, '--version'], { cwd: consumerRoot, env: environment })
+    // A stamped artifact renders its packing commit beside the version, so the
+    // report is checked by the two properties that matter rather than by an
+    // exact string: the CLI owns how it renders an identity, and duplicating
+    // that format here would fail the job on a rendering change alone.
+    const lineage = expectedCoreLineage(join(installedRoot, 'package.json'))
+    if (!reported.startsWith(expected.version)) {
+      throw new Error(`installed ${entry.packageName} --version reported ${JSON.stringify(reported)}, expected it to report version ${expected.version}`)
     }
-    console.log(`release verify-packed-install: installed ${entry.packageName} reports ${version}`)
+    if (lineage.sourceRevision !== undefined && !reported.includes(lineage.sourceRevision.slice(0, 8))) {
+      throw new Error(`installed ${entry.packageName} --version reported ${JSON.stringify(reported)}, expected it to name source revision ${lineage.sourceRevision}`)
+    }
+    console.log(`release verify-packed-install: installed ${entry.packageName} reports ${reported}`)
+
+    // Provenance gate: every authority-sensitive package the installed runtime
+    // would load must come from this candidate's own lineage. Resolution runs in
+    // a plain Node child so no loader in this process can answer for the
+    // installation.
+    const resolutions = checkCriticalResolutions(subprocessResolver(bin, environment), lineage)
+    for (const resolution of resolutions) {
+      console.log(`release verify-packed-install: ${resolution.status.padEnd(21)} ${resolution.package} — ${resolution.detail}`)
+    }
+    if (!resolutionsAcceptable(resolutions)) {
+      const offenders = resolutions
+        .filter(resolution => resolution.status !== 'MATCH' && resolution.status !== 'ALLOWED_COMPATIBILITY')
+        .map(resolution => `${resolution.package}: ${resolution.status} — ${resolution.detail}`)
+      throw new Error(`critical dependency lineage is not acceptable for this candidate:\n  ${offenders.join('\n  ')}`)
+    }
+    console.log(`release verify-packed-install: critical dependency lineage acceptable (${String(resolutions.length)} package(s))`)
   } finally {
     rmSync(consumerRoot, { recursive: true, force: true })
   }

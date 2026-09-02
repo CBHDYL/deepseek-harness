@@ -8,6 +8,7 @@ import {
   expectedCoreLineage,
   resolutionsAcceptable,
   resolverFrom,
+  subprocessResolver,
   type ManifestResolver,
 } from './critical-resolution.ts'
 
@@ -28,6 +29,14 @@ function manifest(directory: string, body: Record<string, unknown>): string {
   const path = join(directory, 'package.json')
   writeFileSync(path, `${JSON.stringify(body, undefined, 2)}\n`)
   return path
+}
+
+/** A child environment with every module-loader hook removed. */
+function scrubbedEnvironment(): NodeJS.ProcessEnv {
+  const environment = { ...process.env }
+  delete environment.NODE_OPTIONS
+  delete environment.NODE_PATH
+  return environment
 }
 
 /**
@@ -166,6 +175,26 @@ describe('critical dependency resolution', () => {
     expect(result.status).toBe('MATCH')
     expect(result.domain).toBe('core-runtime')
     expect(result.resolvedVersion).toBe(VERSION)
+  })
+
+  it('resolves through a child process, so no loader in this process can answer', () => {
+    const { coreManifest } = installation({ coreRevision: CANDIDATE, nested: { version: VERSION, revision: CANDIDATE } })
+    const entry = coreManifest.slice(0, coreManifest.length - '/package.json'.length)
+    const resolve = subprocessResolver(join(entry, 'lib', 'bin.js'), scrubbedEnvironment())
+
+    expect(resolve(`${TOOLS}/package.json`)).toContain(TOOLS)
+  })
+
+  it('throws from the child when a package does not resolve, which is the UNKNOWN verdict', () => {
+    const { coreManifest } = installation({ coreRevision: CANDIDATE })
+    const entry = coreManifest.slice(0, coreManifest.length - '/package.json'.length)
+    const resolve = subprocessResolver(join(entry, 'lib', 'bin.js'), scrubbedEnvironment())
+
+    const result = checkCriticalPackage('@deepseek-ai/dsh-absent-package', resolve, expectedCoreLineage(coreManifest))
+
+    expect(result.status).toBe('UNKNOWN')
+    expect(result.detail).toBe('package did not resolve from this runtime')
+    expect(result.resolvedPath).toBeUndefined()
   })
 
   it('checks every critical package and fails the set on one bad core copy', () => {

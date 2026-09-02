@@ -149,6 +149,7 @@
     "release:verify": "tsx scripts/release/verify.ts",
     "release:pack": "tsx scripts/release/pack.ts",
     "release:verify-packed-install": "tsx scripts/release/verify-packed-install.ts",
+    "release:verify-critical-resolution": "tsx scripts/release/verify-critical-resolution.ts",
     "release:publish": "tsx scripts/release/publish.ts",
     "dsh": "node --import tsx/esm apps/cli/src/bin.ts",
     "demo:ptc": "node scripts/demo-ptc.mjs",

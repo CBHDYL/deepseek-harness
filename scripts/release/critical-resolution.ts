@@ -15,6 +15,7 @@
  * because a nested core dependency always resolves before any outer directory.
  */
 
+import { execFileSync } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { declaredSourceRevision } from './source-revision.ts'
@@ -225,4 +226,32 @@ export function resolutionsAcceptable(resolutions: readonly CriticalResolution[]
 export function resolverFrom(entryPath: string): ManifestResolver {
   const require = createRequire(entryPath)
   return specifier => require.resolve(specifier)
+}
+
+/**
+ * Build a resolver that answers from a plain Node child process.
+ *
+ * Provenance must be decided by Node's own resolver and nothing else. The
+ * release scripts run under a TypeScript loader inside this workspace, and that
+ * loader answers bare specifiers from `tsconfig` path mappings — a source
+ * checkout would then stand in for the installed copy and report a package the
+ * installation does not actually carry. The child is started without the
+ * loader (`NODE_OPTIONS`/`NODE_PATH` scrubbed by the caller's environment), so
+ * only the installation's own directory chain can answer.
+ * @param entryPath - absolute path of a file inside the installation.
+ * @param env - child environment; must not reinstate a module loader.
+ * @returns A resolver that follows that installation's resolution order.
+ */
+export function subprocessResolver(entryPath: string, env: NodeJS.ProcessEnv): ManifestResolver {
+  return (specifier) => {
+    const source = 'import{createRequire}from\'node:module\';'
+      + `process.stdout.write(createRequire(${JSON.stringify(entryPath)}).resolve(${JSON.stringify(specifier)}))`
+    // A non-zero exit means the specifier did not resolve, which is the
+    // `UNKNOWN` verdict callers expect from a throwing resolver.
+    return execFileSync(process.execPath, ['--input-type=module', '-e', source], {
+      encoding: 'utf8',
+      env,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+  }
 }
