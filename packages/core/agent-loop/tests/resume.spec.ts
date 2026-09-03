@@ -539,16 +539,53 @@ describe('the session-persistence Agent Note: AgentLoop factory create/resume', 
     await appendFile(join(root, logs[0] as string), '{"type":"assistant/chunk","seq":1,"ti')
 
     // Resume truncates the torn tail under its write open, then appends the
-    // closers immediately after the committed prefix — no gap, no fragment.
+    // closers immediately after the committed prefix — no gap, no fragment —
+    // and the durable repair notice trails the closers (P-DURABILITY).
     const ctx2 = await mountPersistentHarness(root, new MockAdapter([]), 'none')
     const handle = await ctx2.agents.resume({ resumeSessionId: sessionId })
     expect(handle.agent.session.snapshotEvents().map(event => event.type))
-      .toEqual(['turn/start', 'turn/end', 'session/end-seed'])
+      .toEqual(['turn/start', 'turn/end', 'session/repaired', 'session/end-seed'])
     await handle.dispose()
 
     const stored = await readStoredEvents(ctx2, sessionId)
     expect(stored.map(event => `${event.type}@${event.seq}`))
-      .toEqual(['turn/start@0', 'turn/end@1', 'session/end-seed@2'])
+      .toEqual(['turn/start@0', 'turn/end@1', 'session/repaired@2', 'session/end-seed@3'])
+    expect(stored[2]).toMatchObject({
+      type: 'session/repaired',
+      surfaceOp: 'append',
+      data: { reason: 'torn-tail', synthesizedClosers: 1 },
+    })
+    expect((stored[2] as SessionEvent<'session/repaired'>).data.message.content[0])
+      .toEqual({ type: 'text', text: expect.stringContaining('interrupted turn was closed with synthetic terminal events') })
+    await ctx2.fiber.dispose()
+  })
+
+  it('resume over a torn tail on a balanced log appends the repair notice without closers', async () => {
+    const sessionId = SessionId('torn-tail-balanced')
+    const root = await mkdtemp(join(tmpdir(), 'dsh-resume-torn-balanced-'))
+    dirs.push(root)
+    const ctx1 = await mountPersistentHarness(root, new MockAdapter([]), 'none')
+    await seedStoredSession(ctx1, sessionId, [
+      { type: 'turn/start', seq: SessionSeq(0), time: 1, data: { turn: 1 } },
+      { type: 'turn/end', seq: SessionSeq(1), time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
+    ])
+    await ctx1.fiber.dispose()
+
+    const logs = (await readdir(root, { recursive: true })).filter(name => name.endsWith('.jsonl'))
+    expect(logs).toHaveLength(1)
+    await appendFile(join(root, logs[0] as string), '{"type":"assistant/chunk","seq":2,"ti')
+
+    // No open turn needs closers; the notice alone makes the repair durable.
+    const ctx2 = await mountPersistentHarness(root, new MockAdapter([]), 'none')
+    const handle = await ctx2.agents.resume({ resumeSessionId: sessionId })
+    await handle.dispose()
+
+    const stored = await readStoredEvents(ctx2, sessionId)
+    expect(stored.map(event => `${event.type}@${event.seq}`))
+      .toEqual(['turn/start@0', 'turn/end@1', 'session/repaired@2', 'session/end-seed@3'])
+    expect(stored[2]).toMatchObject({ data: { reason: 'torn-tail', synthesizedClosers: 0 } })
+    expect((stored[2] as SessionEvent<'session/repaired'>).data.message.content[0])
+      .toEqual({ type: 'text', text: expect.stringContaining('an incomplete tail was discarded') })
     await ctx2.fiber.dispose()
   })
 

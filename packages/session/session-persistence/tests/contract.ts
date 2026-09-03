@@ -511,11 +511,16 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
         try {
           const reader = await readerInstance.persistence.open(m.id, 'read')
           expect(await reader.read()).toEqual(oneTurnLog())
+          // Read opens never recover: they carry no torn-tail fact (P-DURABILITY).
+          expect(reader.tornTailRecovery).toBeUndefined()
           await reader.close()
 
           // A write open + first append durably truncates the torn tail and
-          // continues at the committed next-seq.
+          // continues at the committed next-seq. The open exposes the typed
+          // recovery fact before any mutation lands.
           const writer = await readerInstance.persistence.open(m.id, 'write')
+          expect(writer.tornTailRecovery?.kind).toBe('torn-tail')
+          expect(writer.tornTailRecovery?.tornBytes).toBeGreaterThan(0)
           await writer.append(secondTurn())
           expect((await writer.read()).map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
           await writer.close()
@@ -523,12 +528,16 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
           await readerInstance.dispose()
         }
 
-        // The repaired log is intact for the next instance.
+        // The repaired log is intact for the next instance, and a fresh write
+        // open over it carries no recovery fact — the repair already landed.
         const verifyInstance = await backend.reopen()
         try {
           const verify = await verifyInstance.persistence.open(m.id, 'read')
           expect((await verify.read()).map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
           await verify.close()
+          const cleanWrite = await verifyInstance.persistence.open(m.id, 'write')
+          expect(cleanWrite.tornTailRecovery).toBeUndefined()
+          await cleanWrite.close()
         } finally {
           await verifyInstance.dispose()
         }

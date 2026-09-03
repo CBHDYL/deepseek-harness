@@ -722,6 +722,20 @@ describe('JsonlSessionPersistence: durability and crash semantics', () => {
     expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
     expect(await readFile(path)).toEqual(Buffer.concat([committed, Buffer.from(tail)]))
 
+    // The read open never recovers and carries no torn-tail fact; the write
+    // open exposes the typed recovery evidence before any mutation lands
+    // (P-DURABILITY). Raw JSONL recovers no complete events from the torn line.
+    const reader = await ctx.sessionPersistence.open(m.id, 'read')
+    expect(reader.tornTailRecovery).toBeUndefined()
+    await reader.close()
+    const writer = await ctx.sessionPersistence.open(m.id, 'write')
+    expect(writer.tornTailRecovery).toEqual({
+      kind: 'torn-tail',
+      tornBytes: Buffer.byteLength('{"type":"assistant/chunk","seq":8,"ti'),
+      recoveredEvents: 0,
+    })
+    await writer.close()
+
     // The write path truncates the torn fragment durably before its first
     // append, preserving every committed byte before it.
     const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => undefined)
@@ -735,6 +749,53 @@ describe('JsonlSessionPersistence: durability and crash semantics', () => {
     expect(repaired).not.toContain('assistant/chunk')
     const reloaded = await readAll(ctx.sessionPersistence, m.id)
     expect(reloaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+
+    // The repair already landed: a fresh write open carries no recovery fact.
+    const cleanWriter = await ctx.sessionPersistence.open(m.id, 'write')
+    expect(cleanWriter.tornTailRecovery).toBeUndefined()
+    await cleanWriter.close()
+  })
+
+  it('a malformed complete record followed by committed content fails loud as corruption', async () => {
+    const m = meta('malformed-committed', '/proj')
+    await writeLog(ctx.sessionPersistence, m, oneTurnLog()) // seqs 0..5
+    const path = rawLogPath(root, '/proj', m.id)
+    // A newline-terminated record that cannot parse, followed by a committed
+    // turn/end: the damage sits INSIDE the log, proven by the later committed
+    // content — recoverable-torn-tail classification must not swallow it.
+    await appendFile(path, [
+      '{not json}',
+      JSON.stringify({ type: 'turn/end', seq: SessionSeq(6), time: 8, data: { turn: 2, reason: { kind: 'interrupted' } } }),
+      '',
+    ].join('\n'))
+    // A write open reads and validates the full log eagerly: the damage fails
+    // the open itself, never degrades into a recoverable prefix.
+    const failure = await ctx.sessionPersistence.open(m.id, 'write').then(() => undefined, (error: unknown) => error as Error)
+    expect(failure?.name).toBe('SessionPersistenceCorruptionError')
+    expect(failure?.message).toMatch(/unparsable committed event/)
+    expect(failure?.message).toContain(`(raw log: ${path})`)
+  })
+
+  it('corruption in the middle of a committed log fails loud as corruption', async () => {
+    const m = meta('middle-corrupt', '/proj')
+    await writeLog(ctx.sessionPersistence, m, oneTurnLog()) // seqs 0..5
+    const path = rawLogPath(root, '/proj', m.id)
+    const bytes = await readFile(path)
+    const headerEnd = bytes.indexOf(0x0A)
+    const content = bytes.toString('utf8', headerEnd + 1)
+    const firstLineEnd = content.indexOf('\n')
+    // Replace the first event record with an unparsable newline-terminated
+    // record; every later line still parses, and the committed turn/end proves
+    // the damage instead of degrading it to a torn tail.
+    const corrupt = Buffer.concat([
+      bytes.subarray(0, headerEnd + 1),
+      Buffer.from('{"type":"turn/start","seq":0,"ti', 'utf8'),
+      bytes.subarray(headerEnd + 1 + firstLineEnd + 1),
+    ])
+    await writeFile(path, corrupt)
+    const failure = await ctx.sessionPersistence.open(m.id, 'write').then(() => undefined, (error: unknown) => error as Error)
+    expect(failure?.name).toBe('SessionPersistenceCorruptionError')
+    expect(failure?.message).toMatch(/unparsable committed event/)
   })
 
   it('a stored open turn is served as stored, with no synthetic closers', async () => {

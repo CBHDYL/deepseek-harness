@@ -24,7 +24,7 @@ export * from './types.ts'
 export { SessionPreparation } from './preparation.ts'
 export type { SessionPreparationOptions } from './preparation.ts'
 export type { AssistantMessage, ToolResultMessage, UserMessage } from '@deepseek-ai/dsh-llm'
-export { interruptedTurnClosers, TOOL_NOT_STARTED, TOOL_OUTCOME_UNKNOWN } from './repair.ts'
+export { interruptedTurnClosers, sessionRepairedEvent, TOOL_NOT_STARTED, TOOL_OUTCOME_UNKNOWN } from './repair.ts'
 export { decodeStorageRecord, packChunkRuns } from './chunk-rows.ts'
 export type { ChunkRow, StorageRecord } from './chunk-rows.ts'
 export type { SessionSurface, SurfaceFoldReplacement, SurfaceFoldResult } from './surface.ts'
@@ -175,6 +175,7 @@ export function adoptSessionEvent<T extends SessionEvent>(event: T): T {
       break
     case 'assistant/message':
     case 'tool/result':
+    case 'session/repaired':
       deepFreeze(event.data.message)
       break
     default:
@@ -301,7 +302,7 @@ function assertAdapterDefaults(
 function assertMessageEventShape(event: Record<string, unknown>, subject: string): void {
   const type = event['type']
   if (type !== 'user/message' && type !== 'assistant/message'
-    && type !== 'tool/result') return
+    && type !== 'tool/result' && type !== 'session/repaired') return
   const data = event['data']
   const record = typeof data === 'object' && data !== null
     ? data as Record<string, unknown>

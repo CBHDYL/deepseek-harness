@@ -23,12 +23,13 @@ const SURFACE_EVENT_TYPES = new Set<string>([
   'user/message',
   'assistant/message',
   'tool/result',
+  'session/repaired',
 ])
 
 /**
  * Whether an event type can join the model-visible surface.
  * @param type - event type to test.
- * @returns true for one of the three message-producing event types.
+ * @returns true for one of the four message-producing event types.
  */
 export function isSurfaceEligibleType(type: string): boolean {
   return SURFACE_EVENT_TYPES.has(type)
@@ -111,6 +112,9 @@ export function deriveEventMessage(event: SessionEvent): Message | null {
       return event.data.message
     }
     case 'tool/result': {
+      return event.data.message
+    }
+    case 'session/repaired': {
       return event.data.message
     }
     default:

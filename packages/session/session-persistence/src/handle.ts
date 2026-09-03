@@ -32,6 +32,23 @@ export interface SessionHandleFlushOptions {
 }
 
 /**
+ * Physical crash-recovery fact exposed by a `write` open that detected a torn
+ * tail (P-DURABILITY). Present iff this open found committed bytes followed
+ * by an incomplete final record the write path will truncate before its first
+ * append; absent on a clean log and on read-only opens, which never recover.
+ * Unrecoverable damage never reaches this field — it fails the open with
+ * {@link SessionPersistenceCorruptionError}.
+ */
+export interface SessionTornTailRecovery {
+  /** Fixed recovery category — currently always `torn-tail`. */
+  readonly kind: 'torn-tail'
+  /** Bytes beyond the last complete committed record that the write path will truncate. */
+  readonly tornBytes: number
+  /** Complete committed events recovered from the torn final frame (zstd); `0` for raw JSONL. */
+  readonly recoveredEvents: number
+}
+
+/**
  * One open channel onto a stored session. A handle is single-owner state, not
  * a shared service: `read` never backtracks below what this handle already
  * observed, a `write` handle reads its own successful appends, and `close()`
@@ -58,6 +75,14 @@ export interface SessionHandle extends AsyncDisposable {
   readonly inheritedEventCount: SessionLogOffset
   /** Whether this handle may mutate the log. */
   readonly access: SessionAccess
+
+  /**
+   * Torn-tail recovery fact for this open, when the artifact carried one.
+   * Fixed at open time and retained for the handle's lifetime, so the
+   * recovery remains verifiable after the write path truncates the torn
+   * bytes. Absent on `read` handles, clean logs, and created sessions.
+   */
+  readonly tornTailRecovery?: SessionTornTailRecovery | undefined
 
   /**
    * Read a slice of the valid contiguous logical log. The slice is a legal log

@@ -24,7 +24,7 @@ import type {
 } from '@deepseek-ai/dsh-agent'
 import { errorChain, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-settings'
-import { interruptedTurnClosers, SessionLogOffset, SessionPreparation, SessionSeq } from '@deepseek-ai/dsh-session'
+import { interruptedTurnClosers, sessionRepairedEvent, SessionLogOffset, SessionPreparation, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
@@ -876,14 +876,22 @@ export class AgentLoop extends Service implements AgentFactory {
           const persisted = await handle.read(0, undefined, { signal: fused })
           fused.throwIfAborted()
           const closers = interruptedTurnClosers(persisted)
-          if (closers.length > 0) await handle.append(closers)
+          // Torn-tail recovery evidence (P-DURABILITY): a write open that
+          // detected an incomplete physical tail appends one model-visible
+          // notice after the synthetic closers, so a repaired history never
+          // resumes silently. A clean log appends nothing.
+          const repaired = handle.tornTailRecovery === undefined
+            ? []
+            : [sessionRepairedEvent([...persisted, ...closers], closers)]
+          const repairBatch = [...closers, ...repaired]
+          if (repairBatch.length > 0) await handle.append(repairBatch)
           preparation = SessionPreparation.create(this.runtime.ctx.sessions.prepare(id, {
-            seed: [...persisted, ...closers],
+            seed: [...persisted, ...repairBatch],
             meta: structuredClone(handle.header),
             inheritedEventCount: handle.inheritedEventCount,
             seedSource: 'persistence',
           }))
-          stored = { handle, storedCount: persisted.length + closers.length }
+          stored = { handle, storedCount: persisted.length + repairBatch.length }
           await this.appendUnstoredSuffix(stored, preparation.session)
         } finally {
           await unfollowOwner()

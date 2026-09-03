@@ -99,6 +99,8 @@ interface StoredLog {
   readonly tornTruncateTo: number | undefined
   /** Complete events recovered from the torn final frame; the write path rewrites them durably. */
   readonly recoveredTail: SessionEvent[]
+  /** Bytes past the last complete committed record the write path will truncate (P-DURABILITY evidence). */
+  readonly tornBytes: number | undefined
   /** Exact fork-inherited prefix length stored in the header line. */
   readonly inheritedEventCount: SessionLogOffsetType
   readonly revision: PersistenceRevision
@@ -248,6 +250,9 @@ class JsonlSessionPersistence extends SessionPersistence {
         materialized: true,
         tornTruncateTo: stored.tornTruncateTo,
         recoveredTail: stored.recoveredTail,
+        tornTailRecovery: stored.tornBytes === undefined
+          ? undefined
+          : { kind: 'torn-tail', tornBytes: stored.tornBytes, recoveredEvents: stored.recoveredTail.length },
         inheritedEventCount: stored.inheritedEventCount,
         primed: stored.events,
       }))
@@ -398,6 +403,7 @@ class JsonlSessionPersistence extends SessionPersistence {
       events: SessionEvent[]
       tornTruncateTo: number | undefined
       recoveredTail: SessionEvent[]
+      tornBytes: number | undefined
     }
     try {
       if (this.compression === 'zstd') {
@@ -414,6 +420,7 @@ class JsonlSessionPersistence extends SessionPersistence {
           // A torn raw tail is one incomplete JSONL line; it holds no complete
           // record to recover.
           recoveredTail: [],
+          tornBytes: committedBytes < buffer.byteLength ? buffer.byteLength - committedBytes : undefined,
         }
       }
     } catch (error: unknown) {
@@ -561,6 +568,7 @@ class JsonlSessionPersistence extends SessionPersistence {
     events: SessionEvent[]
     tornTruncateTo: number | undefined
     recoveredTail: SessionEvent[]
+    tornBytes: number | undefined
   }> {
     signal?.throwIfAborted()
     const { frames, tornStart } = scanZstdFrames(buffer)
@@ -603,6 +611,7 @@ class JsonlSessionPersistence extends SessionPersistence {
           events: prefix.events,
           tornTruncateTo: undefined,
           recoveredTail: [],
+          tornBytes: undefined,
         }
       }
       // A torn final frame's append never resolved, but complete JSONL records
@@ -627,6 +636,7 @@ class JsonlSessionPersistence extends SessionPersistence {
         events: prefix.events,
         tornTruncateTo: tornStart,
         recoveredTail: prefix.events.slice(complete.eventCount),
+        tornBytes: buffer.byteLength - tornStart,
       }
     } catch (error) {
       /* v8 ignore next -- decoder failure plus concurrent abort is timing-dependent */

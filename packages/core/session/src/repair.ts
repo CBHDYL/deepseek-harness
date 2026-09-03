@@ -133,3 +133,38 @@ export function interruptedTurnClosers(events: readonly SessionEvent[]): Session
   closers.push({ type: 'turn/end', seq: SessionSeq(seq++), time, data: { turn: openTurn, reason: { kind: 'interrupted' } } })
   return closers
 }
+
+/**
+ * Build the durable repair-evidence event one torn-tail recovery appends,
+ * after its synthetic closers (P-DURABILITY). Only a recovery that actually
+ * detected a torn physical tail writes it — a clean log never does, and a
+ * failed append never publishes it. The notice joins the ordered surface
+ * through the standard envelope contract, so the resumed model reads that
+ * earlier history may be incomplete.
+ * @param balanced - the balanced inspection events (stored prefix + closers).
+ * @param closers - the synthetic terminal closers the same append carries before the notice.
+ * @returns one `session/repaired` event continuing `balanced`'s seq and time.
+ */
+export function sessionRepairedEvent(balanced: readonly SessionEvent[], closers: readonly SessionEvent[]): SessionEvent {
+  const last = balanced.at(-1)
+  const text = closers.length > 0
+    ? 'The session history was damaged and has been repaired: the interrupted turn was closed with synthetic terminal events. Treat earlier history as possibly incomplete.'
+    : 'The session history was damaged and has been repaired: an incomplete tail was discarded. Treat earlier history as possibly incomplete.'
+  const data: Extract<SessionEvent, { type: 'session/repaired' }>['data'] = deepFreeze({
+    message: deepFreeze({
+      id: brandString<MessageId>(`session-repaired-${balanced.length}`),
+      role: 'user',
+      source: { kind: 'plugin', plugin: 'session-persistence' },
+      content: [{ type: 'text', text }],
+    }),
+    reason: 'torn-tail',
+    synthesizedClosers: closers.length,
+  })
+  return {
+    type: 'session/repaired',
+    seq: SessionSeq(balanced.length),
+    time: last?.time ?? Date.now(),
+    data,
+    surfaceOp: 'append' as const,
+  }
+}

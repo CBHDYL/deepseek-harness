@@ -28,6 +28,7 @@ import type {
   SessionHandleAppendOptions,
   SessionHandleFlushOptions,
   SessionHandleReadOptions,
+  SessionTornTailRecovery,
 } from '@deepseek-ai/dsh-session-persistence'
 
 /** Maximum intentional wait before a routed live session batch starts writing. */
@@ -66,6 +67,8 @@ export interface StorageHandleState {
   tornTruncateTo?: number | undefined
   /** Complete events recovered from the torn final frame; the first mutation rewrites them durably. */
   recoveredTail?: SessionEvent[] | undefined
+  /** Fixed torn-tail recovery fact for this open; retained after the truncation lands (P-DURABILITY). */
+  tornTailRecovery?: SessionTornTailRecovery | undefined
   /** Exact fork-inherited prefix length stored with the log; `0` when unseeded. */
   inheritedEventCount: SessionLogOffset
   /** The validated stored prefix from a write open, served to reads until the first append. */
@@ -100,6 +103,11 @@ export class JsonlSessionHandle implements SessionHandle {
   /** Exact fork-inherited prefix length stored with this session's log. */
   get inheritedEventCount(): SessionLogOffset {
     return this.state.inheritedEventCount
+  }
+
+  /** Torn-tail recovery fact for this open, fixed at open time (P-DURABILITY). */
+  get tornTailRecovery(): SessionTornTailRecovery | undefined {
+    return this.state.tornTailRecovery
   }
 
   /**

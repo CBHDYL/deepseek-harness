@@ -20,6 +20,7 @@ export type {
   SessionHandleAppendOptions,
   SessionHandleFlushOptions,
   SessionHandleReadOptions,
+  SessionTornTailRecovery,
 } from './handle.ts'
 export {
   SessionAlreadyExistsError,
