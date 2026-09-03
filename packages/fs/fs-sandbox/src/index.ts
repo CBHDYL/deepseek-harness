@@ -120,7 +120,12 @@ export class SandboxedFileSystem extends LocalFileSystem {
    * and the escalation hint.
    */
   private async checkedTarget(target: FsTarget, sandboxPolicy?: SandboxExecutionPolicy): Promise<FsTarget> {
-    const policy = sandboxPolicy ?? this.ctx.sandboxPolicy.resolve()
+    // Only owner-minted policies carry authority: a caller-constructed policy
+    // (spread, clone, JSON round-trip) re-resolves to the deployment default
+    // (≤ maxMode) instead of selecting its claimed mode (P-SANDBOX).
+    const policy = sandboxPolicy !== undefined && this.ctx.sandboxPolicy.isMinted(sandboxPolicy)
+      ? sandboxPolicy
+      : this.ctx.sandboxPolicy.resolve()
     const { mode } = policy
     if (mode === 'danger-full-access') return target
     if (mode === 'read-only') {

@@ -202,7 +202,7 @@ describe('the per-call policy override (escalation)', () => {
     await boot('read-only')
     const path = join(workspace, 'escalated.txt')
     // Default read-only would deny; the per-call workspace-write policy allows it (contained).
-    await fs.writeText(await target(path), 'granted', undefined, undefined, { mode: 'workspace-write', workspaceRoot: workspace })
+    await fs.writeText(await target(path), 'granted', undefined, undefined, ctx.sandboxPolicy.resolve({ mode: 'workspace-write' }))
     expect(await readFile(path, 'utf8')).toBe('granted')
     // A neighboring plain call still runs under the read-only default.
     await expect(fs.writeText(await target(join(workspace, 'plain.txt')), 'x'))
@@ -212,7 +212,7 @@ describe('the per-call policy override (escalation)', () => {
   it('a danger-full-access stamp bypasses the fence for that call', async () => {
     await boot('read-only')
     const path = join(outside, 'granted-full.txt')
-    await fs.writeText(await target(path), 'full', undefined, undefined, { mode: 'danger-full-access', workspaceRoot: workspace })
+    await fs.writeText(await target(path), 'full', undefined, undefined, ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }))
     expect(await readFile(path, 'utf8')).toBe('full')
   })
 })
@@ -235,5 +235,24 @@ describe('FsError identity', () => {
     const error = await fs.writeText(await target(join(workspace, 'x.txt')), 'x').catch((e: unknown) => e)
     expect(error).toBeInstanceOf(FsError)
     expect((error as FsError).code).toBe('FS_SANDBOX_DENIED')
+  })
+})
+
+describe('sandbox authority provenance (P-SANDBOX)', () => {
+  it('a forged policy cannot select a wider mode: the write re-resolves to the deployment default and is denied', async () => {
+    await boot('read-only')
+    const forged = { mode: 'danger-full-access', workspaceRoot: outside } as const
+    const path = join(workspace, 'forged.txt')
+    await expect(fs.writeText(await target(path), 'x', undefined, undefined, forged as never))
+      .rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' })
+    expect(existsSync(path)).toBe(false)
+  })
+
+  it('an owner-minted wider policy is accepted (legal escalation path)', async () => {
+    await boot('read-only')
+    const minted = ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' })
+    const path = join(workspace, 'minted.txt')
+    await fs.writeText(await target(path), 'x', undefined, undefined, minted)
+    expect(await readFile(path, 'utf8')).toBe('x')
   })
 })

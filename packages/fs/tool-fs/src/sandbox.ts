@@ -104,7 +104,14 @@ export class FsSandboxController {
         signal: exec.signal,
       },
     )
-    return { ...policy, mode: approvedMode }
+    // Escalation re-mints through the policy owner: the approved mode is
+    // resolved (and capped at the deployment maxMode) by the owner, never
+    // assembled from copied fields (P-SANDBOX). A confining backend that
+    // advertises escalation cannot be missing its policy owner; fail loud
+    // instead of widening without one.
+    const owner = this.policy
+    if (owner === undefined) throw new Error('tool-fs: escalation requires ctx.sandboxPolicy')
+    return owner.resolve({ ...exec.agent ? { session: exec.agent.session } : {}, mode: approvedMode })
   }
 
   /**

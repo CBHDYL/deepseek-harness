@@ -90,11 +90,21 @@ export class SandboxPwshExecutor extends PwshLocalExecutor {
    * the deployment policy.
    */
   override resolve(request: ShellExecRequest): ShellExecSpec {
-    return { ...super.resolve(request), sandboxPolicy: request.sandboxPolicy ?? this.ctx.sandboxPolicy.resolve() }
+    // Caller-supplied policies carry authority only when the policy owner
+    // minted them; a forged object re-resolves to the deployment default
+    // (≤ maxMode) instead of its claimed mode (P-SANDBOX).
+    const supplied = request.sandboxPolicy
+    const policy = supplied !== undefined && this.ctx.sandboxPolicy.isMinted(supplied)
+      ? supplied
+      : this.ctx.sandboxPolicy.resolve()
+    return { ...super.resolve(request), sandboxPolicy: policy }
   }
 
   override async run(spec: ShellExecSpec): Promise<ShellRunResult> {
-    const policy = spec.sandboxPolicy as SandboxExecutionPolicy
+    // Re-check at consumption: a policy swapped in after resolve still loses
+    // its authority (P-SANDBOX).
+    const stamped = spec.sandboxPolicy as SandboxExecutionPolicy
+    const policy = this.ctx.sandboxPolicy.isMinted(stamped) ? stamped : this.ctx.sandboxPolicy.resolve()
     const { mode } = policy
     if (mode === 'danger-full-access') {
       const result = await super.run(spec)
