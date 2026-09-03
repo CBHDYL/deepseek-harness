@@ -1,0 +1,75 @@
+{
+  "format": "semantic-port-baseline",
+  "portBase": {
+    "candidate": "49a606bc5b5934603f22a26957a07dc799ab0291",
+    "candidateType": "PINNED_UPSTREAM_SNAPSHOT",
+    "upstreamReleaseTagAtFreeze": "dsh-v0.1.2-alpha.5"
+  },
+  "verifiedReference": {
+    "tag": "dsh-0.1.2-alpha.5-verified",
+    "sha": "be397b85cf409d6b3e160910f925490065062a4e",
+    "branch": "port/pr-1-sandbox-authority"
+  },
+  "verifier": {
+    "branch": "dev/next",
+    "sha": "2b3491d97246bf04ecd2c07f1a305c215f6ad5af"
+  },
+  "m4FinalDisposition": "ADAPT_REQUIRED",
+  "sourceOfTruth": {
+    "architecture": "candidate architecture > candidate tests",
+    "semantics": "verified invariant semantics > old implementation paths",
+    "evidence": "M4 evidence > historical chat",
+    "rule": "no mechanical cherry-pick of old PR code"
+  },
+  "backlog": [
+    {
+      "id": "P-SANDBOX",
+      "invariant": "PR-1: deployment maxMode ceiling + minted sandbox authority provenance; forged/spread/JSON-round-trip policies fail closed at fs/bash/pwsh entries",
+      "candidateSeam": "packages/sandbox/sandbox-policy (authority minting) + fs/bash/pwsh-sandbox enforcement entries",
+      "requiredBeforePromotion": true,
+      "status": "NOT_STARTED"
+    },
+    {
+      "id": "P-AUTHZ",
+      "invariant": "PR-2: per-session operationId chain, one-shot exact-bound grant consumed at dispatch, creation-time authoritative snapshot (TOCTOU resistance), terminal disposition",
+      "candidateSeam": "packages/core/tools (scheduler/execution lifecycle) + packages/interaction/user-approval",
+      "requiredBeforePromotion": true,
+      "status": "NOT_STARTED"
+    },
+    {
+      "id": "P-DURABILITY",
+      "invariant": "PR-3: torn-tail repair persists a session/repaired evidence record; committed corruption stays fail-loud; generic I/O errors stay unclassified as corruption",
+      "candidateSeam": "handle-based persistence seam append path (packages/session/session-persistence + jsonl backend) + core/session event vocabulary",
+      "requiredBeforePromotion": true,
+      "status": "NOT_STARTED"
+    },
+    {
+      "id": "P-PROJECTION",
+      "invariant": "PR-4: per-session single-flight write tail, covered-clean retirement, ordered detach final cut, no post-detach resurrection, bounded retry",
+      "candidateSeam": "packages/session/session-projection-cache write path (v6/identity-field shape)",
+      "requiredBeforePromotion": true,
+      "status": "NOT_STARTED"
+    },
+    {
+      "id": "P-BUDGET",
+      "invariant": "PR-6: exact UTF-8 byte bound before every provider dispatch, independent summarizer allowance, bounded budget recovery retries, MCP description/schema source bounds, ToolDefinition.effects trust boundary",
+      "candidateSeam": "packages/core/agent-loop buildRequest + packages/compaction/compaction-basic summarizer + packages/mcp/mcp-client syncTools + packages/core/tools ToolDefinition",
+      "requiredBeforePromotion": true,
+      "status": "NOT_STARTED"
+    },
+    {
+      "id": "P-GUARD",
+      "invariant": "action-policy-guard: side-effect tool approval/deny fold with declared effects classification, absent from candidate entirely",
+      "candidateSeam": "packages/guard/action-policy-guard (new port) + packages/bundle/base patch entry",
+      "requiredBeforePromotion": true,
+      "status": "NOT_STARTED"
+    },
+    {
+      "id": "P-EVENTS",
+      "invariant": "fork-only session event types (reasoning-chunks and the other fork-authored required-on-read types) are re-added to the known-event set or marked ignorable where log-only, so fork-written sessions read again",
+      "candidateSeam": "packages/core/session known-event-types + session-persistence storage-contract adoption path",
+      "requiredBeforePromotion": true,
+      "status": "NOT_STARTED"
+    }
+  ]
+}
