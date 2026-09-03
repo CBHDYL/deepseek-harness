@@ -192,15 +192,28 @@ Source: [`packages/sandbox/sandbox/src/index.ts`](../../packages/sandbox/sandbox
 
 ### `ctx.sandboxPolicy` — `SandboxPolicyService`
 
-The sandbox-policy service (`ctx.sandboxPolicy`). Owns the deployment default mode, fallback workspace root, and current request-time policy section. Tool layers call resolve for each execution so a session's mode log and immutable cwd travel together to every enforcing capability.
+The sandbox-policy service (`ctx.sandboxPolicy`). Owns the deployment default mode, fallback workspace root, the deployment ceiling, and current request-time policy section. Tool layers call resolve for each execution so a session's mode log and immutable cwd travel together to every enforcing capability.
+
+Every policy resolve returns is minted: frozen in place and registered in this owner's minted set. Enforcing backends accept only minted policies, so a caller-constructed object — spread clone, JSON round-trip, or plain literal — carries no authority and re-resolves to the deployment default (≤ maxMode) instead (P-SANDBOX).
 
 ```ts cordis-catalog
 /**
+ * Answer whether this owner minted the given policy. The enforcing
+ * filesystem and shell backends check this at every consumption point: a
+ * constructed object fails the check and re-resolves to the deployment
+ * default, so copied fields can never forge authority.
+ * @param policy - candidate authority to verify.
+ * @returns true only for policies this service minted.
+ */
+isMinted(policy: unknown): boolean
+
+/**
  * Resolve the complete policy for one capability call. An approved explicit
  * mode outranks the session's last `sandbox/mode` event, which outranks the
- * deployment default. A session cwd is its workspace-write boundary; the
- * configured root is the fallback for agentless calls and sessions without a
- * cwd.
+ * deployment default; the result never exceeds {@link maxMode}. A session
+ * cwd is its workspace-write boundary; the configured root is the fallback
+ * for agentless calls and sessions without a cwd. The returned policy is
+ * minted (frozen + owner-registered).
  * @param request - optional session and approved mode override.
  * @returns the fully resolved per-call mode and absolute workspace root.
  */

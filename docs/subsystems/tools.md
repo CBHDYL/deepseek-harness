@@ -567,9 +567,21 @@ executionMode(exec: ToolExecutionInput): ToolExecutionMode
  * @returns the materialized final result.
  */
 async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>
+
+/**
+ * Mint the next per-session operation id (P-AUTHZ). The agent loop calls
+ * this before appending the durable `tool/call` row so the row carries the
+ * id the execution will later cite. Agentless calls mint from a separate
+ * counter. The per-session counter is seeded by the loaded log's high-water
+ * mark over `tool/call` rows, so a reloaded registry never re-mints an id
+ * the log already carries.
+ * @param agent - the caller agent; absent for agentless executions.
+ * @returns the minted identity.
+ */
+mintOperationId(agent: Agent | undefined): OperationId
 ```
 
-Types: [ScopeKey](scope.md)
+Types: [Agent](core.md) · [ScopeKey](scope.md)
 
 Source: [`packages/core/tools/src/index.ts`](../../packages/core/tools/src/index.ts)
 

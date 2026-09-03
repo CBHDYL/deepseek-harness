@@ -1303,11 +1303,16 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
   {
     key: 'sandboxPolicy',
     summary: 'The sandbox-policy service (`ctx.sandboxPolicy`).',
-    description: 'The sandbox-policy service (`ctx.sandboxPolicy`). Owns the deployment default mode, fallback workspace root, and current request-time policy section. Tool layers call resolve for each execution so a session\'s mode log and immutable cwd travel together to every enforcing capability.',
+    description: 'The sandbox-policy service (`ctx.sandboxPolicy`). Owns the deployment default mode, fallback workspace root, the deployment ceiling, and current request-time policy section. Tool layers call resolve for each execution so a session\'s mode log and immutable cwd travel together to every enforcing capability.\n\nEvery policy resolve returns is minted: frozen in place and registered in this owner\'s minted set. Enforcing backends accept only minted policies, so a caller-constructed object — spread clone, JSON round-trip, or plain literal — carries no authority and re-resolves to the deployment default (≤ maxMode) instead (P-SANDBOX).',
     methods: [
       {
         signature: 'readonly defaultMode: SandboxMode',
         description: 'The deployment default mode — the fallback beneath a session override.',
+        parameters: [],
+      },
+      {
+        signature: 'readonly maxMode: SandboxMode',
+        description: 'The deployment ceiling no resolved mode may exceed.',
         parameters: [],
       },
       {
@@ -1316,8 +1321,14 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [],
       },
       {
+        signature: 'isMinted(policy: unknown): boolean',
+        description: 'Answer whether this owner minted the given policy. The enforcing filesystem and shell backends check this at every consumption point: a constructed object fails the check and re-resolves to the deployment default, so copied fields can never forge authority.',
+        parameters: [{ name: 'policy', description: 'candidate authority to verify.' }],
+        returns: 'true only for policies this service minted.',
+      },
+      {
         signature: 'resolve(request: SandboxPolicyRequest = {}): SandboxExecutionPolicy',
-        description: 'Resolve the complete policy for one capability call. An approved explicit mode outranks the session\'s last `sandbox/mode` event, which outranks the deployment default. A session cwd is its workspace-write boundary; the configured root is the fallback for agentless calls and sessions without a cwd.',
+        description: 'Resolve the complete policy for one capability call. An approved explicit mode outranks the session\'s last `sandbox/mode` event, which outranks the deployment default; the result never exceeds maxMode. A session cwd is its workspace-write boundary; the configured root is the fallback for agentless calls and sessions without a cwd. The returned policy is minted (frozen + owner-registered).',
         parameters: [{ name: 'request', description: 'optional session and approved mode override.' }],
         returns: 'the fully resolved per-call mode and absolute workspace root.',
       },
@@ -2521,6 +2532,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'exec', description: 'the typed same-process call input. The registry assigns its correlation token before policy begins.' }],
         returns: 'the materialized final result.',
       },
+      {
+        signature: 'mintOperationId(agent: Agent | undefined): OperationId',
+        description: 'Mint the next per-session operation id (P-AUTHZ). The agent loop calls this before appending the durable `tool/call` row so the row carries the id the execution will later cite. Agentless calls mint from a separate counter. The per-session counter is seeded by the loaded log\'s high-water mark over `tool/call` rows, so a reloaded registry never re-mints an id the log already carries.',
+        parameters: [{ name: 'agent', description: 'the caller agent; absent for agentless executions.' }],
+        returns: 'the minted identity.',
+      },
     ],
   },
   {
@@ -3446,7 +3463,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ApprovalRequestEvent',
-    declaration: 'export interface ApprovalRequestEvent {\n    readonly agent: Agent;\n    readonly toolName: string;\n    readonly callId?: ToolCallId;\n    readonly reason?: string;\n    readonly signal?: AbortSignal;\n}',
+    declaration: 'export interface ApprovalRequestEvent {\n    readonly agent: Agent;\n    readonly toolName: string;\n    readonly callId?: ToolCallId;\n    readonly operationId?: string;\n    readonly reason?: string;\n    readonly signal?: AbortSignal;\n}',
   },
   {
     name: 'AskUserQuestionAnswer',
@@ -4467,6 +4484,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'OneShotSubagentDescriptorData',
     declaration: 'export interface OneShotSubagentDescriptorData extends SubagentDescriptorBase {\n    readonly mode: \'one-shot\';\n    readonly label?: string;\n}',
+  },
+  {
+    name: 'OperationId',
+    declaration: 'export type OperationId = `op_${number}` | `op_x${number}`;',
   },
   {
     name: 'OptionalSessionSeq',
@@ -5730,7 +5751,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolExecutionInput',
-    declaration: 'export interface ToolExecutionInput {\n    readonly callId: ToolCallId;\n    readonly rootCallId?: ToolCallId;\n    readonly name: string;\n    readonly arguments: unknown;\n    readonly agent?: Agent;\n    readonly parent?: ToolExecutionToken;\n    readonly signal: AbortSignal;\n}',
+    declaration: 'export interface ToolExecutionInput {\n    readonly callId: ToolCallId;\n    readonly operationId?: OperationId;\n    readonly rootCallId?: ToolCallId;\n    readonly name: string;\n    readonly arguments: unknown;\n    readonly agent?: Agent;\n    readonly parent?: ToolExecutionToken;\n    readonly signal: AbortSignal;\n}',
   },
   {
     name: 'ToolExecutionMode',
@@ -5798,7 +5819,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolRuntime',
-    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
+    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n    mintOperationId(agent: Agent | undefined): OperationId;\n}',
   },
   {
     name: 'ToolRuntimeScheduler',
