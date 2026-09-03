@@ -67,6 +67,8 @@ export interface ApprovalRequestEvent {
   readonly toolName: string
   /** Exact tool call being decided, when available. */
   readonly callId?: ToolCallId
+  /** Registry-minted operation identity the ask is deciding (P-AUTHZ). */
+  readonly operationId?: string
   /** Human-readable reason supplied by the asker. */
   readonly reason?: string
   /** Cancellation lifetime of the pending request. */

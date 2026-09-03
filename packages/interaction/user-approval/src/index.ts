@@ -218,6 +218,7 @@ export class ApprovalService extends Service {
       id,
       toolName: req.toolName,
       ...req.callId !== undefined ? { callId: req.callId } : {},
+      ...req.operationId !== undefined ? { operationId: req.operationId } : {},
       ...req.reason !== undefined ? { reason: req.reason } : {},
     })
     const outcome = await this.decide(req, session)

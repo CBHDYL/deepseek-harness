@@ -4,6 +4,7 @@
  * @module @deepseek-ai/dsh-tools
  */
 
+import { createHash } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { AnonymousEntries, NamedEntries, ScopedLayers, scopeOf, scopeTarget } from '@deepseek-ai/dsh-scope'
@@ -11,7 +12,7 @@ import type { ScopeKey, ScopeLayer, Scoped } from '@deepseek-ai/dsh-scope'
 import type { ToolCallId, ContentBlock, ToolSchema } from '@deepseek-ai/dsh-llm'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { UserMessage } from '@deepseek-ai/dsh-session'
+import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
 import { assertNever, deepFreeze, snapshotJsonValue, type JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { ToolProviderResult } from '@deepseek-ai/dsh-system-prompt'
 import type { CodeRuntime } from '@deepseek-ai/dsh-code-runtime'
@@ -300,12 +301,26 @@ declare const toolExecutionTokenBrand: unique symbol
 export type ToolExecutionToken = symbol & { readonly [toolExecutionTokenBrand]: true }
 
 /**
+ * Per-session durable operation identity (P-AUTHZ). Agent executions mint
+ * `op_<n>` from a counter seeded by the loaded log's high-water mark so a
+ * fresh registry after reload never re-mints an id the log already carries;
+ * agentless executions mint `op_x<n>`.
+ */
+export type OperationId = `op_${number}` | `op_x${number}`
+
+/**
  * Caller-supplied description of one tool call. {@link ToolRuntime.execute}
  * adds the registry-owned token to form a pipeline {@link ToolExecution};
  * callers do not choose that token.
  */
 export interface ToolExecutionInput {
   readonly callId: ToolCallId
+  /**
+   * Registry-minted operation identity for this call (P-AUTHZ). The agent
+   * loop mints it before appending the durable `tool/call` row; a call
+   * without one gets an agentless identity from the registry.
+   */
+  readonly operationId?: OperationId
   /**
    * Root model-requested call owning this execution tree. Callers omit it for
    * a root execution; nested dispatchers propagate the enclosing value.
@@ -1352,6 +1367,90 @@ export class ToolRuntime extends Service {
     }
   }
 
+  /** Per-session operation-id counters, seeded from the loaded log's high-water mark. */
+  private readonly sessionOperationCounters = new WeakMap<Session, number>()
+  /** Agentless operation-id counter. */
+  private agentlessOperationCounter = 0
+  /** The authorization grant minted for one allowed-once execution, keyed by execution identity. */
+  private readonly operationGrants = new WeakMap<ToolExecution, {
+    readonly operationId: OperationId
+    readonly toolName: string
+    readonly callId: ToolCallId
+    readonly argsDigest: string
+  }>()
+  /** Executions whose ask path minted a grant — dispatch fails without an unconsumed one. */
+  private readonly grantRequired = new WeakSet<ToolExecution>()
+  /** The creation-time authority snapshot every dispatch-stage read follows (P-AUTHZ). */
+  private readonly authoritativeSnapshots = new WeakMap<ToolExecution, Readonly<{
+    operationId: OperationId
+    name: string
+    callId: ToolCallId
+    arguments: unknown
+  }>>()
+
+  /**
+   * Mint the next per-session operation id (P-AUTHZ). The agent loop calls
+   * this before appending the durable `tool/call` row so the row carries the
+   * id the execution will later cite. Agentless calls mint from a separate
+   * counter. The per-session counter is seeded by the loaded log's high-water
+   * mark over `tool/call` rows, so a reloaded registry never re-mints an id
+   * the log already carries.
+   * @param agent - the caller agent; absent for agentless executions.
+   * @returns the minted identity.
+   */
+  mintOperationId(agent: Agent | undefined): OperationId {
+    if (agent === undefined) {
+      this.agentlessOperationCounter += 1
+      return `op_x${this.agentlessOperationCounter}`
+    }
+    const session = agent.session as Session | undefined
+    if (session === undefined) {
+      // A stubbed agent without a session (consumer tests): a process-local
+      // counter keeps identities unique without pretending to be per-session.
+      this.agentlessOperationCounter += 1
+      return `op_${this.agentlessOperationCounter}`
+    }
+    let counter = this.sessionOperationCounters.get(session)
+    if (counter === undefined) {
+      counter = 0
+      // Indexed scan: real sessions expose snapshotEvents(), and stubbed
+      // sessions in consumer tests may expose an array-like (or nothing)
+      // rather than an iterable — the scan tolerates every shape and still
+      // starts at 0 for a log without operation ids.
+      const source = session as unknown as {
+        readonly snapshotEvents?: () => readonly unknown[]
+        readonly events?: unknown
+      }
+      const events = (source.snapshotEvents?.() ?? source.events) as
+        { readonly length?: number; readonly [index: number]: unknown } | undefined
+      for (let i = 0; i < (events?.length ?? 0); i += 1) {
+        const event = events?.[i] as { readonly type?: string; readonly data?: { readonly operationId?: unknown } } | undefined
+        if (event?.type !== 'tool/call') continue
+        const data = event.data
+        if (typeof data?.operationId !== 'string' || !data.operationId.startsWith('op_')) continue
+        const parsed = Number(data.operationId.slice(3))
+        if (Number.isSafeInteger(parsed) && parsed >= counter) counter = parsed + 1
+      }
+      this.sessionOperationCounters.set(session, counter)
+    }
+    const id = `op_${counter}` as OperationId
+    this.sessionOperationCounters.set(session, counter + 1)
+    return id
+  }
+
+  /** The creation-time authority snapshot this execution's dispatch chain reads (P-AUTHZ). */
+  private authoritativeSnapshotOf(exec: ToolExecution): Readonly<{
+    operationId: OperationId
+    name: string
+    callId: ToolCallId
+    arguments: unknown
+  }> {
+    const snapshot = this.authoritativeSnapshots.get(exec)
+    /* v8 ignore next -- only registry-minted executions reach the staged scheduler methods */
+    if (snapshot === undefined) throw new Error('tool registry scheduler invariant violated: missing authoritative execution snapshot')
+    return snapshot
+  }
+
   private createExecution(exec: ToolExecutionInput): ScheduledToolPreparation | { kind: 'ready'; exec: MutableToolRunContext } {
     const deferredContexts: UserMessage[] = []
     const token = createExecutionToken()
@@ -1371,11 +1470,13 @@ export class ToolRuntime extends Service {
     const visible = this.get(name, agent)
     const collapsed = visible !== undefined && this.collapses(name, agent, parent !== undefined)
     const concludingExecutions = this.concludingExecutions
+    const operationId = exec.operationId ?? this.mintOperationId(agent)
     const base = {
       token,
       callId,
       rootCallId,
       name,
+      operationId,
       signal,
       ...agent !== undefined ? { agent } : {},
       ...parent !== undefined ? { parent } : {},
@@ -1404,7 +1505,16 @@ export class ToolRuntime extends Service {
       if (detached === undefined) {
         throw new TypeError('tool execution arguments must be losslessly JSON-serializable')
       }
-      const execution: MutableToolRunContext = { ...base, arguments: deepFreeze(detached) }
+      const frozenArguments = deepFreeze(detached)
+      const execution: MutableToolRunContext = { ...base, arguments: frozenArguments }
+      // The creation-time authority snapshot: dispatch reads name/arguments
+      // from here, never from the live (runtime-mutable) execution object.
+      this.authoritativeSnapshots.set(execution, Object.freeze({
+        operationId,
+        name,
+        callId,
+        arguments: frozenArguments,
+      }))
       this.deferredContexts.set(execution, deferredContexts)
       this.contentFinalizers.set(execution, finalizerFor())
       this.cancellationStates.set(execution, {
@@ -1534,10 +1644,13 @@ export class ToolRuntime extends Service {
     }
     exec.signal = signal
     try {
-      const tool = this.resolveExecution(exec.name, exec.agent, exec.parent !== undefined)
-      if (!tool) throw new ToolNotFoundError(exec.name)
+      // Dispatch-stage reads follow the creation-time authority snapshot, not
+      // the live execution object a wrapper could have mutated (P-AUTHZ).
+      const snapshot = this.authoritativeSnapshotOf(exec)
+      const tool = this.resolveExecution(snapshot.name, exec.agent, exec.parent !== undefined)
+      if (!tool) throw new ToolNotFoundError(snapshot.name)
       state.bodyInvoked = true
-      const returned = await tool.execute(exec.arguments, exec)
+      const returned = await tool.execute(snapshot.arguments, exec)
       const result = this.createSuccessResult(exec, tool, returned)
       return isAborted(signal)
         ? toolAbortedResult(result)
@@ -1559,6 +1672,22 @@ export class ToolRuntime extends Service {
    */
   private async dispatchScheduledExecution(exec: ToolRunContext): Promise<ScheduledToolDispatch> {
     try {
+      // Consume the ask-path grant exactly here — before any around-dispatch
+      // wrapper and before the tool body. A replayed or second dispatch of the
+      // same execution finds no grant and fails closed (P-AUTHZ).
+      if (this.grantRequired.has(exec)) {
+        const snapshot = this.authoritativeSnapshotOf(exec)
+        const grant = this.operationGrants.get(exec)
+        if (grant === undefined) {
+          throw new Error(`tool "${snapshot.name}": authorization grant is missing or already consumed`)
+        }
+        const digest = createHash('sha256').update(JSON.stringify(snapshot.arguments)).digest('hex')
+        if (grant.operationId !== snapshot.operationId || grant.toolName !== snapshot.name
+          || grant.callId !== snapshot.callId || grant.argsDigest !== digest) {
+          throw new Error(`tool "${snapshot.name}": authorization grant does not match the authoritative execution`)
+        }
+        this.operationGrants.delete(exec)
+      }
       const mutableExec = exec as MutableToolRunContext
       const carrier = scopeTarget(this, exec.agent)
       const result = await this.ctx.waterfall(
@@ -1694,15 +1823,28 @@ export class ToolRuntime extends Service {
         approvalCancelled: false,
       }
     }
+    const snapshot = this.authoritativeSnapshotOf(exec)
     const outcome = await approval.request({
       agent: exec.agent,
-      toolName: exec.name,
-      callId: exec.callId,
+      toolName: snapshot.name,
+      callId: snapshot.callId,
+      operationId: snapshot.operationId,
       ...ask.reason !== undefined ? { reason: ask.reason } : {},
       signal: exec.signal,
     })
     switch (outcome) {
-      case 'allowed-once': return { decision: { kind: 'allow' }, approvalCancelled: false }
+      case 'allowed-once': {
+        // The ask path's grant: exactly bound to the creation-time snapshot
+        // and consumed once at the dispatch boundary (P-AUTHZ).
+        this.operationGrants.set(exec, {
+          operationId: snapshot.operationId,
+          toolName: snapshot.name,
+          callId: snapshot.callId,
+          argsDigest: createHash('sha256').update(JSON.stringify(snapshot.arguments)).digest('hex'),
+        })
+        this.grantRequired.add(exec)
+        return { decision: { kind: 'allow' }, approvalCancelled: false }
+      }
       case 'rejected': return {
         decision: { kind: 'deny', reason: `the user rejected tool "${exec.name}"` },
         approvalCancelled: false,
@@ -1756,8 +1898,9 @@ export class ToolRuntime extends Service {
       if (result.isError) {
         throw new TypeError('tools/post-execute cannot replace the value of a failed result')
       }
-      const tool = this.resolveExecution(exec.name, exec.agent, exec.parent !== undefined)
-      if (tool === undefined) throw new ToolNotFoundError(exec.name)
+      const snapshot = this.authoritativeSnapshotOf(exec)
+      const tool = this.resolveExecution(snapshot.name, exec.agent, exec.parent !== undefined)
+      if (tool === undefined) throw new ToolNotFoundError(snapshot.name)
       const replaced = this.createSuccessResult(exec, tool, decision.value)
       return this.markCanonical(exec, {
         ...replaced,
@@ -1786,9 +1929,10 @@ export class ToolRuntime extends Service {
     const violations = validateJsonSchemaValue(tool.output.schema, detached, 'value')
     if (violations.length > 0) throw new ToolOutputError(tool.name, violations)
     const value = deepFreeze(detached)
+    const snapshot = this.authoritativeSnapshotOf(exec)
     let rendered: ContentBlock[]
     try {
-      rendered = tool.output.render(exec.arguments, value)
+      rendered = tool.output.render(snapshot.arguments, value)
     } catch (error: unknown) {
       throw projectionError(tool.name, 'render', error)
     }
@@ -1797,7 +1941,7 @@ export class ToolRuntime extends Service {
     if (exec.parent === undefined && tool.output.presentationMeta !== undefined) {
       let projected: JsonValue
       try {
-        projected = tool.output.presentationMeta(exec.arguments, value)
+        projected = tool.output.presentationMeta(snapshot.arguments, value)
       } catch (error: unknown) {
         throw projectionError(tool.name, 'presentationMeta', error)
       }
@@ -1825,8 +1969,9 @@ export class ToolRuntime extends Service {
         ...result.additionalContexts !== undefined ? { additionalContexts: result.additionalContexts } : {},
       })
     }
-    const tool = this.resolveExecution(exec.name, exec.agent, exec.parent !== undefined)
-    if (tool === undefined) throw new ToolNotFoundError(exec.name)
+    const snapshot = this.authoritativeSnapshotOf(exec)
+    const tool = this.resolveExecution(snapshot.name, exec.agent, exec.parent !== undefined)
+    if (tool === undefined) throw new ToolNotFoundError(snapshot.name)
     const normalized = this.createSuccessResult(exec, tool, result.value)
     return this.markCanonical(exec, {
       ...normalized,

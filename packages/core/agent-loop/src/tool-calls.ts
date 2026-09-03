@@ -14,13 +14,14 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { createToolResultMessage, type ToolCallBlock } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionSeq, UserMessage } from '@deepseek-ai/dsh-session'
-import { TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER, type ToolExecutionInput, type ToolExecutionMode, type ToolExecutionResult, type ToolRunContext } from '@deepseek-ai/dsh-tools'
+import { TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER, type OperationId, type ToolExecutionInput, type ToolExecutionMode, type ToolExecutionResult, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 
 /** One tool call after argument parsing, ready to schedule. */
 interface PlannedCall {
   block: ToolCallBlock
   exec: ToolExecutionInput
+  operationId: OperationId
 }
 
 /** Settled dispatch awaiting model-order finalization. */
@@ -69,16 +70,23 @@ export async function executeToolCalls(
   const { session } = agent
 
   // Inputs are distinct because tools/execute wrappers may replace `exec.signal`.
-  const planned: PlannedCall[] = toolCalls.map(block => ({
-    block,
-    exec: {
-      callId: block.id,
-      name: block.name,
-      arguments: parseArguments(block.arguments),
-      agent,
-      signal,
-    },
-  }))
+  // Each call mints its durable operation identity BEFORE the tool/call row is
+  // appended, so the row and the execution cite the same id (P-AUTHZ).
+  const planned: PlannedCall[] = toolCalls.map((block) => {
+    const operationId = ctx.tools.mintOperationId(agent)
+    return {
+      block,
+      operationId,
+      exec: {
+        callId: block.id,
+        name: block.name,
+        arguments: parseArguments(block.arguments),
+        agent,
+        signal,
+        operationId,
+      },
+    }
+  })
 
   let next = 0
   let concluded = false
@@ -94,7 +102,7 @@ export async function executeToolCalls(
     next += outcome.consumed
     concluded ||= outcome.concluded
     if (outcome.aborted) {
-      for (const call of planned.slice(next)) appendSkippedToolCall(session, turn, step, call.block)
+      for (const call of planned.slice(next)) appendSkippedToolCall(session, turn, step, call.block, call.operationId)
       return { concluded }
     }
   }
@@ -153,7 +161,7 @@ async function runGroup(
         ? await ctx.tools[TOOL_RUNTIME_SCHEDULER].finalize(slot.exec, slot.result)
         : ctx.tools[TOOL_RUNTIME_SCHEDULER].finish(slot.exec, slot.result)
       // oxlint-disable-next-line typescript/no-non-null-assertion -- bounded index
-      appendToolResult(session, turn, step, call!.block, result, callSeqs[committed]!)
+      appendToolResult(session, turn, step, call!.block, result, callSeqs[committed]!, call!.operationId)
       for (const context of result.additionalContexts ?? []) acceptContext(context)
       concluded ||= result.concludesTurn === true
       committed++
@@ -165,7 +173,7 @@ async function runGroup(
   const startCall = async (index: number): Promise<void> => {
     // oxlint-disable-next-line typescript/no-non-null-assertion -- bounded index
     const call = group[index]!
-    callSeqs[index] = appendToolCall(session, turn, step, call.block)
+    callSeqs[index] = appendToolCall(session, turn, step, call.block, call.operationId)
     started++
     const prepared = await ctx.tools[TOOL_RUNTIME_SCHEDULER].prepare(call.exec)
     throwSchedulerFailure()
@@ -247,8 +255,8 @@ async function runGroup(
 }
 
 /** Append the durable call/result pair for a model call skipped after cancellation. */
-function appendSkippedToolCall(session: Session, turn: number, step: number, block: ToolCallBlock): void {
-  const callSeq = appendToolCall(session, turn, step, block)
+function appendSkippedToolCall(session: Session, turn: number, step: number, block: ToolCallBlock, operationId?: OperationId): void {
+  const callSeq = appendToolCall(session, turn, step, block, operationId)
   appendToolResult(session, turn, step, block, {
     content: [{ type: 'text', text: 'Error: tool call aborted before dispatch' }],
     isError: true,
@@ -256,12 +264,15 @@ function appendSkippedToolCall(session: Session, turn: number, step: number, blo
       message: 'tool call aborted before dispatch',
       info: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH },
     },
-  }, callSeq)
+  }, callSeq, operationId)
 }
 
 /** Append a started call and return the event seq that its result must cite. */
-function appendToolCall(session: Session, turn: number, step: number, block: ToolCallBlock): SessionSeq {
-  const event = session.append('tool/call', { turn, step, callId: block.id, name: block.name, arguments: block.arguments })
+function appendToolCall(session: Session, turn: number, step: number, block: ToolCallBlock, operationId?: OperationId): SessionSeq {
+  const event = session.append('tool/call', {
+    turn, step, callId: block.id, name: block.name, arguments: block.arguments,
+    ...operationId !== undefined ? { operationId } : {},
+  })
   return event.seq
 }
 
@@ -273,6 +284,7 @@ function appendToolResult(
   block: ToolCallBlock,
   result: ToolExecutionResult,
   callSeq: SessionSeq,
+  operationId?: OperationId,
 ): void {
   const message = createToolResultMessage({
     callId: block.id,
@@ -282,6 +294,7 @@ function appendToolResult(
   session.append('tool/result', {
     turn, step,
     message,
+    ...operationId !== undefined ? { operationId } : {},
     ...result.error?.info ? { error: result.error.info } : {},
     // The tool's private presentation payload (e.g. a result-time diff),
     // persisted so a UI bridge reproduces the card on replay.
