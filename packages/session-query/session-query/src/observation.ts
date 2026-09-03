@@ -67,13 +67,22 @@ interface PreparedEntry {
  *
  * Cold reads are cached per session id, keyed by the persistence instance and
  * the `stat` revision observed before the log read: an unchanged revision
- * reuses the restored Session without re-reading the log. The cache is bounded
- * (least-recently-used unpinned entries are evicted past the capacity), and
- * entries pinned by active leases survive eviction and replacement — a lease's
- * cut stays valid for the lease lifetime even after a newer revision lands.
+ * reuses the restored Session without re-reading the log (covered-clean).
+ * Concurrent reads over the same source and revision share one in-flight
+ * build (single-flight), and a build commits into the cache only while its
+ * load generation is still the newest for the id, so a stale in-flight build
+ * can never overwrite a newer cached entry (no resurrection). The cache is
+ * bounded (least-recently-used unpinned entries are evicted past the
+ * capacity), and entries pinned by active leases survive eviction and
+ * replacement — a lease's cut stays valid for the lease lifetime even after
+ * a newer revision lands.
  */
 export class SessionObservationReader {
   private readonly cache = new Map<SessionId, PreparedEntry>()
+  /** Shared cold builds keyed by `id@revision`, bound to the producing persistence instance. */
+  private readonly inFlight = new Map<string, { persistence: SessionPersistence; promise: Promise<PreparedEntry> }>()
+  /** Per-id commit ordering: each load bumps it; a commit lands only while still newest. */
+  private readonly loadGeneration = new Map<SessionId, number>()
 
   /**
    * @param ctx - context carrying Session and optional persistence/projection services.
@@ -107,40 +116,28 @@ export class SessionObservationReader {
       if (attachedDuringStat !== undefined) return this.live(attachedDuringStat, projectionMode)
       let entry = this.cachedEntry(persistence, sessionId, snapshot.revision)
       if (entry === undefined) {
-        const loaded = await this.loadSource(persistence, sessionId, signal)
-        throwIfObservationAborted(signal)
-        const attached = this.ctx.sessions.get(sessionId)
-        if (attached !== undefined) return this.live(attached, projectionMode)
-        // Ownership transfer into `prepare` freezes the seed in place, so the
-        // entry keeps its own detached copies of the just-read events.
-        const seed = loaded.events.map(event => structuredClone(event))
-        let session: Session
+        // Single-flight cold build: concurrent reads over the same source and
+        // revision share one log read + prepare (P-PROJECTION). The load
+        // generation orders commits so a stale in-flight build can never
+        // overwrite a newer cached entry (no resurrection).
         try {
-          session = this.ctx.sessions.prepare(sessionId, {
-            seed,
-            meta: structuredClone(loaded.header),
-            inheritedEventCount: loaded.inheritedEventCount,
-            seedSource: 'persistence',
-          })
+          entry = await this.sharedLoad(persistence, sessionId, snapshot.revision, signal)
         } catch (error: unknown) {
           // The store rejects an id with a live owner: that owner is the
-          // fresher source, so retry the live path. Any other rejection means
-          // the stored log failed restore validation.
+          // fresher source, so retry the live path. Any other non-query
+          // rejection means the stored log failed restore validation.
           if (this.ctx.sessions.get(sessionId) !== undefined) continue
+          if (error instanceof SessionQueryError) throw error
           throw new SessionQueryError(
             `stored session "${sessionId}" is corrupt: ${errorMessage(error)}`,
             'SESSION_QUERY_CORRUPT_SESSION',
             { cause: error },
           )
         }
-        entry = {
-          persistence,
-          revision: snapshot.revision,
-          session,
-          events: Object.freeze(seed),
-          refs: 0,
-        }
-        this.store(sessionId, entry)
+        // A live owner may have attached while the shared load was in flight;
+        // prefer it over the just-built cold entry.
+        const attachedDuringLoad = this.ctx.sessions.get(sessionId)
+        if (attachedDuringLoad !== undefined) return this.live(attachedDuringLoad, projectionMode)
       }
 
       let projections: ProjectionSnapshot | undefined
@@ -193,6 +190,66 @@ export class SessionObservationReader {
       throwIfObservationAborted(signal)
       throw mapPersistenceFailure(sessionId, error)
     }
+  }
+
+  /**
+   * One cold build shared by every concurrent read of the same source and
+   * revision (P-PROJECTION single-flight). The build starter takes a
+   * load-generation ticket and commits into the cache only while it is still
+   * the newest for the id, so an in-flight build superseded by a newer read
+   * commits nowhere. A failed or aborted build clears its in-flight slot
+   * with the promise, so the next read retries from scratch.
+   * @param persistence - the source instance the build reads.
+   * @param sessionId - the session the build restores.
+   * @param revision - the stat revision the build was requested at.
+   * @param signal - cancellation observed during the read and before prepare.
+   * @returns the built prepared entry (stored in the cache only when newest).
+   */
+  private sharedLoad(
+    persistence: SessionPersistence,
+    sessionId: SessionId,
+    revision: SessionPersistenceRevision,
+    signal: AbortSignal | undefined,
+  ): Promise<PreparedEntry> {
+    const key = `${String(sessionId)}@${revision}`
+    const flying = this.inFlight.get(key)
+    if (flying !== undefined && flying.persistence === persistence) return flying.promise
+    // Only the build starter owns a generation ticket; sharers ride the same
+    // promise and must not advance the commit ordering.
+    const generation = (this.loadGeneration.get(sessionId) ?? 0) + 1
+    this.loadGeneration.set(sessionId, generation)
+    const promise = this.loadSource(persistence, sessionId, signal).then((loaded): PreparedEntry => {
+      throwIfObservationAborted(signal)
+      // Ownership transfer into `prepare` freezes the seed in place, so the
+      // entry keeps its own detached copies of the just-read events.
+      const seed = loaded.events.map(event => structuredClone(event))
+      const session = this.ctx.sessions.prepare(sessionId, {
+        seed,
+        meta: structuredClone(loaded.header),
+        inheritedEventCount: loaded.inheritedEventCount,
+        seedSource: 'persistence',
+      })
+      const entry: PreparedEntry = {
+        persistence,
+        revision,
+        session,
+        events: Object.freeze(seed),
+        refs: 0,
+      }
+      // Commit only while no newer read started a load after this one: a
+      // superseded build must not overwrite the newer cached entry.
+      if ((this.loadGeneration.get(sessionId) ?? 0) === generation) {
+        this.store(sessionId, entry)
+      }
+      return entry
+    })
+    this.inFlight.set(key, { persistence, promise })
+    // The cleanup derived promise swallows the shared rejection so only the
+    // awaiting reads observe the failure (no unhandled rejection).
+    void promise.finally(() => {
+      if (this.inFlight.get(key)?.promise === promise) this.inFlight.delete(key)
+    }).catch(() => {})
+    return promise
   }
 
   /** Return a still-valid cached entry and mark it most recently used. */

@@ -60,6 +60,8 @@ interface StubHooks {
   onStat?: () => void
   /** Runs inside `read` before it resolves. */
   onRead?: () => void
+  /** Await this (once per read call) before `onRead` — defers the log read for race tests. */
+  deferRead?: () => Promise<void>
   /** Replaces the read result for every open handle. */
   readFailure?: unknown
   /** Replaces the stat result. */
@@ -100,13 +102,14 @@ function stubPersistence(
       header: structuredClone(entry.header),
       inheritedEventCount: SessionLogOffset(0),
       access,
-      read: (
+      read: async (
         _offset?: number,
         _length?: number,
         options?: SessionHandleReadOptions,
       ): Promise<readonly SessionEvent[]> => {
         counters.read += 1
         void options
+        await hooks.deferRead?.()
         hooks.onRead?.()
         if (hooks.readFailure !== undefined) {
           // oxlint-disable-next-line typescript/prefer-promise-reject-errors
@@ -738,6 +741,200 @@ describe('SessionObservationReader cold projections', () => {
       code: 'SESSION_QUERY_CORRUPT_SESSION',
       message: expect.stringContaining('failed to project') as string,
     })
+    await ctx.fiber.dispose()
+  })
+})
+
+describe('P-PROJECTION reader invariants (single-flight / covered-clean / no-resurrection)', () => {
+  function textOf(event: SessionEvent | undefined): string | undefined {
+    const data = event?.data as { content?: Array<{ type: string; text?: string }> } | undefined
+    return data?.content?.[0]?.text
+  }
+
+  it('single-flight: concurrent reads over the same id and revision share one build', async () => {
+    const ctx = await readerContext()
+    const meta = header('sf-shared')
+    const store = new Map([[meta.id, { header: meta, events: [messageEvent(0, 'sf')], revision: 'r1' }]])
+    const counters = { stat: 0, open: 0, read: 0 }
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    ctx.provide('sessionPersistence', stubPersistence(store, counters, {
+      deferRead: async () => { await gate },
+    }))
+    const reader = new SessionObservationReader(ctx)
+    const first = reader.read(meta.id, { projectionMode: 'none' })
+    const second = reader.read(meta.id, { projectionMode: 'none' })
+    // Both reads are parked on the shared log read: exactly one handle read.
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
+    expect(counters.read).toBe(1)
+    release()
+    using a = await first
+    using b = await second
+    expect(textOf(a.events[0])).toBe('sf')
+    expect(textOf(b.events[0])).toBe('sf')
+    expect(counters.read).toBe(1)
+    await ctx.fiber.dispose()
+  })
+
+  it('key isolation: concurrent reads of different sessions build independently', async () => {
+    const ctx = await readerContext()
+    const a = header('sf-a')
+    const b = header('sf-b')
+    const store = new Map([
+      [a.id, { header: a, events: [messageEvent(0, 'a')], revision: 'ra' }],
+      [b.id, { header: b, events: [messageEvent(0, 'b')], revision: 'rb' }],
+    ])
+    const counters = { stat: 0, open: 0, read: 0 }
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    ctx.provide('sessionPersistence', stubPersistence(store, counters, {
+      deferRead: async () => { await gate },
+    }))
+    const reader = new SessionObservationReader(ctx)
+    const readA = reader.read(a.id, { projectionMode: 'none' })
+    const readB = reader.read(b.id, { projectionMode: 'none' })
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
+    expect(counters.read).toBe(2) // no cross-key sharing
+    release()
+    using obsA = await readA
+    using obsB = await readB
+    expect(textOf(obsA.events[0])).toBe('a')
+    expect(textOf(obsB.events[0])).toBe('b')
+    await ctx.fiber.dispose()
+  })
+
+  it('build failure clears the in-flight slot; a retry rebuilds from scratch', async () => {
+    const ctx = await readerContext()
+    const meta = header('sf-fail')
+    const store = new Map([[meta.id, { header: meta, events: [messageEvent(0, 'ok')], revision: 'r1' }]])
+    const counters = { stat: 0, open: 0, read: 0 }
+    const hooks: StubHooks = { readFailure: new Error('backend exploded') }
+    ctx.provide('sessionPersistence', stubPersistence(store, counters, hooks))
+    const reader = new SessionObservationReader(ctx)
+    await expect(reader.read(meta.id, { projectionMode: 'none' })).rejects.toMatchObject({
+      code: 'SESSION_QUERY_PERSISTENCE_FAILED',
+    })
+    hooks.readFailure = undefined
+    using observed = await reader.read(meta.id, { projectionMode: 'none' })
+    expect(textOf(observed.events[0])).toBe('ok')
+    expect(counters.read).toBe(2) // no poisoned in-flight state: full rebuild
+    await ctx.fiber.dispose()
+  })
+
+  it('covered-clean: repeated same-revision reads never rebuild', async () => {
+    const ctx = await readerContext()
+    const meta = header('sf-clean')
+    const store = new Map([[meta.id, { header: meta, events: [messageEvent(0, 'cc')], revision: 'r1' }]])
+    const counters = { stat: 0, open: 0, read: 0 }
+    ctx.provide('sessionPersistence', stubPersistence(store, counters))
+    const reader = new SessionObservationReader(ctx)
+    for (let i = 0; i < 3; i += 1) {
+      using observed = await reader.read(meta.id, { projectionMode: 'none' })
+      expect(textOf(observed.events[0])).toBe('cc')
+    }
+    expect(counters.read).toBe(1)
+    await ctx.fiber.dispose()
+  })
+
+  it('a stale revision rebuilds exactly once and serves the new cut', async () => {
+    const ctx = await readerContext()
+    const meta = header('sf-stale')
+    const store = new Map([[meta.id, { header: meta, events: [messageEvent(0, 'old')], revision: 'r1' }]])
+    const counters = { stat: 0, open: 0, read: 0 }
+    ctx.provide('sessionPersistence', stubPersistence(store, counters))
+    const reader = new SessionObservationReader(ctx)
+    {
+      using observed = await reader.read(meta.id, { projectionMode: 'none' })
+      expect(textOf(observed.events[0])).toBe('old')
+    }
+    store.set(meta.id, { header: meta, events: [messageEvent(0, 'new')], revision: 'r2' })
+    {
+      using observed = await reader.read(meta.id, { projectionMode: 'none' })
+      expect(textOf(observed.events[0])).toBe('new')
+    }
+    {
+      using observed = await reader.read(meta.id, { projectionMode: 'none' })
+      expect(textOf(observed.events[0])).toBe('new')
+    }
+    expect(counters.read).toBe(2) // old build + one rebuild; the third read is covered-clean
+    await ctx.fiber.dispose()
+  })
+
+  it('no-resurrection: a stale in-flight build cannot overwrite a newer cached entry', async () => {
+    const ctx = await readerContext()
+    const meta = header('sf-resurrect')
+    const store = new Map([[meta.id, { header: meta, events: [messageEvent(0, 'old')], revision: 'r1' }]])
+    const counters = { stat: 0, open: 0, read: 0 }
+    let releaseOld!: () => void
+    const oldGate = new Promise<void>((resolve) => { releaseOld = resolve })
+    let deferred = true
+    ctx.provide('sessionPersistence', stubPersistence(store, counters, {
+      deferRead: async () => { if (deferred) await oldGate },
+    }))
+    const reader = new SessionObservationReader(ctx)
+    const stale = reader.read(meta.id, { projectionMode: 'none' })
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
+    expect(counters.read).toBe(1) // the stale build is parked on the old log
+
+    // The log advances while the old build is in flight; the newer read
+    // builds and commits the fresh entry first.
+    store.set(meta.id, { header: meta, events: [messageEvent(0, 'fresh')], revision: 'r2' })
+    deferred = false
+    using fresh = await reader.read(meta.id, { projectionMode: 'none' })
+    expect(textOf(fresh.events[0])).toBe('fresh')
+    expect(counters.read).toBe(2)
+
+    // The stale build settles LAST: its commit must be discarded.
+    releaseOld()
+    using settled = await stale
+    expect(textOf(settled.events[0])).toBe('old') // its own lease is still valid
+    expect(counters.read).toBe(2)
+    // The cache now serves the FRESH cut: no reload, no resurrection.
+    using again = await reader.read(meta.id, { projectionMode: 'none' })
+    expect(textOf(again.events[0])).toBe('fresh')
+    expect(counters.read).toBe(2)
+    await ctx.fiber.dispose()
+  })
+
+  it('an aborted build rejects with the abort code and leaves the next read healthy', async () => {
+    const ctx = await readerContext()
+    const meta = header('sf-abort')
+    const store = new Map([[meta.id, { header: meta, events: [messageEvent(0, 'ab')], revision: 'r1' }]])
+    const counters = { stat: 0, open: 0, read: 0 }
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    ctx.provide('sessionPersistence', stubPersistence(store, counters, {
+      deferRead: async () => { await gate },
+    }))
+    const reader = new SessionObservationReader(ctx)
+    const controller = new AbortController()
+    const aborted = reader.read(meta.id, { projectionMode: 'none', signal: controller.signal })
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
+    controller.abort(new Error('owner cancelled'))
+    release()
+    await expect(aborted).rejects.toMatchObject({ code: 'SESSION_QUERY_ABORTED' })
+    using observed = await reader.read(meta.id, { projectionMode: 'none' })
+    expect(textOf(observed.events[0])).toBe('ab')
+    expect(counters.read).toBe(2)
+    await ctx.fiber.dispose()
+  })
+
+  it('repeated reads stay stable and idempotent across lease lifetimes', async () => {
+    const ctx = await readerContext()
+    const meta = header('sf-stable')
+    const store = new Map([[meta.id, { header: meta, events: [messageEvent(0, 'stable')], revision: 'r1' }]])
+    const counters = { stat: 0, open: 0, read: 0 }
+    ctx.provide('sessionPersistence', stubPersistence(store, counters))
+    const reader = new SessionObservationReader(ctx)
+    for (let i = 0; i < 2; i += 1) {
+      const observed = await reader.read(meta.id, { projectionMode: 'none' })
+      const retained = observed.retain()
+      expect(textOf(observed.events[0])).toBe('stable')
+      expect(textOf(retained.events[0])).toBe('stable')
+      observed[Symbol.dispose]()
+      retained[Symbol.dispose]()
+    }
+    expect(counters.read).toBe(1)
     await ctx.fiber.dispose()
   })
 })
