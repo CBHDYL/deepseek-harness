@@ -102,6 +102,11 @@ function stdioConfig(reconnect?: Config['reconnect']): Config {
     cwd: '',
     toolCallTimeoutMs: 60_000,
     failOnStartupError: false,
+    maxSyncPages: 50,
+    maxToolsPerServer: 2000,
+    syncTimeoutMs: 30000,
+    maxToolDescriptionBytes: 4096,
+    maxToolSchemaBytes: 65536,
     ...reconnect === undefined ? {} : { reconnect },
   }
 }

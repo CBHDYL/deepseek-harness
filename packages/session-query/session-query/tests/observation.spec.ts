@@ -13,6 +13,7 @@ import type {
   SessionHandle,
   SessionHandleReadOptions,
   SessionPersistenceSnapshot,
+  SessionPersistenceOpenOptions,
   SessionPersistenceStatOptions,
 } from '@deepseek-ai/dsh-session-persistence'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
@@ -977,7 +978,7 @@ describe('P-PROJECTION real Cordis Service identity (P1 fix)', () => {
     const gate = new Promise<void>((resolve) => { release = resolve })
     // oxlint-disable-next-line typescript/unbound-method -- invoked with an explicit `this` binding below
     const realOpen = JsonlSessionPersistence.prototype.open
-    const openSpy = vi.spyOn(JsonlSessionPersistence.prototype, 'open').mockImplementation(async function (this: JsonlSessionPersistence, target: SessionIdType, access: 'read' | 'write', options?: never) {
+    const openSpy = vi.spyOn(JsonlSessionPersistence.prototype, 'open').mockImplementation(async function (this: JsonlSessionPersistence, target: SessionIdType, access: 'read' | 'write', options?: SessionPersistenceOpenOptions) {
       await gate
       return realOpen.call(this, target, access, options)
     })

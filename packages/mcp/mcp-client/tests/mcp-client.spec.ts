@@ -148,6 +148,11 @@ const defaultOpts: ToolBridgeOptions = {
   registrationFailure: 'contain',
   serverName: 'srv',
   toolCallTimeoutMs: 60_000,
+  maxSyncPages: 50,
+  maxToolsPerServer: 2000,
+  syncTimeoutMs: 30000,
+  maxToolDescriptionBytes: 4096,
+  maxToolSchemaBytes: 65536,
 }
 
 // ---- Tests ----
@@ -1129,6 +1134,11 @@ describe('createTransport', () => {
       cwd: '/tmp',
       toolCallTimeoutMs: 60_000,
       failOnStartupError: false,
+      maxSyncPages: 50,
+      maxToolsPerServer: 2000,
+      syncTimeoutMs: 30000,
+      maxToolDescriptionBytes: 4096,
+      maxToolSchemaBytes: 65536,
     }
     const transport = createTransport(config)
     expect(transport).toBeDefined()
@@ -1144,6 +1154,11 @@ describe('createTransport', () => {
       headers: {},
       toolCallTimeoutMs: 60_000,
       failOnStartupError: false,
+      maxSyncPages: 50,
+      maxToolsPerServer: 2000,
+      syncTimeoutMs: 30000,
+      maxToolDescriptionBytes: 4096,
+      maxToolSchemaBytes: 65536,
     }
     const transport = createTransport(config)
     expect(transport).toBeDefined()
@@ -1159,6 +1174,11 @@ describe('createTransport', () => {
       headers: { Authorization: 'Bearer token' },
       toolCallTimeoutMs: 60_000,
       failOnStartupError: false,
+      maxSyncPages: 50,
+      maxToolsPerServer: 2000,
+      syncTimeoutMs: 30000,
+      maxToolDescriptionBytes: 4096,
+      maxToolSchemaBytes: 65536,
     }
     const transport = createTransport(config)
     expect(transport).toBeDefined()
@@ -1183,6 +1203,11 @@ describe('createTransport', () => {
         cwd: '',
         toolCallTimeoutMs: 60_000,
         failOnStartupError: false,
+        maxSyncPages: 50,
+        maxToolsPerServer: 2000,
+        syncTimeoutMs: 30000,
+        maxToolDescriptionBytes: 4096,
+        maxToolSchemaBytes: 65536,
       }
       // StdioClientTransport keeps its env private; the observable contract is
       // that createTransport(config) returns a transport without throwing.
@@ -1209,6 +1234,11 @@ describe('createTransport', () => {
       cwd: '',
       toolCallTimeoutMs: 60_000,
       failOnStartupError: false,
+      maxSyncPages: 50,
+      maxToolsPerServer: 2000,
+      syncTimeoutMs: 30000,
+      maxToolDescriptionBytes: 4096,
+      maxToolSchemaBytes: 65536,
     }
     const transport = createTransport(config)
     expect(transport).toBeDefined()
@@ -1252,5 +1282,80 @@ describe('tool execution — non-object args fallback', () => {
       undefined,
       expect.anything(),
     )
+  })
+})
+
+describe('P-BUDGET MCP source bounds', () => {
+  let ctx: Context
+
+  beforeEach(async () => {
+    ctx = await mountRegistry()
+  })
+
+  const tight = {
+    ...defaultOpts,
+    maxToolDescriptionBytes: 20,
+    maxToolSchemaBytes: 100,
+    maxToolsPerServer: 10,
+    maxSyncPages: 5,
+    syncTimeoutMs: 30_000,
+  }
+
+  it('excludes a tool whose description exceeds the byte bound, keeping its siblings', async () => {
+    const client = createMockClient([
+      { name: 'ok', description: 'fine', inputSchema: { type: 'object' } },
+      { name: 'loud', description: 'x'.repeat(21), inputSchema: { type: 'object' } },
+      { name: 'also-ok', description: 'also fine', inputSchema: { type: 'object' } },
+    ])
+    const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => undefined)
+    const disposers = await syncTools(client as never, ctx, tight, new Map())
+    expect(disposers.size).toBe(2)
+    expect(ctx.tools.get('mcp__srv__ok')).toBeDefined()
+    expect(ctx.tools.get('mcp__srv__loud')).toBeUndefined()
+    expect(ctx.tools.get('mcp__srv__also-ok')).toBeDefined()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('excluded 1 tool'))
+    warn.mockRestore()
+  })
+
+  it('excludes a tool whose serialized schemas exceed the byte bound', async () => {
+    const client = createMockClient([
+      { name: 'ok', description: 'fine', inputSchema: { type: 'object' } },
+      { name: 'bloated', description: 'fine', inputSchema: { type: 'object', properties: { big: { type: 'string', description: 'y'.repeat(200) } } } },
+    ])
+    const disposers = await syncTools(client as never, ctx, tight, new Map())
+    expect(disposers.size).toBe(1)
+    expect(ctx.tools.get('mcp__srv__ok')).toBeDefined()
+    expect(ctx.tools.get('mcp__srv__bloated')).toBeUndefined()
+  })
+
+  it('accepts a tool exactly at both bounds (strict `>`, not `>=`)', async () => {
+    const measure = (schema: Record<string, unknown>) => new TextEncoder().encode(JSON.stringify({ input: schema })).length
+    const base = { type: 'object', properties: { p: { type: 'string', description: '' } } }
+    const exactSchema = { type: 'object', properties: { p: { type: 'string', description: 's'.repeat(100 - measure(base)) } } }
+    expect(measure(exactSchema)).toBe(100)
+    const client = createMockClient([
+      { name: 'edge', description: 'd'.repeat(20), inputSchema: exactSchema },
+    ])
+    const disposers = await syncTools(client as never, ctx, tight, new Map())
+    expect(disposers.size).toBe(1)
+    expect(ctx.tools.get('mcp__srv__edge')).toBeDefined()
+  })
+
+  it('aborts when the tool count exceeds the per-server cap (aggregate amplification bound)', async () => {
+    const tools = Array.from({ length: 4 }, (_, i) => ({ name: `t${i}`, description: 'd', inputSchema: { type: 'object' } }))
+    const client = createMockClient(tools)
+    await expect(syncTools(client as never, ctx, { ...tight, maxToolsPerServer: 3 }, new Map()))
+      .rejects.toThrow(/exceeds 3 tools/)
+  })
+
+  it('aborts pagination past the page cap', async () => {
+    const client = createMockClient([])
+    // oxlint-disable-next-line typescript/no-misused-promises -- the mock replaces the SDK's promise-returning request
+    ;(client.request as ReturnType<typeof vi.fn>).mockImplementation(async (request: { method: string }) => {
+      if (request.method === 'tools/list') return { tools: [], nextCursor: 'next' }
+      throw new Error(`unexpected MCP request: ${request.method}`)
+    })
+    await expect(syncTools(client as never, ctx, { ...tight, maxSyncPages: 2 }, new Map()))
+      .rejects.toThrow(/exceeds 2 pages/)
   })
 })

@@ -31,10 +31,12 @@ import { callConfigEquals } from './call-config.ts'
 import type { LlmCallConfig, LlmCallConfigAdapterDefaults } from './call-config.ts'
 import { HarnessError, INVALID_CREDENTIAL_CODE } from './error.ts'
 import { normalizeLlmFailure } from './adapter-failure.ts'
+import { DEFAULT_MAX_REQUEST_BYTES, measureRequestBytes } from './budget.ts'
 import { normalizeApiKey } from './api-key.ts'
 import { contentHasImage, projectImagesForTextModel } from './content.ts'
 
 export * from './attribution.ts'
+export * from './budget.ts'
 export * from './brand.ts'
 export * from './error.ts'
 export * from './api-key.ts'
@@ -116,6 +118,33 @@ export class LlmError extends HarnessError {
       ...options?.providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs: options.providerRetryAfterMs },
       ...options?.requestId === undefined ? {} : { requestId: options.requestId },
     })
+  }
+}
+
+/** Canonical provider-neutral code for a request refused by the local prompt budget BEFORE dispatch. */
+export const PROMPT_BUDGET_EXCEEDED_CODE = 'PROMPT_BUDGET_EXCEEDED'
+
+/**
+ * Typed failure for a request refused by the local hard byte ceiling BEFORE any
+ * provider dispatch. Distinct from a provider-reported context-window
+ * overflow: this class never reached the provider, so its recovery is the
+ * compaction/request-budget path, and the session is always recoverable.
+ */
+export class PromptBudgetError extends LlmError {
+  /** Exact UTF-8 bytes of the refused request envelope. */
+  readonly bytes: number
+  /** The provider route the request would have used. */
+  readonly provider: string
+
+  /**
+   * @param message - non-empty human-readable summary naming the exceeded bound.
+   * @param options - byte/provider facts plus the standard error options.
+   */
+  constructor(message: string, options: { bytes: number; provider: string } & ErrorOptions) {
+    super(message, PROMPT_BUDGET_EXCEEDED_CODE, { cause: options.cause })
+    this.name = 'PromptBudgetError'
+    this.bytes = options.bytes
+    this.provider = options.provider
   }
 }
 
@@ -1056,6 +1085,21 @@ export class LlmRuntime extends TypertRemoteService {
     options: GenerateOptions,
     prepared?: PreparedDispatch,
   ): AsyncIterable<StreamChunk> {
+    // P-BUDGET: measure the exact model-facing envelope (messages + rendered
+    // system + tool schemas) in UTF-8 bytes and refuse BEFORE any waterfall
+    // listener or adapter can transform or dispatch it. Headers ⇔ dispatched
+    // requests: a refused envelope never reaches a provider.
+    const bytes = measureRequestBytes({
+      messages: options.messages,
+      ...options.system === undefined ? {} : { system: options.system },
+      ...options.tools === undefined || options.tools.length === 0 ? {} : { tools: options.tools },
+    })
+    if (bytes > DEFAULT_MAX_REQUEST_BYTES) {
+      throw new PromptBudgetError(
+        `request is ${bytes} bytes (ceiling ${DEFAULT_MAX_REQUEST_BYTES}) — refusing to dispatch`,
+        { bytes, provider: options.provider },
+      )
+    }
     return this.ctx.waterfall(
       this,
       'llm/stream',

@@ -32,6 +32,23 @@ export interface ToolBridgeOptions {
   registrationFailure: 'contain' | 'throw'
   serverName: string
   toolCallTimeoutMs: number
+  /** Maximum tools/list pages to drain before aborting (server pagination loop guard). */
+  maxSyncPages: number
+  /** Maximum tools per server before aborting the sync. */
+  maxToolsPerServer: number
+  /** Whole-sync deadline in ms (a stalled server cannot wedge startup forever). */
+  syncTimeoutMs: number
+  /**
+   * Maximum UTF-8 bytes of one tool's description before the tool is excluded
+   * from the generation (P-BUDGET product constant, default 4096).
+   */
+  maxToolDescriptionBytes: number
+  /**
+   * Maximum UTF-8 bytes of one tool's serialized `inputSchema` + `outputSchema`
+   * before the tool is excluded from the generation (P-BUDGET product
+   * constant, default 65536).
+   */
+  maxToolSchemaBytes: number
 }
 
 /** State for one sync generation: the current set of disposers keyed by public name. */
@@ -70,10 +87,11 @@ const IMAGE_MEDIA_TYPES: readonly ImageMediaType[] = [
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 
 /** List without mutating the SDK's per-page output-validator cache. */
-function listToolsUncached(client: Client, cursor?: string) {
+function listToolsUncached(client: Client, cursor?: string, opts?: { timeout?: number; signal?: AbortSignal }) {
   return client.request(
     { method: 'tools/list', ...cursor === undefined ? {} : { params: { cursor } } },
     ListToolsResultSchema,
+    opts,
   )
 }
 
@@ -149,9 +167,20 @@ export async function syncTools(
 ): Promise<ToolDisposers> {
   // Phase 1: fetch and build the next generation without touching the registry.
   const definitions = new Map<string, ToolDefinition>()
+  const started = Date.now()
   let cursor: string | undefined
+  let pages = 0
+  let excludedTools = 0
   do {
-    const response = await listToolsUncached(client, cursor)
+    pages += 1
+    if (pages > opts.maxSyncPages) {
+      throw new Error(`mcp-client(${opts.serverName}): tool list exceeds ${opts.maxSyncPages} pages — aborting`)
+    }
+    const remaining = opts.syncTimeoutMs - (Date.now() - started)
+    if (remaining <= 0) {
+      throw new Error(`mcp-client(${opts.serverName}): tool sync exceeded ${opts.syncTimeoutMs}ms — aborting`)
+    }
+    const response = await listToolsUncached(client, cursor, { timeout: remaining })
     for (const tool of response.tools) {
       const publicName = publicToolName(opts.serverName, tool.name)
       if (definitions.has(publicName)) {
@@ -159,20 +188,41 @@ export async function syncTools(
           `mcp-client(${opts.serverName}): server listed tool "${tool.name}" more than once — invalid tool list`,
         )
       }
+      // P-BUDGET source bounds: a tool whose model-facing metadata exceeds
+      // the per-tool byte ceilings is excluded from the generation (sibling
+      // tools stay). Untrusted MCP metadata never reaches the model context
+      // unbounded.
+      const description = tool.description ?? ''
+      const structured = supportedOutputSchema(tool.outputSchema)
+      const schemaBytes = new TextEncoder().encode(JSON.stringify({
+        input: tool.inputSchema,
+        ...structured === undefined ? {} : { output: structured },
+      })).length
+      if (new TextEncoder().encode(description).length > opts.maxToolDescriptionBytes
+        || schemaBytes > opts.maxToolSchemaBytes) {
+        excludedTools += 1
+        continue
+      }
       definitions.set(publicName, createDefinition(
         client,
         ctx,
         publicName,
         tool.name,
-        tool.description ?? '',
+        description,
         tool.inputSchema,
-        supportedOutputSchema(tool.outputSchema),
+        structured,
         tool.execution?.taskSupport === 'required',
         opts,
       ))
+      if (definitions.size > opts.maxToolsPerServer) {
+        throw new Error(`mcp-client(${opts.serverName}): tool list exceeds ${opts.maxToolsPerServer} tools — aborting`)
+      }
     }
     cursor = response.nextCursor
   } while (cursor)
+  if (excludedTools > 0) {
+    ctx.logger.warn(`mcp-client(${opts.serverName}): excluded ${excludedTools} tool(s) whose model-facing metadata exceeds the source bounds`)
+  }
 
   // Phase 2: swap generations.
   for (const dispose of previous.values()) dispose()

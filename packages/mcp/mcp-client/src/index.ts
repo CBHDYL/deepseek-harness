@@ -46,6 +46,23 @@ const activeServerNames = new WeakMap<object, Set<string>>()
 
 // ---- Config ----
 
+// ---- P-BUDGET source bounds (product constants) ----
+
+/** Maximum tools/list pages to drain before aborting (server pagination loop guard). */
+export const DEFAULT_MAX_SYNC_PAGES = 50
+
+/** Maximum tools per server before aborting the sync. */
+export const DEFAULT_MAX_TOOLS_PER_SERVER = 2000
+
+/** Whole-sync deadline in ms (a stalled server cannot wedge startup forever). */
+export const DEFAULT_SYNC_TIMEOUT_MS = 30_000
+
+/** Maximum UTF-8 bytes of one tool's description before exclusion. */
+export const DEFAULT_MAX_TOOL_DESCRIPTION_BYTES = 4096
+
+/** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion. */
+export const DEFAULT_MAX_TOOL_SCHEMA_BYTES = 64 * 1024
+
 /** Config for connecting to an MCP server via a spawned child process over stdio. */
 export interface StdioConfig {
   /** Selects child-process stdio transport. */
@@ -68,6 +85,16 @@ export interface StdioConfig {
   toolCallTimeoutMs: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
+  /** Maximum tools/list pages to drain before aborting. Defaults to {@link DEFAULT_MAX_SYNC_PAGES}. */
+  maxSyncPages: number
+  /** Maximum tools per server before aborting the sync. Defaults to {@link DEFAULT_MAX_TOOLS_PER_SERVER}. */
+  maxToolsPerServer: number
+  /** Whole-sync deadline in ms. Defaults to {@link DEFAULT_SYNC_TIMEOUT_MS}. */
+  syncTimeoutMs: number
+  /** Maximum UTF-8 bytes of one tool's description before exclusion. Defaults to {@link DEFAULT_MAX_TOOL_DESCRIPTION_BYTES}. */
+  maxToolDescriptionBytes: number
+  /** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion. Defaults to {@link DEFAULT_MAX_TOOL_SCHEMA_BYTES}. */
+  maxToolSchemaBytes: number
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
   reconnect?: ReconnectConfig
 }
@@ -90,6 +117,16 @@ export interface StreamableHttpConfig {
   toolCallTimeoutMs: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
   failOnStartupError: boolean
+  /** Maximum tools/list pages to drain before aborting. Defaults to {@link DEFAULT_MAX_SYNC_PAGES}. */
+  maxSyncPages: number
+  /** Maximum tools per server before aborting the sync. Defaults to {@link DEFAULT_MAX_TOOLS_PER_SERVER}. */
+  maxToolsPerServer: number
+  /** Whole-sync deadline in ms. Defaults to {@link DEFAULT_SYNC_TIMEOUT_MS}. */
+  syncTimeoutMs: number
+  /** Maximum UTF-8 bytes of one tool's description before exclusion. Defaults to {@link DEFAULT_MAX_TOOL_DESCRIPTION_BYTES}. */
+  maxToolDescriptionBytes: number
+  /** Maximum UTF-8 bytes of one tool's serialized schemas before exclusion. Defaults to {@link DEFAULT_MAX_TOOL_SCHEMA_BYTES}. */
+  maxToolSchemaBytes: number
   /** Automatic reconnect policy after a lost connection; omission uses the defaults. */
   reconnect?: ReconnectConfig
 }
@@ -97,10 +134,10 @@ export interface StreamableHttpConfig {
 /** Configuration for one stdio or Streamable HTTP MCP server. */
 export type Config = StdioConfig | StreamableHttpConfig
 
-type StdioConfigInput = Omit<StdioConfig, 'args' | 'env' | 'cwd' | 'toolCallTimeoutMs' | 'failOnStartupError'>
-  & Partial<Pick<StdioConfig, 'args' | 'env' | 'cwd' | 'toolCallTimeoutMs' | 'failOnStartupError'>>
-type StreamableHttpConfigInput = Omit<StreamableHttpConfig, 'headers' | 'toolCallTimeoutMs' | 'failOnStartupError'>
-  & Partial<Pick<StreamableHttpConfig, 'headers' | 'toolCallTimeoutMs' | 'failOnStartupError'>>
+type StdioConfigInput = Omit<StdioConfig, 'args' | 'env' | 'cwd' | 'toolCallTimeoutMs' | 'failOnStartupError' | 'maxSyncPages' | 'maxToolsPerServer' | 'syncTimeoutMs' | 'maxToolDescriptionBytes' | 'maxToolSchemaBytes'>
+  & Partial<Pick<StdioConfig, 'args' | 'env' | 'cwd' | 'toolCallTimeoutMs' | 'failOnStartupError' | 'maxSyncPages' | 'maxToolsPerServer' | 'syncTimeoutMs' | 'maxToolDescriptionBytes' | 'maxToolSchemaBytes'>>
+type StreamableHttpConfigInput = Omit<StreamableHttpConfig, 'headers' | 'toolCallTimeoutMs' | 'failOnStartupError' | 'maxSyncPages' | 'maxToolsPerServer' | 'syncTimeoutMs' | 'maxToolDescriptionBytes' | 'maxToolSchemaBytes'>
+  & Partial<Pick<StreamableHttpConfig, 'headers' | 'toolCallTimeoutMs' | 'failOnStartupError' | 'maxSyncPages' | 'maxToolsPerServer' | 'syncTimeoutMs' | 'maxToolDescriptionBytes' | 'maxToolSchemaBytes'>>
 type ConfigInput = StdioConfigInput | StreamableHttpConfigInput
 
 const Reconnect: z<ReconnectConfig> = z.object({
@@ -120,6 +157,11 @@ export const Config = z.union([
     cwd: z.string().default(''),
     toolCallTimeoutMs: z.number().default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: z.boolean().default(false),
+    maxSyncPages: z.number().default(DEFAULT_MAX_SYNC_PAGES),
+    maxToolsPerServer: z.number().default(DEFAULT_MAX_TOOLS_PER_SERVER),
+    syncTimeoutMs: z.number().default(DEFAULT_SYNC_TIMEOUT_MS),
+    maxToolDescriptionBytes: z.number().default(DEFAULT_MAX_TOOL_DESCRIPTION_BYTES),
+    maxToolSchemaBytes: z.number().default(DEFAULT_MAX_TOOL_SCHEMA_BYTES),
     reconnect: Reconnect,
   }),
   z.object({
@@ -129,6 +171,11 @@ export const Config = z.union([
     headers: z.dict(String).default({}),
     toolCallTimeoutMs: z.number().default(DEFAULT_TOOL_CALL_TIMEOUT_MS),
     failOnStartupError: z.boolean().default(false),
+    maxSyncPages: z.number().default(DEFAULT_MAX_SYNC_PAGES),
+    maxToolsPerServer: z.number().default(DEFAULT_MAX_TOOLS_PER_SERVER),
+    syncTimeoutMs: z.number().default(DEFAULT_SYNC_TIMEOUT_MS),
+    maxToolDescriptionBytes: z.number().default(DEFAULT_MAX_TOOL_DESCRIPTION_BYTES),
+    maxToolSchemaBytes: z.number().default(DEFAULT_MAX_TOOL_SCHEMA_BYTES),
     reconnect: Reconnect,
   }),
 ]) as unknown as z<ConfigInput, Config>

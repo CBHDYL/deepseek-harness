@@ -106,6 +106,11 @@ describe('fixture server — controlled scenarios', () => {
     cwd: packageDir,
     toolCallTimeoutMs: 15_000,
     failOnStartupError: false,
+    maxSyncPages: 50,
+    maxToolsPerServer: 2000,
+    syncTimeoutMs: 30000,
+    maxToolDescriptionBytes: 4096,
+    maxToolSchemaBytes: 65536,
   }
 
   beforeAll(async () => {
@@ -205,6 +210,11 @@ describe('fixture server — duplicate serverName', () => {
       cwd: packageDir,
       toolCallTimeoutMs: 15_000,
       failOnStartupError: false,
+      maxSyncPages: 50,
+      maxToolsPerServer: 2000,
+      syncTimeoutMs: 30000,
+      maxToolDescriptionBytes: 4096,
+      maxToolSchemaBytes: 65536,
     }
     await apply(ctx, config)
 
@@ -227,6 +237,11 @@ describe('fixture server — disposal', () => {
       cwd: packageDir,
       toolCallTimeoutMs: 15_000,
       failOnStartupError: false,
+      maxSyncPages: 50,
+      maxToolsPerServer: 2000,
+      syncTimeoutMs: 30000,
+      maxToolDescriptionBytes: 4096,
+      maxToolSchemaBytes: 65536,
     })
 
     // Tools are registered before dispose.
@@ -250,6 +265,11 @@ describe('fixture server — crash recovery', () => {
       cwd: packageDir,
       toolCallTimeoutMs: 15_000,
       failOnStartupError: false,
+      maxSyncPages: 50,
+      maxToolsPerServer: 2000,
+      syncTimeoutMs: 30000,
+      maxToolDescriptionBytes: 4096,
+      maxToolSchemaBytes: 65536,
       reconnect,
     }
   }
@@ -334,6 +354,11 @@ describe('server-everything — official test server', () => {
     cwd: '',
     toolCallTimeoutMs: 30_000,
     failOnStartupError: false,
+    maxSyncPages: 50,
+    maxToolsPerServer: 2000,
+    syncTimeoutMs: 30000,
+    maxToolDescriptionBytes: 4096,
+    maxToolSchemaBytes: 65536,
   }
 
   beforeAll(async () => {
@@ -403,6 +428,11 @@ describe('server-filesystem — real filesystem operations', () => {
       cwd: '',
       toolCallTimeoutMs: 30_000,
       failOnStartupError: false,
+      maxSyncPages: 50,
+      maxToolsPerServer: 2000,
+      syncTimeoutMs: 30000,
+      maxToolDescriptionBytes: 4096,
+      maxToolSchemaBytes: 65536,
     }
     await apply(ctx, config)
   }, 60_000)
@@ -520,6 +550,11 @@ describe('streamable-http — in-process MCP server', () => {
       headers: { Authorization: 'Bearer e2e-test-token' },
       toolCallTimeoutMs: 15_000,
       failOnStartupError: false,
+      maxSyncPages: 50,
+      maxToolsPerServer: 2000,
+      syncTimeoutMs: 30000,
+      maxToolDescriptionBytes: 4096,
+      maxToolSchemaBytes: 65536,
     }
     await apply(ctx, config)
   }, 30_000)

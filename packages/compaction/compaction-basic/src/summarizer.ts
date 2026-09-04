@@ -15,7 +15,12 @@ interface SummaryConfig {
   readonly summarizationProvider: string
   readonly summarizationModel: string
   readonly maxTokens: number
+  /** Independent hard UTF-8 byte allowance for the summarization dispatch (P-BUDGET). */
+  readonly summarizationMaxBytes: number
 }
+
+/** Canonical code for a summarization input refused by its independent byte allowance. */
+export const COMPACTION_BUDGET_EXCEEDED_CODE = 'COMPACTION_BUDGET_EXCEEDED'
 
 /** Tags wrapping the structured summary inside the landed checkpoint node. */
 const SUMMARY_OPEN_TAG = '<compacted-summary>'
@@ -161,6 +166,25 @@ export async function summarizeWithLlm(
     purpose: 'compaction',
     ...signal === undefined ? {} : { signal },
   }
+  // Compaction reserve (P-BUDGET): the summarizer dispatch carries its OWN
+  // hard UTF-8 byte allowance over the exact dispatched representation, so
+  // recovery can never re-dispatch content the request ceiling refused
+  // without an explicit, smaller bound. Strict `>`: exactly at the allowance
+  // dispatches.
+  const bounded = {
+    messages,
+    ...input.system === undefined ? {} : { system: input.system },
+    ...input.tools === undefined ? {} : { tools: [...input.tools] },
+  }
+  const bytes = new TextEncoder().encode(JSON.stringify(bounded)).length
+  if (bytes > config.summarizationMaxBytes) {
+    throw new LlmError(
+      `compaction summarization input is ${bytes} bytes `
+      + `(allowance ${config.summarizationMaxBytes}) — refusing to dispatch`,
+      COMPACTION_BUDGET_EXCEEDED_CODE,
+    )
+  }
+
   for await (const chunk of ctx.llm.stream(options)) assembler.push(chunk)
   const error = finishError(assembler.finish)
   if (error !== undefined) throw error

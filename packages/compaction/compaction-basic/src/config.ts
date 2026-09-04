@@ -19,6 +19,9 @@ import type {
 /** Default request-pressure fraction for every routed model. */
 const DEFAULT_THRESHOLD_RATIO = 0.8
 
+/** Default independent summarizer byte allowance (P-BUDGET). */
+export const DEFAULT_SUMMARIZATION_MAX_BYTES = 8 * 1024 * 1024
+
 /** Default verbatim-tail fraction for every routed model. */
 const DEFAULT_RETAIN_RATIO = 0.16
 
@@ -30,6 +33,7 @@ const POLICY_CONFIG_KEYS = [
   'summarizationProvider',
   'summarizationModel',
   'maxTokens',
+  'summarizationMaxBytes',
   'compactionRetries',
   'maxOverflowRetries',
 ] as const
@@ -89,6 +93,7 @@ export function resolveConfig(config: BasicCompactionConfig = {}): ResolvedConfi
     summarizationProvider: config.summarizationProvider ?? '',
     summarizationModel: config.summarizationModel ?? '',
     maxTokens: config.maxTokens ?? 8192,
+    summarizationMaxBytes: resolveSummarizationMaxBytes(config.summarizationMaxBytes),
     compactionRetries: config.compactionRetries ?? 1,
     maxOverflowRetries: config.maxOverflowRetries ?? 1,
     modelPolicies,
@@ -119,6 +124,7 @@ export function resolveTargetPolicy(
     summarizationProvider: override?.summarizationProvider ?? config.summarizationProvider,
     summarizationModel: override?.summarizationModel ?? config.summarizationModel,
     maxTokens: override?.maxTokens ?? config.maxTokens,
+    summarizationMaxBytes: override?.summarizationMaxBytes ?? config.summarizationMaxBytes,
     compactionRetries: override?.compactionRetries ?? config.compactionRetries,
     maxOverflowRetries: override?.maxOverflowRetries ?? config.maxOverflowRetries,
   })
@@ -161,9 +167,19 @@ export function resolveCompactSpec(
     summarizationProvider: policy.summarizationProvider,
     summarizationModel: policy.summarizationModel,
     maxTokens: policy.maxTokens,
+    summarizationMaxBytes: policy.summarizationMaxBytes,
     compactionRetries: policy.compactionRetries,
     maxOverflowRetries: policy.maxOverflowRetries,
   })
+}
+
+/** Validate one summarizer byte allowance, defaulting to the product constant. */
+function resolveSummarizationMaxBytes(value: number | undefined): number {
+  const resolved = value ?? DEFAULT_SUMMARIZATION_MAX_BYTES
+  if (!Number.isSafeInteger(resolved) || resolved < 1) {
+    throw new Error('BasicCompactionConfig: summarizationMaxBytes must be a positive safe integer')
+  }
+  return resolved
 }
 
 /** Choose an explicit retention form or inherit the already-resolved fallback. */
@@ -241,6 +257,9 @@ function validatePolicy(
     throw new Error(`${name}: retainRatio and retainTokens are mutually exclusive`)
   }
   if (maxTokens !== undefined) assertPositiveInteger(`${name}.maxTokens`, maxTokens)
+  if (config.summarizationMaxBytes !== undefined) {
+    assertPositiveInteger(`${name}.summarizationMaxBytes`, config.summarizationMaxBytes)
+  }
   if (compactionRetries !== undefined) {
     assertNonNegativeInteger(`${name}.compactionRetries`, compactionRetries)
   }

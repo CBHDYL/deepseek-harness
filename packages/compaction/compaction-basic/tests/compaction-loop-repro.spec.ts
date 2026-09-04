@@ -390,6 +390,67 @@ describe('context-overflow recovery across the real loop and compaction-basic', 
     },
   )
 
+  it('reaches a finite terminal state when overflow persists beyond the recovery bound', async () => {
+    class AlwaysOverflowAdapter extends LlmAdapter {
+      readonly conversationRequests: GenerateOptions[] = []
+      readonly summaryRequests: GenerateOptions[] = []
+
+      override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+        return Promise.resolve({ provider, id: model, name: model, context: { contextWindow: 128 } })
+      }
+
+      override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+        const trailing = options.messages.at(-1)?.content
+          .map(block => (block.type === 'text' ? block.text : ''))
+          .join('') ?? ''
+        if (trailing.includes('acting as a compaction engine')) {
+          this.summaryRequests.push(options)
+          yield { type: 'block-start', index: 0, blockType: 'text' }
+          yield { type: 'block-end', index: 0, block: { type: 'text', text: 'RECOVERY CHECKPOINT' } }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+          return
+        }
+        this.conversationRequests.push(options)
+        throw new LlmError('request too large for model context', CONTEXT_WINDOW_EXCEEDED_CODE)
+      }
+    }
+
+    const ctx = new Context()
+    const adapter = new AlwaysOverflowAdapter()
+    await mountAgentLoopTestDependencies(ctx)
+    await mountInvariants(ctx)
+    await ctx.plugin(SessionProjectionRegistry)
+    await ctx.plugin(LlmRetry)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    await ctx.plugin(TokenMeter)
+    ctx.llm.registerAdapter(['mock'], adapter)
+    await ctx.plugin(BasicCompactionEngine, {
+      thresholdRatio: 1,
+      retainTokens: 100,
+      maxTokens: 64,
+      compactionRetries: 0,
+      maxOverflowRetries: 1,
+    })
+
+    try {
+      const { agent } = await ctx.agentLoop.createAgent(ctx, {
+        sessionId: SessionId('persistent-overflow'),
+        seed: overflowHistorySeed(),
+        agentOptions: { provider: 'mock', model: 'mock' },
+      })
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'continue from history' }], source: { kind: 'user' } }))
+      await agent.whenIdle()
+
+      // Exactly one bounded recovery: the initial overflow + one rebuilt
+      // retry, whose own overflow surfaces the original failure — the loop
+      // reaches a terminal state instead of retrying forever.
+      expect(adapter.conversationRequests).toHaveLength(2)
+      expect(adapter.summaryRequests).toHaveLength(1)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('keeps context-overflow and transient retry budgets independent in one sequence', async () => {
     const ctx = new Context()
     const adapter = new OverflowRecoveryAdapter('thrown', true)

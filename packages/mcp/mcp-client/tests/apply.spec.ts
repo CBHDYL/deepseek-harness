@@ -84,6 +84,11 @@ const stdioConfig: Config = {
   cwd: '',
   toolCallTimeoutMs: 60_000,
   failOnStartupError: false,
+  maxSyncPages: 50,
+  maxToolsPerServer: 2000,
+  syncTimeoutMs: 30000,
+  maxToolDescriptionBytes: 4096,
+  maxToolSchemaBytes: 65536,
 }
 
 // ---- Tests ----
@@ -404,6 +409,11 @@ describe('apply (plugin lifecycle)', () => {
       headers: { Authorization: 'Bearer x' },
       toolCallTimeoutMs: 30_000,
       failOnStartupError: false,
+      maxSyncPages: 50,
+      maxToolsPerServer: 2000,
+      syncTimeoutMs: 30000,
+      maxToolDescriptionBytes: 4096,
+      maxToolSchemaBytes: 65536,
     }
 
     await apply(ctx, httpConfig)
