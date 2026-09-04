@@ -1,6 +1,6 @@
 /** Shared live/prepared observations for Session page and lifecycle consumers. */
 
-import type { Context } from '@deepseek-ai/cordis'
+import { Context, symbols } from '@deepseek-ai/cordis'
 import { SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionHeader, SessionId , SessionLogOffset as SessionLogOffsetType , SessionSeqCursor } from '@deepseek-ai/dsh-session'
 import type SessionPersistence from '@deepseek-ai/dsh-session-persistence'
@@ -50,8 +50,8 @@ export interface SessionObservationOptions {
  * instance still reports the same revision.
  */
 interface PreparedEntry {
-  /** The persistence instance whose `stat` produced {@link revision}; revisions from another instance are incomparable. */
-  readonly persistence: SessionPersistence
+  /** Stable identity of the producing persistence instance; revisions from another instance are incomparable. */
+  readonly persistenceIdentity: unknown
   /** Durable revision observed by `stat` immediately before the log read. */
   readonly revision: SessionPersistenceRevision
   /** Unpublished Session restored from the balanced log; never entered into the store. */
@@ -79,8 +79,8 @@ interface PreparedEntry {
  */
 export class SessionObservationReader {
   private readonly cache = new Map<SessionId, PreparedEntry>()
-  /** Shared cold builds keyed by `id@revision`, bound to the producing persistence instance. */
-  private readonly inFlight = new Map<string, { persistence: SessionPersistence; promise: Promise<PreparedEntry> }>()
+  /** Shared cold builds keyed by `id@revision`, bound to the producing persistence instance's stable identity. */
+  private readonly inFlight = new Map<string, { identity: unknown; promise: Promise<PreparedEntry> }>()
   /** Per-id commit ordering: each load bumps it; a commit lands only while still newest. */
   private readonly loadGeneration = new Map<SessionId, number>()
 
@@ -212,8 +212,9 @@ export class SessionObservationReader {
     signal: AbortSignal | undefined,
   ): Promise<PreparedEntry> {
     const key = `${String(sessionId)}@${revision}`
+    const identity = persistenceIdentity(persistence)
     const flying = this.inFlight.get(key)
-    if (flying !== undefined && flying.persistence === persistence) return flying.promise
+    if (flying !== undefined && flying.identity === identity) return flying.promise
     // Only the build starter owns a generation ticket; sharers ride the same
     // promise and must not advance the commit ordering.
     const generation = (this.loadGeneration.get(sessionId) ?? 0) + 1
@@ -230,7 +231,7 @@ export class SessionObservationReader {
         seedSource: 'persistence',
       })
       const entry: PreparedEntry = {
-        persistence,
+        persistenceIdentity: identity,
         revision,
         session,
         events: Object.freeze(seed),
@@ -243,7 +244,7 @@ export class SessionObservationReader {
       }
       return entry
     })
-    this.inFlight.set(key, { persistence, promise })
+    this.inFlight.set(key, { identity, promise })
     // The cleanup derived promise swallows the shared rejection so only the
     // awaiting reads observe the failure (no unhandled rejection).
     void promise.finally(() => {
@@ -259,7 +260,7 @@ export class SessionObservationReader {
     revision: SessionPersistenceRevision,
   ): PreparedEntry | undefined {
     const cached = this.cache.get(sessionId)
-    if (cached === undefined || cached.persistence !== persistence || cached.revision !== revision) {
+    if (cached === undefined || cached.persistenceIdentity !== persistenceIdentity(persistence) || cached.revision !== revision) {
       return undefined
     }
     this.cache.delete(sessionId)
@@ -359,6 +360,23 @@ export class SessionObservationReader {
       ? registry.hydrate(entry.session, {}, entry.events, SessionLogOffset(0))
       : cache.hydratePrepared(entry.session, entry.events)
   }
+}
+
+/**
+ * Stable identity of a persistence service for cache/in-flight comparison
+ * (P-PROJECTION P1 fix). Cordis wraps Service instances from `ctx.get` in a
+ * fresh traceable proxy per call, so raw proxy identity never matches across
+ * reads; the proxy's `symbols.original` trap exposes the stable underlying
+ * target. Plain stubs have no original and keep their own object identity.
+ * The identity only orders sharing decisions — the caller's proxy remains
+ * the execution object for every persistence call.
+ * @param persistence - the value `ctx.get('sessionPersistence')` returned.
+ * @returns the stable underlying target for traceable proxies, otherwise the value itself.
+ */
+function persistenceIdentity(persistence: SessionPersistence): unknown {
+  const value: unknown = persistence
+  if (typeof value !== 'object' || value === null) return value
+  return Reflect.get(value, symbols.original) ?? value
 }
 
 function throwIfObservationAborted(signal: AbortSignal | undefined): void {

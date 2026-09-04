@@ -12,7 +12,7 @@ The candidate's `SessionObservationReader` cached prepared cold reads per sessio
 
 Added the minimal mechanism on the candidate's own reader seam, reusing its existing revision-keyed prepared-entry cache:
 
-- **Single-flight** — an `inFlight` map keyed by `id@revision`, bound to the producing persistence instance. Concurrent reads over the same source and revision share one log read + prepare; only the build starter owns a commit ticket, so sharers cannot move the ordering.
+- **Single-flight** — an `inFlight` map keyed by `id@revision`, bound to the producing persistence instance. Concurrent reads over the same source and revision share one log read + prepare; only the build starter owns a commit ticket, so sharers cannot move the ordering. Instance binding compares the stable identity behind Cordis traceable proxies (`symbols.original` — repeated `ctx.get` calls wrap one Service in fresh proxies), never the proxy objects themselves; plain stubs keep their own object identity.
 - **No resurrection** — a per-id `loadGeneration` ticket taken when a build starts; the build commits into the cache only while its generation is still the newest for the id, so a stale in-flight build commits nowhere. Its own lease still serves the caller its exact (older) cut — staleness is confined to that lease, never resurrected into the cache.
 - **Failure semantics** — a failed or aborted build clears its in-flight slot with the promise (the cleanup promise swallows the shared rejection), so the next read retries from scratch; nothing partial is stored. Covered-clean reuse, revision-mismatch rebuild, capacity eviction, and pinning are unchanged.
 

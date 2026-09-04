@@ -12,7 +12,7 @@ candidate 的 `SessionObservationReader` 按会话 id、持久化实例与 stat 
 
 在 candidate 自己的 reader seam 上添加最小机制，复用其现有的以修订号为键的 prepared-entry 缓存：
 
-- **single-flight**——以 `id@revision` 为键、绑定到产生它的持久化实例的 `inFlight` 映射。同一来源同一修订号的并发读共享一次日志读取 + prepare；只有构建发起者持有提交票据，共享者不会移动排序。
+- **single-flight**——以 `id@revision` 为键、绑定到产生它的持久化实例的 `inFlight` 映射。同一来源同一修订号的并发读共享一次日志读取 + prepare；只有构建发起者持有提交票据，共享者不会移动排序。实例绑定比较 Cordis traceable proxy 背后的稳定身份（`symbols.original`——重复的 `ctx.get` 调用会用全新的 proxy 包装同一个 Service），绝不比较 proxy 对象本身；普通 stub 保持自身对象身份。
 - **无复活**——按 id 的 `loadGeneration` 票据在构建开始时领取；只有当该代次仍是该 id 最新时才把构建提交进缓存，因此陈旧的 in-flight 构建无处可提交。它自己的租约仍向调用者提供其精确的（较旧）cut——陈旧性被限制在该租约内，绝不复活进缓存。
 - **失败语义**——失败或被中止的构建随 promise 清除其 in-flight 槽位（清理 promise 吞掉共享拒绝），下一次读取从头重试；不会存储任何部分结果。covered-clean 复用、修订号不匹配重建、容量淘汰与 pinning 均保持不变。
 

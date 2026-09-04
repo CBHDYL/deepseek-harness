@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-03-p-projection-port.md
-2026-09-03-p-projection-port.md: 48e072905f70a7e3159b8772ef5dac94cd6c1527
-2026-09-03-p-projection-port.zh.md: 26b389f0eca6ffc0ba25e8737da69bdfae99e7e3
+2026-09-03-p-projection-port.md: 9c82d8e448ec21f1ca594d188e65486e6734c7f8
+2026-09-03-p-projection-port.zh.md: 2a79f39183e97a77f378bc1f036865dc8b87f33e

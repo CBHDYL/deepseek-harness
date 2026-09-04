@@ -16,8 +16,15 @@ import type {
   SessionPersistenceStatOptions,
 } from '@deepseek-ai/dsh-session-persistence'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
-import { describe, expect, it, vi } from 'vitest'
+import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SessionObservationReader } from '../src/observation.ts'
+
+const realDirs: string[] = []
+afterEach(async () => { for (const d of realDirs.splice(0)) await rm(d, { recursive: true, force: true }) })
 
 function header(id: string): SessionHeader {
   return { version: SESSION_FORMAT_VERSION, id: SessionId(id), createdAt: 1, isSeeded: false, cwd: '/workspace' }
@@ -935,6 +942,128 @@ describe('P-PROJECTION reader invariants (single-flight / covered-clean / no-res
       retained[Symbol.dispose]()
     }
     expect(counters.read).toBe(1)
+    await ctx.fiber.dispose()
+  })
+})
+
+describe('P-PROJECTION real Cordis Service identity (P1 fix)', () => {
+  function textOf(event: SessionEvent | undefined): string | undefined {
+    const data = event?.data as { content?: Array<{ type: string; text?: string }> } | undefined
+    return data?.content?.[0]?.text
+  }
+
+  /** A real backend session stored cold, ready for observation reads. */
+  async function seededRealBackend(): Promise<{ ctx: Context; id: SessionIdType }> {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-real-identity-'))
+    realDirs.push(root)
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
+    const id = SessionId('real-identity')
+    // Build the header directly: no live Session may exist, or the reader
+    // serves the live path and the cold seams never run.
+    const handle = await ctx.sessionPersistence.create(header('real-identity'))
+    await handle.append([
+      { type: 'turn/start', seq: SessionSeq(0), time: 1, data: { turn: 1 } },
+      { type: 'turn/end', seq: SessionSeq(1), time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
+    ])
+    await handle.close()
+    return { ctx, id }
+  }
+
+  it('REAL SINGLE-FLIGHT: concurrent reads share one open over the same real Service', async () => {
+    const { ctx, id } = await seededRealBackend()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    // oxlint-disable-next-line typescript/unbound-method -- invoked with an explicit `this` binding below
+    const realOpen = JsonlSessionPersistence.prototype.open
+    const openSpy = vi.spyOn(JsonlSessionPersistence.prototype, 'open').mockImplementation(async function (this: JsonlSessionPersistence, target: SessionIdType, access: 'read' | 'write', options?: never) {
+      await gate
+      return realOpen.call(this, target, access, options)
+    })
+    const reader = new SessionObservationReader(ctx)
+    const first = reader.read(id, { projectionMode: 'none' })
+    const second = reader.read(id, { projectionMode: 'none' })
+    await vi.waitFor(() => { expect(openSpy.mock.calls.length).toBe(1) }) // ONE underlying open: shared build
+    release()
+    using a = await first
+    using b = await second
+    expect(a.events.map(e => e.seq)).toEqual([0, 1])
+    expect(b.events.map(e => e.seq)).toEqual([0, 1])
+    openSpy.mockRestore()
+    await ctx.fiber.dispose()
+  })
+
+  it('REAL COVERED-CLEAN: a repeated read over a fresh proxy never re-opens the log', async () => {
+    const { ctx, id } = await seededRealBackend()
+    const openSpy = vi.spyOn(JsonlSessionPersistence.prototype, 'open')
+    const reader = new SessionObservationReader(ctx)
+    {
+      using first = await reader.read(id, { projectionMode: 'none' })
+      expect(first.events.map(e => e.seq)).toEqual([0, 1])
+    }
+    const opensAfterFirst = openSpy.mock.calls.length
+    {
+      // A fresh proxy per read is what ctx.get really returns; the entry must
+      // still hit through the stable identity.
+      using second = await reader.read(id, { projectionMode: 'none' })
+      expect(second.events.map(e => e.seq)).toEqual([0, 1])
+    }
+    expect(openSpy.mock.calls.length).toBe(opensAfterFirst)
+    openSpy.mockRestore()
+    await ctx.fiber.dispose()
+  })
+
+  it('DIFFERENT INSTANCE ISOLATION: identical revision strings across distinct Services never share', async () => {
+    const meta = header('real-isolation')
+    let totalReads = 0
+    const mkClass = (text: string) => class extends SessionPersistence {
+      create(): Promise<never> {
+        return Promise.reject(new Error('not used'))
+      }
+
+      flush(): Promise<void> {
+        return Promise.resolve()
+      }
+
+      open(): Promise<SessionHandle> {
+        totalReads += 1
+        const handle: SessionHandle = {
+          id: meta.id,
+          header: structuredClone(meta),
+          inheritedEventCount: SessionLogOffset(0),
+          access: 'read',
+          read: async (): Promise<readonly SessionEvent[]> => [messageEvent(0, text)],
+          append: () => Promise.reject(new SessionReadOnlyError(meta.id, 'append')),
+          flush: () => Promise.reject(new SessionReadOnlyError(meta.id, 'flush')),
+          close: () => Promise.resolve(),
+          [Symbol.asyncDispose]: () => Promise.resolve(),
+        }
+        return Promise.resolve(handle)
+      }
+
+      stat(): Promise<SessionPersistenceSnapshot | undefined> {
+        return Promise.resolve({ header: structuredClone(meta), revision: SessionPersistenceRevision('identical-rev') })
+      }
+
+      list(): Promise<readonly SessionPersistenceSnapshot[]> {
+        return Promise.resolve([])
+      }
+    }
+    const ctx = await readerContext()
+    const reader = new SessionObservationReader(ctx)
+    const pluginA = await ctx.plugin(mkClass('from-a'))
+    {
+      using observed = await reader.read(meta.id, { projectionMode: 'none' })
+      expect(textOf(observed.events[0])).toBe('from-a')
+    }
+    await pluginA.dispose()
+    await ctx.plugin(mkClass('from-b'))
+    {
+      using observed = await reader.read(meta.id, { projectionMode: 'none' })
+      expect(textOf(observed.events[0])).toBe('from-b')
+    }
+    expect(totalReads).toBe(2) // same revision string, different underlying Service: no sharing
     await ctx.fiber.dispose()
   })
 })
