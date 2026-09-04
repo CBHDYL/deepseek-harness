@@ -24,6 +24,7 @@ export type SurfaceEventType =
   | 'user/message'
   | 'assistant/message'
   | 'tool/result'
+  | 'session/repaired'
 
 /**
  * How a session event entered the ordered surface. Only valid on
@@ -90,9 +91,26 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }[T]
 ```
 
-Sources: [`packages/core/session/src/types.ts:368`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:375`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:404`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:436`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:384`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:391`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:421`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:453`](../packages/core/session/src/types.ts)
 
 ## Events
+
+### `action-policy/*`
+
+<a id="action-policycandidate--log-only"></a>
+
+#### `action-policy/candidate` — log-only
+
+```ts persistence-catalog
+/**
+ * One side-effectful tool candidate seen in action-policy observe mode.
+ * The payload intentionally excludes arguments, commands, paths,
+ * justifications, and credentials. Log-only and safe to skip when unknown.
+ */
+'action-policy/candidate': ActionPolicyCandidateEventData
+```
+
+Source: [`packages/guard/action-policy-guard/src/types.ts:25`](../packages/guard/action-policy-guard/src/types.ts)
 
 ### `agent/*`
 
@@ -474,6 +492,36 @@ Source: [`packages/hooks/hook-protocol/src/types.ts:19`](../packages/hooks/hook-
 
 Source: [`packages/hooks/hook-protocol/src/types.ts:31`](../packages/hooks/hook-protocol/src/types.ts)
 
+### `job/*`
+
+<a id="jobend--log-only"></a>
+
+#### `job/end` — log-only
+
+```ts persistence-catalog
+/**
+ * Fork-era background-job terminal settlement, paired with `job/start`.
+ * Compatibility-only: recorded order and payload are preserved.
+ */
+'job/end': JobEndEventData
+```
+
+Source: [`packages/core/session/src/compat-event-types.ts:109`](../packages/core/session/src/compat-event-types.ts)
+
+<a id="jobstart--log-only"></a>
+
+#### `job/start` — log-only
+
+```ts persistence-catalog
+/**
+ * Fork-era background-job open marker. Compatibility-only: the job
+ * registry itself is process-local and is never reconstructed.
+ */
+'job/start': JobStartEventData
+```
+
+Source: [`packages/core/session/src/compat-event-types.ts:104`](../packages/core/session/src/compat-event-types.ts)
+
 ### `llm/*`
 
 <a id="llmretry--log-only"></a>
@@ -549,7 +597,52 @@ Source: [`packages/interaction/permission-presets/src/index.ts:53`](../packages/
 
 Source: [`packages/plan/plan-mode/src/index.ts:46`](../packages/plan/plan-mode/src/index.ts)
 
+### `reasoning-chunks/*`
+
+<a id="reasoning-chunks--log-only"></a>
+
+#### `reasoning-chunks` — log-only
+
+```ts persistence-catalog
+/**
+ * Fork-era packed reasoning run retained as a log record. Compatibility-only:
+ * no consumer rebuilds chunks from it, and it never re-enters the model
+ * history.
+ */
+'reasoning-chunks': ReasoningChunksEventData
+```
+
+Source: [`packages/core/session/src/compat-event-types.ts:99`](../packages/core/session/src/compat-event-types.ts)
+
 ### `request/*`
+
+<a id="requestattempt-end--log-only"></a>
+
+#### `request/attempt-end` — log-only
+
+```ts persistence-catalog
+/**
+ * Fork-era model-request attempt terminal outcome. Audit/ignorable: replay
+ * keeps the record and takes no business action.
+ */
+'request/attempt-end': RequestAttemptEndEventData
+```
+
+Source: [`packages/core/session/src/compat-event-types.ts:119`](../packages/core/session/src/compat-event-types.ts)
+
+<a id="requestattempt-start--log-only"></a>
+
+#### `request/attempt-start` — log-only
+
+```ts persistence-catalog
+/**
+ * Fork-era model-request attempt open marker from the retry ledger.
+ * Audit/ignorable: replay keeps the record and takes no business action.
+ */
+'request/attempt-start': RequestAttemptStartEventData
+```
+
+Source: [`packages/core/session/src/compat-event-types.ts:114`](../packages/core/session/src/compat-event-types.ts)
 
 <a id="requestcontext--log-only"></a>
 
@@ -658,6 +751,31 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 ```
 
 Source: [`packages/core/session/src/types.ts:364`](../packages/core/session/src/types.ts)
+
+<a id="sessionrepaired--surface"></a>
+
+#### `session/repaired` — surface
+
+```ts persistence-catalog
+/**
+ * Durable repair evidence (P-DURABILITY): the ONE record a torn-tail
+ * recovery appends at the agent layer. Required-on-read — a build that
+ * does not know this event refuses the log rather than silently
+ * reconstructing a shorter history. The message joins the ordered surface
+ * through the standard envelope contract, so the resumed model sees that
+ * earlier history may be incomplete.
+ */
+'session/repaired': {
+  /** Model-facing repair notice. */
+  message: UserMessage
+  /** Recovery category — currently always `torn-tail`. */
+  reason: string
+  /** Synthetic terminal closers the recovery appended before the notice's log position. */
+  synthesizedClosers: number
+}
+```
+
+Source: [`packages/core/session/src/types.ts:373`](../packages/core/session/src/types.ts)
 
 <a id="sessiontitle--log-only"></a>
 

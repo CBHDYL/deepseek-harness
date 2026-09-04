@@ -361,6 +361,14 @@ function expandRow(row: ChunkRow): SessionEvent[] {
  * run); every other value passes through as a single event after admitting a
  * numeric `seq` through the Session-sequence constructor.
  *
+ * Fork-era logs may carry `reasoning-chunks` as a whole event (the
+ * compatibility vocabulary restored by P-EVENTS) alongside row-form
+ * `reasoning-chunks` records: an event carries the `seq` envelope and no
+ * `seq0`, while a row carries exactly `{type, seq0, time0, data}`. The
+ * event form passes through to the event path; every other row-tagged value
+ * stays on the strict row path so a malformed row remains corruption, never
+ * a silently accepted event.
+ *
  * @param value - one line's `JSON.parse` result.
  * @returns the stored events, in log order.
  */
@@ -369,6 +377,10 @@ export function decodeStorageRecord(value: unknown): SessionEvent[] {
   const tag = value.type
   if (tag !== 'text-chunks' && tag !== 'reasoning-chunks' && tag !== 'tool-call-chunks') {
     if (typeof value.seq === 'number') SessionSeq(value.seq)
+    return [value as unknown as SessionEvent]
+  }
+  if (tag === 'reasoning-chunks' && typeof value.seq === 'number' && value.seq0 === undefined) {
+    SessionSeq(value.seq)
     return [value as unknown as SessionEvent]
   }
   return expandRow(validateRow(value, tag))

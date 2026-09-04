@@ -21,6 +21,14 @@ import type { SessionSurface } from './surface.ts'
 import { foldRequestHeader } from './request-header.ts'
 
 export * from './types.ts'
+export { COMPATIBILITY_EVENT_TYPES } from './compat-event-types.ts'
+export type {
+  JobEndEventData,
+  JobStartEventData,
+  ReasoningChunksEventData,
+  RequestAttemptEndEventData,
+  RequestAttemptStartEventData,
+} from './compat-event-types.ts'
 export { SessionPreparation } from './preparation.ts'
 export type { SessionPreparationOptions } from './preparation.ts'
 export type { AssistantMessage, ToolResultMessage, UserMessage } from '@deepseek-ai/dsh-llm'
