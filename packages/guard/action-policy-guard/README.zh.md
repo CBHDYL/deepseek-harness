@@ -83,4 +83,4 @@ action-policy: tool "<name>" approval <outcome>
 <a id="dev-note"></a>
 ### 开发备注
 
-`effects` 分类只从工具注册表中的已发布（SHIPPED）`ToolDefinition` 读取，绝不采信 MCP 或其他自声明元数据：MCP 服务器声称 `readOnlyHint`（或任何伪造的 `effects` 字段）都不能降低把关等级，未声明工具一律经 `treatUndeclaredAsSideEffectful` 折叠处理。该声明由拥有 `execute()` 的同一份已发布代码自证，与插件信任边界一致——针对其他工具的运行时包装替换在分发边界处被守卫拦截（参见修复账本中 PR-2 的权威执行快照工作）。
+`effects` 分类只从工具注册表中的已发布（SHIPPED）`ToolDefinition` 读取，绝不采信 MCP 或其他自声明元数据：MCP 服务器声称 `readOnlyHint`（或任何伪造的 `effects` 字段）都不能降低把关等级，未声明工具一律经 `treatUndeclaredAsSideEffectful` 折叠处理。模型编写的动态 Cordis 工具适用同一规则——宿主运行器在沙箱 `defineTool` 边界剥离包代码声明的任何 `effects`，因此伪造的 `read-only` 永远无法豁免有副作用的动态工具体。该声明由拥有 `execute()` 的同一份已发布代码自证，与插件信任边界一致——针对其他工具的运行时包装替换在分发边界处被守卫拦截（参见修复账本中 PR-2 的权威执行快照工作）。不发布 invariant companion，因为该守卫没有属于自己的可变关系：它所强制执行的每个可观察项（分类、ask/deny 折叠、把关）都由 ToolRuntime 与审批套件在分发接缝处断言。

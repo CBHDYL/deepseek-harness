@@ -86,14 +86,14 @@ describe('dsh-base bundle', () => {
 
 describe('P-GUARD bundle composition', () => {
   it('composes the action-policy guard and declares its package (missing guard = fail-closed deployment)', async () => {
-    const { readFileSync } = await import('node:fs')
-    const { join, dirname } = await import('node:path')
-    const { fileURLToPath } = await import('node:url')
-    const pkgDir = dirname(fileURLToPath(import.meta.url))
-    const manifest = JSON.parse(readFileSync(join(pkgDir, '../package.json'), 'utf8')) as {
+    const nodeFs = await import('node:fs')
+    const nodePath = await import('node:path')
+    const nodeUrl = await import('node:url')
+    const pkgDir = nodePath.dirname(nodeUrl.fileURLToPath(import.meta.url))
+    const manifest = JSON.parse(nodeFs.readFileSync(nodePath.join(pkgDir, '../package.json'), 'utf8')) as {
       dependencies?: Record<string, string>
     }
-    const patch = readFileSync(join(pkgDir, '../cordis.patch.yml'), 'utf8')
+    const patch = nodeFs.readFileSync(nodePath.join(pkgDir, '../cordis.patch.yml'), 'utf8')
     expect(manifest.dependencies?.['@deepseek-ai/dsh-action-policy-guard']).toBe('workspace:^')
     expect(patch).toContain("name: '@deepseek-ai/dsh-action-policy-guard'")
   })
