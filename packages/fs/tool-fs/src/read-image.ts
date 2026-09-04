@@ -207,6 +207,7 @@ function imageReadContent(value: ImageReadValue): ContentBlock[] {
  */
 export function applyReadImageTool(ctx: Context): void {
   ctx.tools.register(defineTool({
+    effects: 'read-only',
     name: 'read_image',
     description: 'Read a PNG/JPEG/WebP/GIF file and return the image itself. '
       + 'A path without a file extension is accepted; the format is detected from the file content, so normalized attachment paths can be passed directly without copying or renaming. '

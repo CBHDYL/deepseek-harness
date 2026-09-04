@@ -73,6 +73,7 @@ export function applyReadTool(ctx: Context, caps: ReadToolCaps): void {
   })
 
   ctx.tools.register(defineTool({
+    effects: 'read-only',
     name: 'read',
     description: 'Read a UTF-8 text file and return line-numbered content.',
     parameters: {

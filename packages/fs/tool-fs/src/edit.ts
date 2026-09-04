@@ -80,6 +80,7 @@ export function applyEditTool(ctx: Context, sandbox: FsSandboxController): void 
   })
 
   ctx.tools.register(defineTool({
+    effects: 'side-effectful',
     name: 'edit',
     description: 'Edit an existing UTF-8 text file by replacing literal text.',
     parameters: {

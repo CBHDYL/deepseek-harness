@@ -83,3 +83,18 @@ describe('dsh-base bundle', () => {
     expect(existsSync(resolve(root, 'windows.cordis.patch.yml'))).toBe(false)
   })
 })
+
+describe('P-GUARD bundle composition', () => {
+  it('composes the action-policy guard and declares its package (missing guard = fail-closed deployment)', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join, dirname } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    const pkgDir = dirname(fileURLToPath(import.meta.url))
+    const manifest = JSON.parse(readFileSync(join(pkgDir, '../package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>
+    }
+    const patch = readFileSync(join(pkgDir, '../cordis.patch.yml'), 'utf8')
+    expect(manifest.dependencies?.['@deepseek-ai/dsh-action-policy-guard']).toBe('workspace:^')
+    expect(patch).toContain("name: '@deepseek-ai/dsh-action-policy-guard'")
+  })
+})

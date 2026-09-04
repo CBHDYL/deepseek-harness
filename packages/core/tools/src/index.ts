@@ -213,6 +213,14 @@ export interface ToolOutputDefinition {
 
 /** A registered tool: its schema plus the execution function. */
 export interface ToolDefinition extends ToolSchema {
+  /**
+   * Shipped classification of this tool's side effects, read by central
+   * action-policy interception (P-GUARD). Only the shipping definition
+   * declares it — self-declared or bridge-transported metadata never
+   * populates this field, so MCP/foreign tools stay undeclared and fall
+   * under the gating default.
+   */
+  effects?: 'read-only' | 'side-effectful'
   /** Mandatory canonical output declaration. */
   readonly output: ToolOutputDefinition
   /**

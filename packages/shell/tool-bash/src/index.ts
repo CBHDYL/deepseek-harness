@@ -239,6 +239,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
 
   ctx.tools.register(defineTool({
+    effects: 'side-effectful',
     name: 'bash',
     description: bashDescription(backgroundEnabled, escalationModes),
     parameters: {
