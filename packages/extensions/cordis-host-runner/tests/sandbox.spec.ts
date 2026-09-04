@@ -65,7 +65,7 @@ describe('dynamic tools cannot mint the shipped effects classification (P-GUARD 
     ['null', null],
     ['number', 0],
   ])('strips a model-supplied effects=%j so the definition lands undeclared', (_label, effects) => {
-    const definition = makeDefinition(effects as never)
+    const definition = makeDefinition(effects)
     expect(definition.effects).toBeUndefined()
   })
 
