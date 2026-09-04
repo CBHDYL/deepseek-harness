@@ -1,17 +1,18 @@
 /**
- * M5 release-slot mechanism tests: evidence-derived manifests, slot
- * isolation, atomic promotion, deterministic rebuild-free rollback, and the
- * promotion failure injections A–F. Each test owns its temporary deploy
+ * M5 release-slot mechanism tests: evidence-derived manifests, realpath
+ * confinement, atomic promotion, generation-aware rebuild-free rollback, and
+ * the promotion failure injections A–F. Each test owns its temporary deploy
  * root and install roots; no ports, no network, no shared state.
  */
 
 import * as fs from 'node:fs'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ACTIVE_POINTER,
+  approveRelease,
   POINTER_META,
   RELEASE_MANIFEST,
   installCanaryProbe,
@@ -31,7 +32,6 @@ interface Fixture {
   deployRoot: string
   stableRoot: string
   candidateRoot: string
-  digests: Record<string, string>
 }
 
 const roots: string[] = []
@@ -49,9 +49,8 @@ function fixture(options: { corruptCandidate?: boolean; nestedCandidate?: boolea
   const stableRoot = join(slotDir(deployRoot, 'stable'), 'install')
   const candidateRoot = join(slotDir(deployRoot, 'candidate'), 'install')
   const nestedRoot = join(stableRoot, 'nested', 'install')
-  const digests: Record<string, string> = {}
   for (const name of CRITICAL) {
-    const content = `${name}-lib-content\n`
+    const content = `${name}-content\n`
     const dir = join(stableRoot, 'node_modules', ...name.split('/'), 'lib')
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'index.js'), content)
@@ -70,18 +69,17 @@ function fixture(options: { corruptCandidate?: boolean; nestedCandidate?: boolea
   recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: '0.1.2-alpha.5', sourceRevision: 'stable-rev' }, CRITICAL)
   recordManifest(deployRoot, 'candidate', { releaseId: 'candidate-r1', version: '0.1.2-alpha.5', sourceRevision: 'candidate-rev' }, CRITICAL)
   if (options.nestedCandidate === true) {
-    // The attack shape: a candidate whose recorded install root nests inside
-    // the stable slot's root (cross-slot resolution would be ambiguous).
     const manifest = readManifest(deployRoot, 'candidate')!
-    manifest.installRoot = nestedRoot
+    manifest.installRoot = realpathSync(nestedRoot)
     writeFileSync(join(slotDir(deployRoot, 'candidate'), RELEASE_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`)
   }
   if (options.migrating === true) {
     const manifest = readManifest(deployRoot, 'candidate')!
     manifest.statePolicy = { kind: 'migrating' }
     writeFileSync(join(slotDir(deployRoot, 'candidate'), RELEASE_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`)
+    approveRelease(deployRoot, 'candidate')
   }
-  return { deployRoot, stableRoot, candidateRoot, digests }
+  return { deployRoot, stableRoot, candidateRoot }
 }
 
 describe('m5-release manifests are evidence-derived', () => {
@@ -89,7 +87,7 @@ describe('m5-release manifests are evidence-derived', () => {
     const { deployRoot, stableRoot } = fixture()
     const manifest = readManifest(deployRoot, 'stable')!
     expect(manifest.releaseId).toBe('stable-r1')
-    expect(manifest.installRoot).toBe(stableRoot)
+    expect(manifest.installRoot).toBe(realpathSync(stableRoot))
     expect(Object.keys(manifest.criticalPackages).sort()).toEqual([...CRITICAL].sort())
     expect(manifest.artifactDigest).toMatch(/^[0-9a-f]{64}$/)
     expect(manifest.createdAt).toBeTruthy()
@@ -99,6 +97,7 @@ describe('m5-release manifests are evidence-derived', () => {
   it('refuses to record a manifest when a critical package lib is missing', () => {
     const deployRoot = mkdtempSync(join(tmpdir(), 'dsh-m5-'))
     roots.push(deployRoot)
+    mkdirSync(join(slotDir(deployRoot, 'broken'), 'install'), { recursive: true })
     expect(() => recordManifest(deployRoot, 'broken', { releaseId: 'x', version: 'v', sourceRevision: 'r' }, CRITICAL))
       .toThrow(/missing critical package libs/)
   })
@@ -119,11 +118,24 @@ describe('m5-release slot validation and isolation', () => {
     expect(validation.failures.join(' ')).toContain('lineage mismatch')
   })
 
+  it('fails a slot whose artifact digest no longer matches the installed bytes (P1-2)', async () => {
+    const { deployRoot, candidateRoot } = fixture()
+    writeFileSync(join(candidateRoot, 'node_modules', '@deepseek-ai', 'dsh-session', 'lib', 'index.js'), 'tampered\n')
+    // Also repair the critical hash so ONLY the artifact digest goes stale.
+    const { createHash } = await import('node:crypto')
+    const manifest = readManifest(deployRoot, 'candidate')!
+    manifest.criticalPackages['@deepseek-ai/dsh-session'] = { digest: createHash('sha256').update('tampered\n').digest('hex'), lib: 'lib/index.js' }
+    writeFileSync(join(slotDir(deployRoot, 'candidate'), RELEASE_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`)
+    const validation = validateSlot(deployRoot, 'candidate')
+    expect(validation.ok).toBe(false)
+    expect(validation.failures.join(' ')).toContain('artifact digest does not match')
+  })
+
   it('rejects an install root nested inside another slot (cross-slot isolation)', () => {
     const { deployRoot } = fixture({ nestedCandidate: true })
     const validation = validateSlot(deployRoot, 'candidate')
     expect(validation.ok).toBe(false)
-    expect(validation.failures.join(' ')).toContain('cross-slot isolation')
+    expect(validation.failures.join(' ')).toContain('escapes the slot')
   })
 })
 
@@ -138,8 +150,20 @@ describe('m5-release atomic promotion', () => {
     expect(resolveActive(deployRoot)).toBe('candidate')
     expect(readFileSync(join(slotDir(deployRoot, 'stable'), RELEASE_MANIFEST), 'utf8')).toBe(stableBefore)
     expect(readFileSync(join(slotDir(deployRoot, 'candidate'), RELEASE_MANIFEST), 'utf8')).toBe(candidateBefore)
-    const meta = JSON.parse(readFileSync(join(deployRoot, POINTER_META), 'utf8')) as { previous: string }
-    expect(meta.previous).toBe('stable')
+    const meta = JSON.parse(readFileSync(join(deployRoot, POINTER_META), 'utf8')) as { previous: { slot: string }; generation: number }
+    expect(meta.previous.slot).toBe('stable')
+    expect(meta.generation).toBe(1)
+  })
+
+  it('blocks an unregistered or tampered release (release authenticity anchor, P1-2)', () => {
+    const { deployRoot } = fixture()
+    // Tamper a provenance field only: slot bytes still self-consistent, but the
+    // canonical manifest no longer matches the operator-approved hash.
+    const manifest = readManifest(deployRoot, 'candidate')!
+    manifest.sourceRevision = 'attacker-rev'
+    writeFileSync(join(slotDir(deployRoot, 'candidate'), RELEASE_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`)
+    expect(() => promote(deployRoot, 'candidate', 'stable')).toThrow(/not registered or its manifest was tampered/)
+    expect(resolveActive(deployRoot)).toBeUndefined()
   })
 
   it('injection A: an incomplete candidate (missing node_modules) blocks promotion and leaves the pointer', () => {
@@ -153,7 +177,6 @@ describe('m5-release atomic promotion', () => {
   it('injection C: pre-switch validation failure keeps stable active', () => {
     const { deployRoot, candidateRoot } = fixture()
     promote(deployRoot, 'candidate', 'stable')
-    // A subsequent promotion attempt against a broken candidate must leave active unchanged.
     writeFileSync(join(candidateRoot, 'node_modules', '@deepseek-ai', 'dsh-session', 'lib', 'index.js'), 'broken\n')
     expect(() => promote(deployRoot, 'candidate', 'stable')).toThrow(/promotion blocked/)
     expect(resolveActive(deployRoot)).toBe('candidate')
@@ -167,11 +190,8 @@ describe('m5-release atomic promotion', () => {
 
   it('injection D: a pointer-switch failure leaves no half-promoted runtime', () => {
     const { deployRoot } = fixture()
-    // A natural rename failure: the `active` name is already occupied by a
-    // DIRECTORY, so the staged symlink cannot be renamed over it.
     mkdirSync(join(deployRoot, ACTIVE_POINTER))
     expect(() => promote(deployRoot, 'candidate', 'stable')).toThrow(/pointer switch failed/)
-    // The pointer never resolved to a slot, and no staging artifact remains.
     expect(resolveActive(deployRoot)).toBeUndefined()
     expect(fs.readdirSync(deployRoot).filter(name => name.includes('staging'))).toHaveLength(0)
   })
@@ -180,7 +200,6 @@ describe('m5-release atomic promotion', () => {
     const { deployRoot, candidateRoot } = fixture()
     promote(deployRoot, 'candidate', 'stable')
     expect(resolveActive(deployRoot)).toBe('candidate')
-    // Simulate a candidate boot failure discovered after the switch.
     rmSync(join(candidateRoot, 'node_modules'), { recursive: true, force: true })
     const result = rollback(deployRoot)
     expect(result.active).toBe('stable')
@@ -210,9 +229,29 @@ describe('m5-release rebuild-free rollback', () => {
     expect(resolveActive(deployRoot)).toBe('candidate')
   })
 
-  it('rolls back without any recorded target switch bookkeeping drift', () => {
+  it('rolls back without any recorded target bookkeeping drift', () => {
     const { deployRoot } = fixture()
     expect(() => rollback(deployRoot)).toThrow(/no previous active slot is recorded/)
+  })
+
+  it('P2-1: a self-referencing POINTER_META fails closed instead of silently no-opping', () => {
+    const { deployRoot } = fixture()
+    promote(deployRoot, 'candidate', 'stable')
+    writeFileSync(join(deployRoot, POINTER_META), JSON.stringify({
+      generation: 1, active: { slot: 'candidate', releaseId: 'candidate-r1' }, previous: { slot: 'candidate', releaseId: 'candidate-r1' },
+    }))
+    expect(() => rollback(deployRoot)).toThrow(/self-references the active slot/)
+    expect(resolveActive(deployRoot)).toBe('candidate')
+  })
+
+  it('P1-3: stale metadata whose active slot no longer matches the pointer fails closed', () => {
+    const { deployRoot } = fixture()
+    promote(deployRoot, 'candidate', 'stable')
+    writeFileSync(join(deployRoot, POINTER_META), JSON.stringify({
+      generation: 2, active: { slot: 'ghost', releaseId: 'ghost' }, previous: { slot: 'stable', releaseId: 'stable-r1' },
+    }))
+    expect(() => rollback(deployRoot)).toThrow(/does not match the active pointer generation/)
+    expect(resolveActive(deployRoot)).toBe('candidate')
   })
 })
 
