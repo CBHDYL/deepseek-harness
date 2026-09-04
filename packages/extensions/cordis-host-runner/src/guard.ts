@@ -544,29 +544,40 @@ function assertRenderedContent(value: JsonValue): ContentBlock[] {
  * into a fresh host-realm ParameterSchemaSpec (raw object wrappers unwrapped,
  * required arrays mapped, and explicit DSL object openness enforced) and the tool's `execute` return normalized into the host realm
  * via a JSON round-trip. Non-JSON or wrong-shape output fails that call instead of poisoning
- * the session log.
+ * the session log. Any model-supplied `effects` is stripped: the shipped
+ * side-effect classification is first-party authority, so dynamic tools
+ * always land undeclared and fall under the action-policy gate's policy.
  * @param options - the standard `defineTool` options; `parameters` may be the ParameterSchemaSpec DSL or a JSON-Schema-style wrapper.
  * @returns the marker-tagged definition `harness.registerTool` (and the guarded `ctx.tools.register`) accepts.
  */
 export function sandboxDefineTool(options: unknown): ToolDefinition {
   if (!isPlainRecord(options)) throw new Error('harness.defineTool options must be an object')
-  const normalized = normalizeParameterSchemaSpec(options.parameters)
-  if (!isPlainRecord(options.output)) {
+  // P-GUARD trust boundary: `ToolDefinition.effects` is the shipped
+  // side-effect classification the action-policy gate reads as authority, so
+  // only first-party definitions may carry it. A model-authored package must
+  // never mint it — a spoofed `read-only` would exempt a side-effectful body
+  // from the mandatory approval gate. The field is therefore stripped here
+  // regardless of its value, and the dynamic definition lands undeclared
+  // (gated by the undeclared policy). No other ToolDefinition field is
+  // authority-bearing at this boundary.
+  const { effects: _strippedEffects, ...hostOptions } = options
+  const normalized = normalizeParameterSchemaSpec(hostOptions.parameters)
+  if (!isPlainRecord(hostOptions.output)) {
     throw new Error('harness.defineTool output must declare { schema, render, presentationMeta? }')
   }
-  const output = options.output
+  const output = hostOptions.output
   if (typeof output.render !== 'function') throw new Error('harness.defineTool output.render must be a function')
   if (output.presentationMeta !== undefined && typeof output.presentationMeta !== 'function') {
     throw new Error('harness.defineTool output.presentationMeta must be a function when present')
   }
-  if (typeof options.execute !== 'function') throw new Error('harness.defineTool execute must be a function')
+  if (typeof hostOptions.execute !== 'function') throw new Error('harness.defineTool execute must be a function')
   const schema = cloneJson(output.schema, 'harness.defineTool output.schema')
-  const rawExecute = options.execute as (args: unknown, exec: unknown) => Promise<unknown>
+  const rawExecute = hostOptions.execute as (args: unknown, exec: unknown) => Promise<unknown>
   const rawRender = output.render as (args: unknown, value: unknown) => unknown
   const rawPresentationMeta = output.presentationMeta as ((args: unknown, value: unknown) => unknown) | undefined
   const erasedDefineTool = defineTool as unknown as (definition: unknown) => ToolDefinition
   const tool = erasedDefineTool({
-    ...options,
+    ...hostOptions,
     parameters: normalized.spec,
     output: {
       schema,
@@ -625,6 +636,12 @@ export function normalizeHandler(method: unknown, fn: unknown): { method: string
  */
 export function sandboxRegisterTool(ctx: Context, tool: unknown): () => void {
   assertDynamicTool(tool)
+  // Registration-side backstop for the same trust boundary
+  // `sandboxDefineTool` enforces: no dynamic definition may carry the
+  // shipped-only `effects` classification, whatever path produced its marker.
+  if (tool.effects !== undefined) {
+    throw new Error('harness.registerTool: dynamic tools cannot declare `effects` — the shipped side-effect classification is first-party authority only')
+  }
   return ctx.tools.register(tool)
 }
 

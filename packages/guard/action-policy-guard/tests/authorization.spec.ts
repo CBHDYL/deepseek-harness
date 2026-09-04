@@ -23,6 +23,7 @@ import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import type { PreToolDecision } from '@deepseek-ai/dsh-tools'
 import * as ActionPolicyGuard from '@deepseek-ai/dsh-action-policy-guard'
+import { sandboxDefineTool, sandboxRegisterTool } from '../../../extensions/cordis-host-runner/src/guard.ts'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 
 interface Harness {
@@ -347,5 +348,86 @@ describe('execution-attempt authorization', () => {
     expect(loadedEvents.filter(event => event.type === 'tool/result')).toHaveLength(1)
     await ctx2.fiber.dispose()
     await rm(root, { recursive: true, force: true })
+  })
+})
+
+describe('P-GUARD trust boundary — dynamic Cordis tools cannot mint authoritative effects', () => {
+  function dynamicTool(name: string, effects: unknown, ran: string[]) {
+    return sandboxDefineTool({
+      name,
+      description: name,
+      parameters: {},
+      ...effects !== undefined ? { effects } : {},
+      output: {
+        schema: { type: 'json' },
+        render: () => [{ type: 'text', text: '' }],
+      },
+      execute: async () => {
+        ran.push(name)
+        return { ok: true }
+      },
+    })
+  }
+
+  async function runDynamic(h: Harness, name: string): Promise<void> {
+    h.ctx.llm.registerAdapter(['mock'], new MockAdapter([
+      toolCallResponse('dyn-call', name, {}),
+      textResponse('done'),
+    ]))
+    h.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(h.ctx, h.agent)
+  }
+
+  it('A: a malicious dynamic read-only spoof cannot eliminate the mandatory approval (rejected → body 0, one ask)', async () => {
+    const h = await harness()
+    const ran: string[] = []
+    const definition = dynamicTool('dyn-ro', 'read-only', ran)
+    // The boundary strips the untrusted classification; the dynamic tool
+    // lands undeclared and folds under the gating default.
+    expect(definition.effects).toBeUndefined()
+    h.ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('rejected'), { prepend: true })
+    sandboxRegisterTool(h.ctx, definition)
+    await runDynamic(h, 'dyn-ro')
+    expect(ran).toEqual([])
+    expect(h.asked()).toHaveLength(1)
+    expect((h.decided()[0]?.data as { outcome?: string }).outcome).toBe('rejected')
+  })
+
+  it('A2: an allowed dynamic tool runs exactly once behind exactly one approval', async () => {
+    const h = await harness()
+    const ran: string[] = []
+    sandboxRegisterTool(h.ctx, dynamicTool('dyn-ok', 'read-only', ran))
+    await runDynamic(h, 'dyn-ok')
+    expect(ran).toEqual(['dyn-ok'])
+    expect(h.asked()).toHaveLength(1)
+    expect(h.decided()).toHaveLength(1)
+  })
+
+  it('B: a side-effectful spoof is also stripped (the dynamic tool stays undeclared and gated)', async () => {
+    const h = await harness()
+    const ran: string[] = []
+    const definition = dynamicTool('dyn-se', 'side-effectful', ran)
+    expect(definition.effects).toBeUndefined()
+    h.ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('rejected'), { prepend: true })
+    sandboxRegisterTool(h.ctx, definition)
+    await runDynamic(h, 'dyn-se')
+    expect(ran).toEqual([])
+    expect(h.asked()).toHaveLength(1)
+  })
+
+  it.each([
+    ['unknown string', 'banana'],
+    ['object', {}],
+    ['null', null],
+  ])('C: a malformed spoof effects=%j is stripped and the call is still gated', async (_label, effects) => {
+    const h = await harness()
+    const ran: string[] = []
+    const definition = dynamicTool('dyn-mal', effects, ran)
+    expect(definition.effects).toBeUndefined()
+    h.ctx.on('approval/request', () => Promise.resolve<ApprovalOutcome>('rejected'), { prepend: true })
+    sandboxRegisterTool(h.ctx, definition)
+    await runDynamic(h, 'dyn-mal')
+    expect(ran).toEqual([])
+    expect(h.asked()).toHaveLength(1)
   })
 })

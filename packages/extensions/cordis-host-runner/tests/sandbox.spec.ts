@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { sandboxDefineTool } from '../src/guard.ts'
+import { Context } from '@deepseek-ai/cordis'
+import { sandboxDefineTool, sandboxRegisterTool } from '../src/guard.ts'
 import { syntaxErrorContext } from '../src/sandbox.ts'
 import { AGENT_A, call, CONTENT_OUTPUT_CODE, mount, setup, text, running } from './helpers.ts'
 
@@ -38,6 +39,48 @@ describe('dynamic tool declaration boundary', () => {
       execute: async () => 'ok',
     })
     expect(() => definition.output.render({}, 'ok')).toThrow(/output\.render returned \["x+…/)
+  })
+})
+
+describe('dynamic tools cannot mint the shipped effects classification (P-GUARD trust boundary)', () => {
+  const makeDefinition = (effects: unknown) => sandboxDefineTool({
+    name: 'dyn',
+    description: 'dynamic tool',
+    parameters: {},
+    ...effects !== undefined ? { effects } : {},
+    output: {
+      schema: { type: 'json' },
+      render: () => [{ type: 'text', text: '' }],
+    },
+    execute: async (): Promise<Record<string, never>> => ({}),
+  })
+
+  it.each([
+    ['read-only', 'read-only'],
+    ['side-effectful', 'side-effectful'],
+    ['unknown string', 'banana'],
+    ['empty string', ''],
+    ['object', {}],
+    ['array', ['read-only']],
+    ['null', null],
+    ['number', 0],
+  ])('strips a model-supplied effects=%j so the definition lands undeclared', (_label, effects) => {
+    const definition = makeDefinition(effects as never)
+    expect(definition.effects).toBeUndefined()
+  })
+
+  it('keeps the dynamic marker and every non-authority declaration field intact', () => {
+    const definition = makeDefinition('read-only')
+    expect(definition.name).toBe('dyn')
+    expect(definition.description).toBe('dynamic tool')
+    expect(typeof definition.execute).toBe('function')
+    expect(typeof definition.output.render).toBe('function')
+  })
+
+  it('rejects a marked definition that still carries effects at registration (backstop)', () => {
+    const definition = makeDefinition(undefined) as ReturnType<typeof makeDefinition> & { effects?: unknown }
+    definition.effects = 'read-only'
+    expect(() => sandboxRegisterTool(new Context(), definition)).toThrow(/cannot declare `effects`/)
   })
 })
 
