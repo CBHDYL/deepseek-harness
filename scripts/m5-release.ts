@@ -44,7 +44,6 @@ import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 export const RELEASE_MANIFEST = 'release-manifest.json'
@@ -543,15 +542,8 @@ function confinePackageEntry(installRoot: string, pkg: InstalledPackage): Packag
   // own NOT_FOUND / NOT_EXPORTED skips THAT resolver (packages without an
   // entry for that condition); any entry a resolver DOES produce must
   // realpath inside the install root.
-  const requireEntry = resolveEntryAttempt(() => {
-    const resolved = createRequire(join(pkg.anchorDir, '.m5-entry-probe.cjs')).resolve(pkg.name)
-    if (resolved === pkg.name || resolved.startsWith('node:')) {
-      const skip = new Error(`package ${pkg.name} resolves to a Node builtin`) as Error & { code?: string }
-      skip.code = 'M5_BUILTIN'
-      throw skip
-    }
-    return resolved
-  })
+  const requireEntry = resolveEntryAttempt(() =>
+    resolveRequireEntry(pkg.name, pkg.anchorDir))
   if (requireEntry.failure !== undefined) {
     failures.push(`package ${pkg.name} require entry resolution failed: ${requireEntry.failure}`)
     return { failures }
@@ -647,6 +639,16 @@ const IMPORT_RESOLVE_SCRIPT = [
   '}',
 ].join('')
 
+/** Child-side require resolver: one sync CJS resolution; builtins print BUILTIN. */
+const REQUIRE_RESOLVE_SCRIPT = [
+  'try {',
+  '  const r = require.resolve(process.argv[1])',
+  '  console.log(r === process.argv[1] ? "BUILTIN" : "RES:" + r)',
+  '} catch (e) {',
+  '  console.log("ERR:" + (e.code ?? "UNKNOWN"))',
+  '}',
+].join('\n')
+
 const IMPORT_RESOLVE_TIMEOUT_MS = 10_000
 
 /**
@@ -690,6 +692,46 @@ function resolveImportEntry(specifier: string, anchorDir: string): string {
     throw new Error(`import resolver returned a non-file URL: ${line}`)
   }
   return fileURLToPath(line)
+}
+
+/**
+ * Resolve one CJS specifier from one anchor directory in a bare-Node child
+ * process. Mirrors the deployed require semantics and, like the import
+ * resolver, is independent of any tsx loader hook: under a full tsx
+ * require hook the in-process createRequire maps bare workspace specifiers
+ * onto the checkout via tsconfig paths, falsely rejecting valid slots.
+ * Builtins resolve to the bare name and skip (M5_BUILTIN); NOT_FOUND /
+ * NOT_EXPORTED ride the thrown error for resolveEntryAttempt.
+ * @returns the resolved file path.
+ */
+function resolveRequireEntry(specifier: string, anchorDir: string): string {
+  const child = spawnSync(
+    process.execPath,
+    ['-e', REQUIRE_RESOLVE_SCRIPT, specifier],
+    { cwd: anchorDir, encoding: 'utf8', timeout: IMPORT_RESOLVE_TIMEOUT_MS },
+  )
+  if (child.error !== undefined) {
+    throw child.error
+  }
+  if (child.status !== 0) {
+    throw new Error(`require resolver exited with status ${child.status}: ${child.stderr}`)
+  }
+  const line = child.stdout.trim()
+  if (line === 'BUILTIN') {
+    const skip = new Error(`require resolver: ${specifier} is a Node builtin`) as Error & { code?: string }
+    skip.code = 'M5_BUILTIN'
+    throw skip
+  }
+  if (line.startsWith('ERR:')) {
+    const code = line.slice(4).trim()
+    const error = new Error(`require resolver: ${code}`) as Error & { code?: string }
+    error.code = code
+    throw error
+  }
+  if (!line.startsWith('RES:')) {
+    throw new Error(`require resolver returned an unexpected output: ${line}`)
+  }
+  return line.slice(4)
 }
 
 /** Read and narrow an untrusted parsed manifest record. */
