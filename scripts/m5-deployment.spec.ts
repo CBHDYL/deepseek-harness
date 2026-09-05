@@ -20,6 +20,7 @@ import {
   promote,
   readApprovals,
   readManifest,
+  installCanaryProbe,
   recordManifest,
   resolveActive,
   rollback,
@@ -48,6 +49,12 @@ function writeSlot(deployRoot: string, name: string, content: string, critical =
     writeFileSync(join(dir, 'index.js'), `${pkg}-${content}\n`)
   }
   return installRoot
+}
+
+function withMetadata(installRoot: string, pkgs: readonly string[]): void {
+  for (const pkg of pkgs) {
+    writeFileSync(join(installRoot, 'node_modules', ...pkg.split('/'), 'package.json'), JSON.stringify({ name: pkg, main: './lib/index.js' }))
+  }
 }
 
 function record(deployRoot: string, name: string, content: string, critical = CRITICAL): void {
@@ -601,12 +608,6 @@ describe('M5 closure round 4 — ESM import-condition entry confinement', () => 
 describe('M5 closure round 5 — full node_modules universe + imports-map confinement', () => {
   const EXTRA = [...CRITICAL, '@deepseek-ai/dsh-llm']
 
-  function withMetadata(installRoot: string, pkgs: readonly string[]): void {
-    for (const pkg of pkgs) {
-      writeFileSync(join(installRoot, 'node_modules', ...pkg.split('/'), 'package.json'), JSON.stringify({ name: pkg, main: './lib/index.js' }))
-    }
-  }
-
   it('H6: a nested .pnpm dependency whose import entry symlinks outside the slot is blocked at record', () => {
     const deployRoot = mkDeploy()
     const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
@@ -692,5 +693,76 @@ describe('M5 closure round 5 — full node_modules universe + imports-map confin
     const validation = validateSlot(deployRoot, 'stable')
     expect(validation.ok).toBe(false)
     expect(validation.failures.join(' ')).toContain('artifact digest does not match')
+  })
+})
+
+describe('M5 closure round 6 — exports-subpath confinement (H7)', () => {
+  const EXTRA = [...CRITICAL, '@deepseek-ai/dsh-llm']
+
+  it('H7: an exports subpath entry symlinked outside the slot is blocked at record', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, CRITICAL)
+    const outside = join(deployRoot, 'subpath-escape')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'payload.js'), 'export default "escaped";\n')
+    const pkgDir = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    mkdirSync(join(pkgDir, 'sub'), { recursive: true })
+    symlinkSync(join(outside, 'payload.js'), join(pkgDir, 'sub', 'sub.js'))
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh-llm',
+      main: './lib/index.js',
+      exports: { '.': './lib/index.js', './sub': './sub/sub.js' },
+    }))
+    expect(() => recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL))
+      .toThrow(/symlink target realpath escapes the install root/)
+    expect(resolveActive(deployRoot)).toBeUndefined()
+  })
+
+  it('H7-wildcard: an exports wildcard subpath file symlinked outside the slot is blocked at record', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, CRITICAL)
+    const outside = join(deployRoot, 'wildcard-escape')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'payload.js'), 'export default "escaped";\n')
+    const pkgDir = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    mkdirSync(join(pkgDir, 'src'), { recursive: true })
+    symlinkSync(join(outside, 'payload.js'), join(pkgDir, 'src', 'evil.js'))
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh-llm',
+      main: './lib/index.js',
+      exports: { '.': './lib/index.js', './src/*': './src/*' },
+    }))
+    expect(() => recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL))
+      .toThrow(/symlink target realpath escapes the install root/)
+  })
+
+  it('positive: an in-slot subpath entry records, validates, and its bytes stay in the digest universe', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, CRITICAL)
+    const pkgDir = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    mkdirSync(join(pkgDir, 'sub'), { recursive: true })
+    writeFileSync(join(pkgDir, 'sub', 'sub.js'), 'export default "in-slot";\n')
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh-llm',
+      main: './lib/index.js',
+      exports: { '.': './lib/index.js', './sub': './sub/sub.js' },
+    }))
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
+    writeFileSync(join(pkgDir, 'sub', 'sub.js'), 'tampered\n')
+    const validation = validateSlot(deployRoot, 'stable')
+    expect(validation.ok).toBe(false)
+    expect(validation.failures.join(' ')).toContain('artifact digest does not match')
+  })
+
+  it('positive: the canary probe file at the install root does not trip validation', () => {
+    const deployRoot = mkDeploy()
+    writeSlot(deployRoot, 'stable', 's', CRITICAL)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    installCanaryProbe(deployRoot, 'stable')
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
   })
 })

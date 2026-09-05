@@ -229,18 +229,84 @@ function discoverInstalledPackages(installRoot: string): InstalledPackage[] {
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name) || a.realPath.localeCompare(b.realPath))
 }
 
-/** One package's confinement assessment: failures plus the confined byte files. */
+/** One package's confinement assessment. */
 interface PackageAssessment {
   failures: string[]
-  /** Realpath'd, in-slot, regular-file byte targets the digest universe covers. */
-  files: string[]
 }
 
-/** The evidence hash over the whole installed forest (sorted, deterministic).
- * Each discovered package contributes its package.json bytes, its hashed
- * lib/index.js bytes (the original universe), and the bytes of every
- * CONFINED entry the resolvers and the imports map actually select — so the
- * digest universe and the confinement universe cover the same files. */
+/**
+ * Every regular file under one package root, sorted by path (deterministic).
+ * Symlinks are excluded: their targets are confined by the sweep and their
+ * bytes are hashed under the target's own package root.
+ */
+function listPackageFiles(root: string): string[] {
+  const files: string[] = []
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name))
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) walk(full)
+      else if (entry.isFile()) files.push(full)
+    }
+  }
+  walk(root)
+  return files
+}
+
+/**
+ * H7: full-forest symlink sweep. Node constrains exports subpaths and
+ * imports targets to './'-relative paths inside the owning package, so an
+ * in-package symlink is the only way a loadable entry — static subpath,
+ * wildcard pattern, or condition-nested target — can realpath outside the
+ * slot. Every symlink under the package root must realpath inside the
+ * install root.
+ * @returns failures; empty for a clean package.
+ */
+function sweepPackageLinks(installRoot: string, pkg: InstalledPackage): string[] {
+  const failures: string[] = []
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name))
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isSymbolicLink()) {
+        try {
+          if (!isWithin(installRoot, fs.realpathSync(full))) {
+            failures.push(`package ${pkg.name} symlink target realpath escapes the install root`)
+          }
+        } catch {
+          failures.push(`package ${pkg.name} symlink target does not resolve`)
+        }
+      } else if (entry.isDirectory()) {
+        walk(full)
+      }
+    }
+  }
+  walk(pkg.realPath)
+  return failures
+}
+
+/**
+ * The evidence hash over the whole installed forest (sorted, deterministic).
+ * Every discovered package contributes the digest of EVERY regular file
+ * under its root — package.json, lib/index.js, resolver-selected entries,
+ * imports targets, and every exports subpath byte Node can load — so the
+ * digest universe and the confinement universe cover the same files. The
+ * canary probe file sits at the install root, outside every package root,
+ * and stays outside the universe by construction.
+ */
 function assessInstall(installRoot: string): { failures: string[]; digest: string } {
   const failures: string[] = []
   const evidence: string[] = []
@@ -254,13 +320,19 @@ function assessInstall(installRoot: string): { failures: string[]; digest: strin
       failures.push(`package ${pkg.name} entry realpath escapes the install root`)
       continue
     }
-    const pkgJson = join(pkg.realPath, 'package.json')
-    if (fs.existsSync(pkgJson)) evidence.push(`${pkg.name} package.json ${fileDigest(pkgJson)}`)
-    if (fs.existsSync(entryFile)) evidence.push(`${pkg.name} lib/index.js ${fileDigest(entryFile)}`)
+    // Entry-specific checks first: their messages name the entry kind and
+    // preserve every earlier round's diagnostic. The sweep then closes the
+    // exports-subpath and wildcard surface the resolvers do not enumerate.
     const assessed = confinePackageEntry(installRoot, pkg)
     failures.push(...assessed.failures)
-    for (const file of [...new Set(assessed.files)].sort()) {
-      evidence.push(`${pkg.name} entry ${relative(installRoot, file)} ${fileDigest(file)}`)
+    if (assessed.failures.length > 0) continue
+    const sweepFailures = sweepPackageLinks(installRoot, pkg)
+    failures.push(...sweepFailures)
+    if (sweepFailures.length > 0) continue
+    // Digest keys are package-root-relative: identical bytes stay valid
+    // under an in-slot re-layout (real dir swapped for a store symlink).
+    for (const file of listPackageFiles(pkg.realPath)) {
+      evidence.push(`${pkg.name} file ${relative(pkg.realPath, file)} ${fileDigest(file)}`)
     }
   }
   return { failures, digest: stringDigest(evidence.join('\n')) }
@@ -302,7 +374,6 @@ function isWithin(parent: string, child: string): boolean {
  */
 function confinePackageEntry(installRoot: string, pkg: InstalledPackage): PackageAssessment {
   const failures: string[] = []
-  const files: string[] = []
   const confine = (resolved: string, kind: string): void => {
     // A resolver-selected target that does not exist selects nothing: Node
     // fails at load time and no bytes leave the slot (a 'default' fallback
@@ -320,27 +391,25 @@ function confinePackageEntry(installRoot: string, pkg: InstalledPackage): Packag
     }
     if (!fs.statSync(real).isFile()) {
       failures.push(`package ${pkg.name} ${kind} entry target is not a file`)
-      return
     }
-    files.push(real)
   }
   const pkgJsonPath = join(pkg.realPath, 'package.json')
   if (!fs.existsSync(pkgJsonPath)) {
     // No metadata means no entry selection (Node cannot resolve a bare
     // specifier without a manifest); the root and digest checks still apply.
-    return { failures, files }
+    return { failures }
   }
   let pkgJson: { main?: unknown; imports?: unknown }
   try {
     pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')) as { main?: unknown; imports?: unknown }
   } catch {
     failures.push(`package ${pkg.name} package.json is not valid JSON`)
-    return { failures, files }
+    return { failures }
   }
   if (pkgJson.main !== undefined && typeof pkgJson.main === 'string') {
     if (isAbsolute(pkgJson.main)) {
       failures.push(`package ${pkg.name} main resolves outside the install root`)
-      return { failures, files }
+      return { failures }
     }
     // Missing or extension-less targets (legacy packages are full of stale
     // mains) select nothing here: Node's own resolvers probe extensions and
@@ -355,15 +424,14 @@ function confinePackageEntry(installRoot: string, pkg: InstalledPackage): Packag
     if (mainReal !== '') {
       if (!isWithin(installRoot, mainReal)) {
         failures.push(`package ${pkg.name} main resolves outside the install root`)
-        return { failures, files }
+        return { failures }
       }
-      if (fs.statSync(mainReal).isFile()) files.push(mainReal)
     }
   }
   if (pkgJson.imports !== undefined) {
-    const importFailures = confineImportsTargets(installRoot, pkg, pkgJson.imports, files)
+    const importFailures = confineImportsTargets(installRoot, pkg, pkgJson.imports)
     failures.push(...importFailures)
-    if (importFailures.length > 0) return { failures, files }
+    if (importFailures.length > 0) return { failures }
   }
   // BOTH Node resolvers decide the actual runtime entry: the dsh runtime is
   // ESM, so the import condition matters as much as require. Each resolver's
@@ -381,23 +449,23 @@ function confinePackageEntry(installRoot: string, pkg: InstalledPackage): Packag
   })
   if (requireEntry.failure !== undefined) {
     failures.push(`package ${pkg.name} require entry resolution failed: ${requireEntry.failure}`)
-    return { failures, files }
+    return { failures }
   }
   if (requireEntry.entry !== undefined) {
     confine(requireEntry.entry, 'require')
-    if (failures.length > 0) return { failures, files }
+    if (failures.length > 0) return { failures }
   }
   const importEntry = resolveEntryAttempt(() =>
     resolveImportEntry(pkg.name, pkg.anchorDir))
   if (importEntry.failure !== undefined) {
     failures.push(`package ${pkg.name} import entry resolution failed: ${importEntry.failure}`)
-    return { failures, files }
+    return { failures }
   }
   if (importEntry.entry !== undefined) {
     confine(importEntry.entry, 'import')
-    if (failures.length > 0) return { failures, files }
+    if (failures.length > 0) return { failures }
   }
-  return { failures, files }
+  return { failures }
 }
 
 /**
@@ -411,7 +479,6 @@ function confineImportsTargets(
   installRoot: string,
   pkg: InstalledPackage,
   value: unknown,
-  files: string[],
 ): string[] {
   const failures: string[] = []
   const walk = (target: unknown): void => {
@@ -430,9 +497,7 @@ function confineImportsTargets(
       }
       if (!isWithin(installRoot, real)) {
         failures.push(`package ${pkg.name} imports target realpath escapes the install root`)
-        return
       }
-      if (fs.statSync(real).isFile()) files.push(real)
       return
     }
     if (Array.isArray(target)) {
