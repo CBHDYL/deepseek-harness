@@ -9,7 +9,7 @@
 import * as fs from 'node:fs'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, symlinkSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
@@ -465,5 +465,90 @@ describe('M5 closure round 2 — approval re-binding (P2-1) and releaseId cross-
     writeFileSync(join(deployRoot, POINTER_META), JSON.stringify(meta))
     expect(() => rollback(deployRoot)).toThrow(/active releaseId does not match/)
     expect(resolveActive(deployRoot)).toBe('candidate')
+  })
+})
+
+describe('M5 closure round 3 — runtime entry selection confinement (H4)', () => {
+  const EXTRA = [...CRITICAL, '@deepseek-ai/dsh-llm']
+
+  function slotWithMetadata(deployRoot: string): string {
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    for (const pkg of EXTRA) {
+      writeFileSync(join(installRoot, 'node_modules', ...pkg.split('/'), 'package.json'), JSON.stringify({ name: pkg, main: './lib/index.js' }))
+    }
+    return installRoot
+  }
+
+  it('positive: main = ./lib/index.js passes validation and promotion', () => {
+    const deployRoot = mkDeploy()
+    slotWithMetadata(deployRoot)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
+    expect(() => promote(deployRoot, 'stable', 'stable')).not.toThrow()
+  })
+
+  it('H4-A: an absolute external main is blocked at validation', () => {
+    const deployRoot = mkDeploy()
+    slotWithMetadata(deployRoot)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    const outside = join(deployRoot, 'external-entry')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'index.js'), 'module.exports = {};\n')
+    const pkgJson = join(slotDir(deployRoot, 'stable'), 'install', 'node_modules', '@deepseek-ai', 'dsh-llm', 'package.json')
+    writeFileSync(pkgJson, JSON.stringify({ name: '@deepseek-ai/dsh-llm', main: join(outside, 'index.js') }))
+    const validation = validateSlot(deployRoot, 'stable')
+    expect(validation.ok).toBe(false)
+    expect(validation.failures.join(' ')).toContain('main resolves outside the install root')
+    expect(() => promote(deployRoot, 'stable', 'stable')).toThrow(/promotion blocked/)
+  })
+
+  it('H4-B: a traversal main escaping the package root is blocked', () => {
+    const deployRoot = mkDeploy()
+    slotWithMetadata(deployRoot)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    const outside = join(deployRoot, 'traversal-entry')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'index.js'), 'module.exports = {};\n')
+    const pkgDir = join(slotDir(deployRoot, 'stable'), 'install', 'node_modules', '@deepseek-ai', 'dsh-llm')
+    const traversal = relative(pkgDir, join(outside, 'index.js'))
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-llm', main: traversal }))
+    const validation = validateSlot(deployRoot, 'stable')
+    expect(validation.ok).toBe(false)
+  })
+
+  it('H4-C: package.json metadata mutation alone trips the artifact digest', () => {
+    const deployRoot = mkDeploy()
+    slotWithMetadata(deployRoot)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    const pkgJson = join(slotDir(deployRoot, 'stable'), 'install', 'node_modules', '@deepseek-ai', 'dsh-llm', 'package.json')
+    writeFileSync(pkgJson, JSON.stringify({ name: '@deepseek-ai/dsh-llm', main: './lib/index.js', extra: true }))
+    const validation = validateSlot(deployRoot, 'stable')
+    expect(validation.ok).toBe(false)
+    expect(validation.failures.join(' ')).toContain('artifact digest does not match')
+  })
+
+  it('H4-D: coordinated metadata + digest rewrite still fails the approval anchor', () => {
+    const deployRoot = mkDeploy()
+    slotWithMetadata(deployRoot)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    const outside = join(deployRoot, 'coordinated-entry')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'index.js'), 'module.exports = {};\n')
+    const pkgJson = join(slotDir(deployRoot, 'stable'), 'install', 'node_modules', '@deepseek-ai', 'dsh-llm', 'package.json')
+    writeFileSync(pkgJson, JSON.stringify({ name: '@deepseek-ai/dsh-llm', main: join(outside, 'index.js') }))
+    // Even with a self-consistent digest, the approval anchor still holds the original manifest.
+    patchManifest(deployRoot, 'stable', (m) => { m.artifactDigest = 'f'.repeat(64) })
+    expect(() => promote(deployRoot, 'stable', 'stable')).toThrow(/promotion blocked/)
+  })
+
+  it('H4-E: the actual Node-resolved entry realpath is confined (resolve-based attack blocked)', () => {
+    const deployRoot = mkDeploy()
+    slotWithMetadata(deployRoot)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    // Point main at an in-slot OTHER package's file: Node resolves it, realpath stays in-slot -> allowed.
+    const pkgJson = join(slotDir(deployRoot, 'stable'), 'install', 'node_modules', '@deepseek-ai', 'dsh-llm', 'package.json')
+    writeFileSync(pkgJson, JSON.stringify({ name: '@deepseek-ai/dsh-llm', main: '../dsh-session/lib/index.js' }))
+    // Metadata changed -> digest mismatch blocks anyway (integrity first).
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(false)
   })
 })

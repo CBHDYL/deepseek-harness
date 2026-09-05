@@ -44,6 +44,7 @@ import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 
 export const RELEASE_MANIFEST = 'release-manifest.json'
 export const ACTIVE_POINTER = 'active'
@@ -170,12 +171,17 @@ function discoverInstalledPackages(installRoot: string): InstalledPackage[] {
   return packages
 }
 
-/** The evidence hash over every installed package entry (sorted, deterministic). */
+/** The evidence hash over every installed package (sorted, deterministic). The
+ * package.json bytes are part of the universe because entry metadata selects
+ * what the runtime actually loads; the lib/index.js bytes keep the existing
+ * entry coverage. */
 function computeArtifactDigest(installRoot: string): string {
   const evidence: string[] = []
   for (const pkg of discoverInstalledPackages(installRoot)) {
+    const pkgJson = join(pkg.realPath, 'package.json')
+    if (fs.existsSync(pkgJson)) evidence.push(`${pkg.name} package.json ${fileDigest(pkgJson)}`)
     const lib = join(pkg.lexicalPath, 'lib', 'index.js')
-    if (fs.existsSync(lib)) evidence.push(`${pkg.name} ${fileDigest(lib)}`)
+    if (fs.existsSync(lib)) evidence.push(`${pkg.name} lib/index.js ${fileDigest(lib)}`)
   }
   return stringDigest(evidence.join('\n'))
 }
@@ -199,6 +205,67 @@ export function canonicalManifest(manifest: ReleaseManifest): string {
 function isWithin(parent: string, child: string): boolean {
   const fromParent = relative(parent, child)
   return fromParent === '' || (!fromParent.startsWith('..') && !isAbsolute(fromParent))
+}
+
+/**
+ * Per-package runtime-entry confinement (H4): besides the package root and
+ * the digest entry, the entry Node ACTUALLY resolves and loads must realpath
+ * inside the install root. `main` metadata is checked lexically first
+ * (absolute or traversal targets fail closed), then Node's own resolver
+ * decides the real entry from one in-slot anchor — packages without any
+ * Node-resolvable entry (CLI bins, browser-only, workspace roots) skip the
+ * resolution check; their package.json bytes still sit in the digest
+ * universe, so metadata tampering trips integrity.
+ * @returns failure strings; empty for a confined package.
+ */
+function confinePackageEntry(installRoot: string, pkg: { name: string; realPath: string }): string[] {
+  const failures: string[] = []
+  const pkgJsonPath = join(pkg.realPath, 'package.json')
+  if (!fs.existsSync(pkgJsonPath)) {
+    // No metadata means no entry selection (Node cannot resolve a bare
+    // specifier without a manifest); the root and digest checks still apply.
+    return failures
+  }
+  let pkgJson: { main?: unknown }
+  try {
+    pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')) as { main?: unknown }
+  } catch {
+    failures.push(`package ${pkg.name} package.json is not valid JSON`)
+    return failures
+  }
+  if (pkgJson.main !== undefined) {
+    if (typeof pkgJson.main !== 'string') {
+      failures.push(`package ${pkg.name} main is not a string`)
+      return failures
+    }
+    const resolvedMain = isAbsolute(pkgJson.main) ? pkgJson.main : resolve(pkg.realPath, pkgJson.main)
+    try {
+      if (!isWithin(installRoot, fs.realpathSync(resolvedMain))) {
+        failures.push(`package ${pkg.name} main resolves outside the install root`)
+        return failures
+      }
+    } catch {
+      failures.push(`package ${pkg.name} main target does not resolve`)
+      return failures
+    }
+  }
+  // Node's own resolution for the actual runtime entry (require condition).
+  let entry: string
+  try {
+    entry = createRequire(join(installRoot, '.m5-entry-probe.cjs')).resolve(pkg.name)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'MODULE_NOT_FOUND' || code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+      // No Node-resolvable entry by design (CLI bin, browser-only, workspace root).
+      return failures
+    }
+    failures.push(`package ${pkg.name} entry resolution failed: ${String(error)}`)
+    return failures
+  }
+  if (!isWithin(installRoot, fs.realpathSync(entry))) {
+    failures.push(`package ${pkg.name} resolved entry realpath escapes the install root`)
+  }
+  return failures
 }
 
 /** Read and narrow an untrusted parsed manifest record. */
@@ -337,6 +404,10 @@ export function recordManifest(
     if (fs.existsSync(entryFile) && !isWithin(installRoot, fs.realpathSync(entryFile))) {
       throw new Error(`m5-release: cannot record ${slotName} manifest — package ${pkg.name} entry realpath escapes the install root`)
     }
+    const entryFailures = confinePackageEntry(installRoot, pkg)
+    if (entryFailures.length > 0) {
+      throw new Error(`m5-release: cannot record ${slotName} manifest — ${entryFailures.join('; ')}`)
+    }
   }
   const criticalPackages: Record<string, { digest: string; lib: string }> = {}
   for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
@@ -415,12 +486,12 @@ export function validateSlot(deployRoot: string, slotName: string): SlotValidati
       }
       // PER-PACKAGE CONFINEMENT: every discovered package (the same universe
       // the artifact digest covers) must realpath inside this slot's install
-      // root — including its hashed entry file. pnpm's in-slot .pnpm links
-      // resolve in-slot and stay valid; a package symlinked to another slot,
-      // the workspace, a global tree, or any external directory fails.
+      // root — its root, its hashed entry file, and the entry Node actually
+      // resolves. pnpm's in-slot .pnpm links resolve in-slot and stay valid.
       for (const pkg of discoverInstalledPackages(installRoot)) {
         if (pkg.realPath === '' || !isWithin(installRoot, pkg.realPath)) {
           failures.push(`package ${pkg.name} realpath escapes the install root (symlink borrow)`)
+          continue
         }
         const entryFile = join(pkg.lexicalPath, 'lib', 'index.js')
         if (fs.existsSync(entryFile)) {
@@ -429,6 +500,7 @@ export function validateSlot(deployRoot: string, slotName: string): SlotValidati
             failures.push(`package ${pkg.name} entry realpath escapes the install root (symlink borrow)`)
           }
         }
+        failures.push(...confinePackageEntry(installRoot, pkg))
       }
     }
     // Self-integrity: recompute the artifact digest and every critical digest.
