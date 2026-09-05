@@ -824,3 +824,61 @@ describe('M5 closure round 7 — install-root-level digest universe (F9)', () =>
     expect(resolveActive(deployRoot)).toBeUndefined()
   })
 })
+
+describe('M5 closure round 8 — universal sweep + universal root evidence (F10)', () => {
+  const EXTRA = [...CRITICAL, '@deepseek-ai/dsh-llm']
+
+  it('F10a: a package link into an install-root dir whose inner link escapes the slot is blocked at record', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, CRITICAL)
+    const outside = join(deployRoot, 'hop-escape')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'payload.js'), 'export default "escaped";\n')
+    const mid = join(installRoot, 'mid')
+    mkdirSync(mid, { recursive: true })
+    symlinkSync(join(outside, 'payload.js'), join(mid, 'entry.js'))
+    const pkgDir = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    symlinkSync(mid, join(pkgDir, 'sub'))
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh-llm',
+      main: './lib/index.js',
+      exports: { '.': './lib/index.js', './sub': './sub/entry.js' },
+    }))
+    expect(() => recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL))
+      .toThrow(/symlink .* target realpath escapes the install root/)
+    expect(resolveActive(deployRoot)).toBeUndefined()
+  })
+
+  it('F10b: a package link into an install-root dir whose inner link reaches the canary probe is blocked at record', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, CRITICAL)
+    writeFileSync(join(installRoot, '.m5-canary-probe.mjs'), 'export default 1;\n')
+    const mid = join(installRoot, 'mid')
+    mkdirSync(mid, { recursive: true })
+    symlinkSync(join(installRoot, '.m5-canary-probe.mjs'), join(mid, 'entry.js'))
+    const pkgDir = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    symlinkSync(mid, join(pkgDir, 'sub'))
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-llm', main: './lib/index.js' }))
+    expect(() => recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL))
+      .toThrow(/symlink .* target is the canary probe/)
+  })
+
+  it('F10c: node_modules-level stray files reached by package symlinks stay in the digest universe', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, CRITICAL)
+    writeFileSync(join(installRoot, 'node_modules', '@deepseek-ai', 'stray.js'), 'export default "stray";\n')
+    mkdirSync(join(installRoot, 'node_modules', '.pnpm'), { recursive: true })
+    writeFileSync(join(installRoot, 'node_modules', '.pnpm', 'stray2.js'), 'export default "stray2";\n')
+    const pkgDir = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    symlinkSync(join(installRoot, 'node_modules', '@deepseek-ai', 'stray.js'), join(pkgDir, 'stray-link.js'))
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-llm', main: './lib/index.js' }))
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
+    appendFileSync(join(installRoot, 'node_modules', '@deepseek-ai', 'stray.js'), 'tampered\n')
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(false)
+    expect(validateSlot(deployRoot, 'stable').failures.join(' ')).toContain('artifact digest does not match')
+  })
+})
