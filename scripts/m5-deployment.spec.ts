@@ -7,7 +7,7 @@
  */
 
 import * as fs from 'node:fs'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, symlinkSync, realpathSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync, symlinkSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -595,5 +595,102 @@ describe('M5 closure round 4 — ESM import-condition entry confinement', () => 
     }
     recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
     expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
+  })
+})
+
+describe('M5 closure round 5 — full node_modules universe + imports-map confinement', () => {
+  const EXTRA = [...CRITICAL, '@deepseek-ai/dsh-llm']
+
+  function withMetadata(installRoot: string, pkgs: readonly string[]): void {
+    for (const pkg of pkgs) {
+      writeFileSync(join(installRoot, 'node_modules', ...pkg.split('/'), 'package.json'), JSON.stringify({ name: pkg, main: './lib/index.js' }))
+    }
+  }
+
+  it('H6: a nested .pnpm dependency whose import entry symlinks outside the slot is blocked at record', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, EXTRA)
+    const outside = join(deployRoot, 'nested-escape')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'payload.js'), 'export default "escaped";\n')
+    const nestedNm = join(installRoot, 'node_modules', '.pnpm', 'llm-store', 'node_modules')
+    mkdirSync(join(nestedNm, 'evil'), { recursive: true })
+    symlinkSync(join(outside, 'payload.js'), join(nestedNm, 'evil', 'evil.js'))
+    writeFileSync(join(nestedNm, 'evil', 'package.json'), JSON.stringify({ name: 'evil', type: 'module', exports: { import: './evil.js' } }))
+    appendFileSync(join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm', 'lib', 'index.js'), "void import('evil')\n")
+    expect(() => recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL))
+      .toThrow(/import entry realpath escapes the install root/)
+    expect(resolveActive(deployRoot)).toBeUndefined()
+  })
+
+  it('H6-top: a top-level non-@deepseek-ai package whose entry symlinks outside the slot is blocked at record', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, EXTRA)
+    const outside = join(deployRoot, 'top-escape')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'payload.js'), 'export default "escaped";\n')
+    const helperDir = join(installRoot, 'node_modules', 'helper')
+    mkdirSync(helperDir, { recursive: true })
+    symlinkSync(join(outside, 'payload.js'), join(helperDir, 'helper.js'))
+    writeFileSync(join(helperDir, 'package.json'), JSON.stringify({ name: 'helper', type: 'module', exports: { import: './helper.js' } }))
+    expect(() => recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL))
+      .toThrow(/import entry realpath escapes the install root/)
+  })
+
+  it('positive: a nested .pnpm dependency with an in-slot import entry records, validates, and its entry bytes stay in the digest universe', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, EXTRA)
+    const nestedNm = join(installRoot, 'node_modules', '.pnpm', 'llm-store', 'node_modules')
+    mkdirSync(join(nestedNm, 'evil'), { recursive: true })
+    writeFileSync(join(nestedNm, 'evil', 'evil.js'), 'export default "in-slot";\n')
+    writeFileSync(join(nestedNm, 'evil', 'package.json'), JSON.stringify({ name: 'evil', type: 'module', exports: { import: './evil.js' } }))
+    appendFileSync(join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm', 'lib', 'index.js'), "void import('evil')\n")
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
+    writeFileSync(join(nestedNm, 'evil', 'evil.js'), 'tampered\n')
+    const validation = validateSlot(deployRoot, 'stable')
+    expect(validation.ok).toBe(false)
+    expect(validation.failures.join(' ')).toContain('artifact digest does not match')
+  })
+
+  it('D2: a package imports-map target realpathing outside the slot is blocked at record', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, CRITICAL)
+    const outside = join(deployRoot, 'imports-escape')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'payload.js'), 'export default "escaped";\n')
+    const pkgDir = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    symlinkSync(join(outside, 'payload.js'), join(pkgDir, 'imports-target.js'))
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh-llm',
+      main: './lib/index.js',
+      imports: { '#x': './imports-target.js' },
+    }))
+    expect(() => recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL))
+      .toThrow(/imports target realpath escapes the install root/)
+    expect(resolveActive(deployRoot)).toBeUndefined()
+  })
+
+  it('positive: an in-slot imports-map target records, validates, and its bytes stay in the digest universe', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, CRITICAL)
+    const pkgDir = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    writeFileSync(join(pkgDir, 'imports-target.js'), 'export default "in-slot";\n')
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh-llm',
+      main: './lib/index.js',
+      imports: { '#x': './imports-target.js' },
+    }))
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
+    writeFileSync(join(pkgDir, 'imports-target.js'), 'tampered\n')
+    const validation = validateSlot(deployRoot, 'stable')
+    expect(validation.ok).toBe(false)
+    expect(validation.failures.join(' ')).toContain('artifact digest does not match')
   })
 })
