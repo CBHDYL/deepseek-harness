@@ -261,6 +261,59 @@ function listPackageFiles(root: string): string[] {
 }
 
 /**
+ * F9: install-root-level regular files OUTSIDE every package root — the
+ * install-root top level (payload dirs recursed), node_modules top-level
+ * files (.modules.yaml, .package-lock.json), and .pnpm/lock.yaml. These are
+ * Node-loadable through confined in-package symlinks (or relative imports),
+ * so they must sit in the digest universe. Symlinks are skipped — their
+ * in-slot targets are hashed where they live. The canary probe file is the
+ * one exclusion: the tool rewrites it after recording, and the sweep rejects
+ * package symlinks that point at it.
+ */
+function listRootEvidence(installRoot: string): string[] {
+  const files: string[] = []
+  const collect = (dir: string): void => {
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name))
+    for (const entry of entries) {
+      if (entry.isFile()) files.push(join(dir, entry.name))
+    }
+  }
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name))
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) {
+        if (dir === installRoot && entry.name === 'node_modules') {
+          // Package subtrees are covered per-package; only the metadata
+          // files at node_modules and .pnpm top level are root evidence.
+          collect(full)
+          collect(join(full, '.pnpm'))
+          continue
+        }
+        walk(full)
+      } else if (entry.isFile() && full !== join(installRoot, CANARY_PROBE)) {
+        files.push(full)
+      }
+    }
+  }
+  walk(installRoot)
+  return files
+}
+
+/**
  * H7: full-forest symlink sweep. Node constrains exports subpaths and
  * imports targets to './'-relative paths inside the owning package, so an
  * in-package symlink is the only way a loadable entry — static subpath,
@@ -283,8 +336,13 @@ function sweepPackageLinks(installRoot: string, pkg: InstalledPackage): string[]
       const full = join(dir, entry.name)
       if (entry.isSymbolicLink()) {
         try {
-          if (!isWithin(installRoot, fs.realpathSync(full))) {
+          const real = fs.realpathSync(full)
+          if (!isWithin(installRoot, real)) {
             failures.push(`package ${pkg.name} symlink target realpath escapes the install root`)
+          } else if (real === join(installRoot, CANARY_PROBE)) {
+            // The one digest-excluded but Node-loadable path: a package link
+            // must not smuggle the tool's own probe into the runtime graph.
+            failures.push(`package ${pkg.name} symlink target is the canary probe`)
           }
         } catch {
           failures.push(`package ${pkg.name} symlink target does not resolve`)
@@ -302,10 +360,12 @@ function sweepPackageLinks(installRoot: string, pkg: InstalledPackage): string[]
  * The evidence hash over the whole installed forest (sorted, deterministic).
  * Every discovered package contributes the digest of EVERY regular file
  * under its root — package.json, lib/index.js, resolver-selected entries,
- * imports targets, and every exports subpath byte Node can load — so the
- * digest universe and the confinement universe cover the same files. The
- * canary probe file sits at the install root, outside every package root,
- * and stays outside the universe by construction.
+ * imports targets, and every exports subpath byte Node can load — and the
+ * install-root level contributes every regular file OUTSIDE package roots
+ * (payloads reachable through confined symlinks, pnpm metadata files). The
+ * digest universe and the confinement universe thus cover the same bytes;
+ * the canary probe is the single exclusion and the sweep rejects package
+ * symlinks that point at it.
  */
 function assessInstall(installRoot: string): { failures: string[]; digest: string } {
   const failures: string[] = []
@@ -334,6 +394,9 @@ function assessInstall(installRoot: string): { failures: string[]; digest: strin
     for (const file of listPackageFiles(pkg.realPath)) {
       evidence.push(`${pkg.name} file ${relative(pkg.realPath, file)} ${fileDigest(file)}`)
     }
+  }
+  for (const file of listRootEvidence(installRoot)) {
+    evidence.push(`root file ${relative(installRoot, file)} ${fileDigest(file)}`)
   }
   return { failures, digest: stringDigest(evidence.join('\n')) }
 }

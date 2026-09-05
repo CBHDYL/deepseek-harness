@@ -766,3 +766,61 @@ describe('M5 closure round 6 — exports-subpath confinement (H7)', () => {
     expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
   })
 })
+
+describe('M5 closure round 7 — install-root-level digest universe (F9)', () => {
+  const EXTRA = [...CRITICAL, '@deepseek-ai/dsh-llm']
+
+  it('F9a: a subpath entry symlinked to an install-root payload records, validates, and the payload bytes stay in the digest universe', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, CRITICAL)
+    mkdirSync(join(installRoot, 'shared-data'), { recursive: true })
+    writeFileSync(join(installRoot, 'shared-data', 'sub.js'), 'export default "shared";\n')
+    const pkgDir = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    symlinkSync(join(installRoot, 'shared-data'), join(pkgDir, 'sub'))
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh-llm',
+      main: './lib/index.js',
+      exports: { '.': './lib/index.js', './sub': './sub/sub.js' },
+    }))
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
+    appendFileSync(join(installRoot, 'shared-data', 'sub.js'), 'tampered\n')
+    const validation = validateSlot(deployRoot, 'stable')
+    expect(validation.ok).toBe(false)
+    expect(validation.failures.join(' ')).toContain('artifact digest does not match')
+  })
+
+  it('F9b: a main entry symlinked to an install-root file records, validates, and the target bytes stay in the digest universe', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, CRITICAL)
+    writeFileSync(join(installRoot, 'shared-entry.js'), 'export default "shared";\n')
+    const pkgDir = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    symlinkSync(join(installRoot, 'shared-entry.js'), join(pkgDir, 'main.js'))
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh-llm',
+      main: './main.js',
+      exports: { '.': './main.js' },
+    }))
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
+    appendFileSync(join(installRoot, 'shared-entry.js'), 'tampered\n')
+    const validation = validateSlot(deployRoot, 'stable')
+    expect(validation.ok).toBe(false)
+    expect(validation.failures.join(' ')).toContain('artifact digest does not match')
+  })
+
+  it('F9c: a package symlink targeting the canary probe file is blocked at record', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', EXTRA)
+    withMetadata(installRoot, CRITICAL)
+    writeFileSync(join(installRoot, '.m5-canary-probe.mjs'), 'export default 1;\n')
+    const pkgDir = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    symlinkSync(join(installRoot, '.m5-canary-probe.mjs'), join(pkgDir, 'probe-link.js'))
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-llm', main: './lib/index.js' }))
+    expect(() => recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL))
+      .toThrow(/symlink target is the canary probe/)
+    expect(resolveActive(deployRoot)).toBeUndefined()
+  })
+})
