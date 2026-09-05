@@ -132,22 +132,50 @@ function stringDigest(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex')
 }
 
-/** Every '@deepseek-ai/*' package directory under an install root's node_modules. */
-function installedPackages(installRoot: string): string[] {
+/** One discovered '@deepseek-ai/*' package under an install root. */
+export interface InstalledPackage {
+  /** Package name, e.g. `@deepseek-ai/dsh-llm`. */
+  name: string
+  /** The package path as reached through the install root (may traverse symlinks). */
+  lexicalPath: string
+  /** The canonical resolved package root. */
+  realPath: string
+}
+
+/**
+ * THE single package discovery for both the artifact digest universe and the
+ * realpath-confinement universe: every package the digest covers is exactly
+ * the package set confinement validates. Enumeration lists the scoped
+ * directory entries; each entry's realpath is resolved here so the two
+ * universes cannot drift.
+ */
+function discoverInstalledPackages(installRoot: string): InstalledPackage[] {
   const scoped = join(installRoot, 'node_modules', '@deepseek-ai')
+  const packages: InstalledPackage[] = []
+  let entries: string[] = []
   try {
-    return fs.readdirSync(scoped).map(name => `@deepseek-ai/${name}`).sort()
+    entries = fs.readdirSync(scoped)
   } catch {
     return []
   }
+  for (const entry of [...entries].sort()) {
+    const name = `@deepseek-ai/${entry}`
+    const lexicalPath = join(scoped, entry)
+    try {
+      packages.push({ name, lexicalPath, realPath: fs.realpathSync(lexicalPath) })
+    } catch {
+      packages.push({ name, lexicalPath, realPath: '' })
+    }
+  }
+  return packages
 }
 
 /** The evidence hash over every installed package entry (sorted, deterministic). */
 function computeArtifactDigest(installRoot: string): string {
   const evidence: string[] = []
-  for (const name of installedPackages(installRoot)) {
-    const lib = join(installRoot, 'node_modules', ...name.split('/'), 'lib', 'index.js')
-    if (fs.existsSync(lib)) evidence.push(`${name} ${fileDigest(lib)}`)
+  for (const pkg of discoverInstalledPackages(installRoot)) {
+    const lib = join(pkg.lexicalPath, 'lib', 'index.js')
+    if (fs.existsSync(lib)) evidence.push(`${pkg.name} ${fileDigest(lib)}`)
   }
   return stringDigest(evidence.join('\n'))
 }
@@ -222,14 +250,23 @@ export function readApprovals(deployRoot: string): Record<string, string> {
  * trust record, and it runs outside the slot — a candidate mutating its own
  * manifest and bytes cannot self-approve.
  */
-export function approveRelease(deployRoot: string, slotName: string): string {
-  const manifest = readManifest(deployRoot, slotName)
-  if (manifest === undefined) throw new Error(`m5-release: cannot approve slot '${slotName}' — no readable manifest`)
+/** Register one in-memory manifest's digest in the approval registry (fail-closed on re-binding). */
+function registerApproval(deployRoot: string, manifest: ReleaseManifest): string {
   const digest = stringDigest(canonicalManifest(manifest))
   const approvals = readApprovals(deployRoot)
+  const existing = approvals[manifest.releaseId]
+  if (existing !== undefined && existing !== digest) {
+    throw new Error(`m5-release: cannot approve release '${manifest.releaseId}' — the releaseId is already approved with a different manifest digest; re-binding requires explicit operator intent`)
+  }
   approvals[manifest.releaseId] = digest
   fs.writeFileSync(join(deployRoot, RELEASE_APPROVALS), `${JSON.stringify(approvals, null, 2)}\n`)
   return digest
+}
+
+export function approveRelease(deployRoot: string, slotName: string): string {
+  const manifest = readManifest(deployRoot, slotName)
+  if (manifest === undefined) throw new Error(`m5-release: cannot approve slot '${slotName}' — no readable manifest`)
+  return registerApproval(deployRoot, manifest)
 }
 
 /** Read and parse one slot's manifest; 'undefined' when absent or malformed. */
@@ -257,7 +294,12 @@ export function readManifest(deployRoot: string, slotName: string): ReleaseManif
 export function recordManifest(
   deployRoot: string,
   slotName: string,
-  identity: { readonly releaseId: string; readonly version: string; readonly sourceRevision: string },
+  identity: {
+    readonly releaseId: string
+    readonly version: string
+    readonly sourceRevision: string
+    readonly statePolicy?: 'shared-compatible' | 'migrating'
+  },
   critical: readonly (string | CriticalPackage)[],
 ): ReleaseManifest {
   const dir = slotDir(deployRoot, slotName)
@@ -287,6 +329,15 @@ export function recordManifest(
       throw new Error(`m5-release: cannot record ${slotName} manifest — critical package ${entry.name} realpath escapes the install root`)
     }
   }
+  for (const pkg of discoverInstalledPackages(installRoot)) {
+    if (pkg.realPath === '' || !isWithin(installRoot, pkg.realPath)) {
+      throw new Error(`m5-release: cannot record ${slotName} manifest — package ${pkg.name} realpath escapes the install root`)
+    }
+    const entryFile = join(pkg.lexicalPath, 'lib', 'index.js')
+    if (fs.existsSync(entryFile) && !isWithin(installRoot, fs.realpathSync(entryFile))) {
+      throw new Error(`m5-release: cannot record ${slotName} manifest — package ${pkg.name} entry realpath escapes the install root`)
+    }
+  }
   const criticalPackages: Record<string, { digest: string; lib: string }> = {}
   for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
     criticalPackages[entry.name] = { digest: fileDigest(join(installRoot, 'node_modules', ...entry.name.split('/'), entry.lib)), lib: entry.lib }
@@ -299,11 +350,13 @@ export function recordManifest(
     installRoot,
     criticalPackages,
     createdAt: new Date().toISOString(),
-    statePolicy: { kind: 'shared-compatible' },
+    statePolicy: { kind: identity.statePolicy ?? 'shared-compatible' },
   }
   fs.mkdirSync(dir, { recursive: true })
+  // Register the approval BEFORE the manifest bytes land on disk: a re-bind
+  // refusal leaves the slot's previous manifest untouched.
+  registerApproval(deployRoot, manifest)
   fs.writeFileSync(join(dir, RELEASE_MANIFEST), canonicalManifest(manifest))
-  approveRelease(deployRoot, slotName)
   return manifest
 }
 
@@ -359,6 +412,23 @@ export function validateSlot(deployRoot: string, slotName: string): SlotValidati
       const scopedReal = fs.realpathSync(scopedLexical)
       if (!isWithin(installRoot, scopedReal)) {
         failures.push('@deepseek-ai package tree realpath escapes the install root')
+      }
+      // PER-PACKAGE CONFINEMENT: every discovered package (the same universe
+      // the artifact digest covers) must realpath inside this slot's install
+      // root — including its hashed entry file. pnpm's in-slot .pnpm links
+      // resolve in-slot and stay valid; a package symlinked to another slot,
+      // the workspace, a global tree, or any external directory fails.
+      for (const pkg of discoverInstalledPackages(installRoot)) {
+        if (pkg.realPath === '' || !isWithin(installRoot, pkg.realPath)) {
+          failures.push(`package ${pkg.name} realpath escapes the install root (symlink borrow)`)
+        }
+        const entryFile = join(pkg.lexicalPath, 'lib', 'index.js')
+        if (fs.existsSync(entryFile)) {
+          const entryReal = fs.realpathSync(entryFile)
+          if (!isWithin(installRoot, entryReal)) {
+            failures.push(`package ${pkg.name} entry realpath escapes the install root (symlink borrow)`)
+          }
+        }
       }
     }
     // Self-integrity: recompute the artifact digest and every critical digest.
@@ -588,12 +658,25 @@ export function rollback(deployRoot: string): PointerResult {
     if (current === undefined || meta.active.slot !== current) {
       throw new Error('m5-release: rollback refused — pointer metadata does not match the active pointer generation')
     }
+    // Cross-check the metadata's release ids against the validated slots.
+    // The ACTIVE check runs only when the active slot still validates: rolling
+    // back OFF a corrupted active slot is the recovery path, so an invalid
+    // active slot skips its releaseId cross-check rather than trapping the
+    // deployment; the PREVIOUS (restoration target) check always applies.
+    const activeValidation = validateSlot(deployRoot, current)
+    if (activeValidation.ok && activeValidation.manifest !== undefined
+      && meta.active.releaseId !== activeValidation.manifest.releaseId) {
+      throw new Error('m5-release: rollback refused — pointer metadata active releaseId does not match the active slot')
+    }
     if (meta.previous.slot === meta.active.slot) {
       throw new Error('m5-release: rollback refused — pointer metadata self-references the active slot')
     }
     const validation = validateSlot(deployRoot, meta.previous.slot)
     if (!validation.ok || validation.manifest === undefined) {
       throw new Error(`m5-release: rollback refused — recorded slot '${meta.previous.slot}' is invalid: ${validation.failures.join('; ')}`)
+    }
+    if (meta.previous.releaseId !== validation.manifest.releaseId) {
+      throw new Error('m5-release: rollback refused — pointer metadata previous releaseId does not match the recorded slot')
     }
     switchPointer(deployRoot, meta.previous.slot)
     if (resolveActive(deployRoot) !== meta.previous.slot) {

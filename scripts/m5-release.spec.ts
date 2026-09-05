@@ -12,7 +12,6 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ACTIVE_POINTER,
-  approveRelease,
   POINTER_META,
   RELEASE_MANIFEST,
   installCanaryProbe,
@@ -67,17 +66,11 @@ function fixture(options: { corruptCandidate?: boolean; nestedCandidate?: boolea
   }
   mkdirSync(candidateRoot, { recursive: true })
   recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: '0.1.2-alpha.5', sourceRevision: 'stable-rev' }, CRITICAL)
-  recordManifest(deployRoot, 'candidate', { releaseId: 'candidate-r1', version: '0.1.2-alpha.5', sourceRevision: 'candidate-rev' }, CRITICAL)
+  recordManifest(deployRoot, 'candidate', { releaseId: 'candidate-r1', version: '0.1.2-alpha.5', sourceRevision: 'candidate-rev', ...options.migrating === true ? { statePolicy: 'migrating' as const } : {} }, CRITICAL)
   if (options.nestedCandidate === true) {
     const manifest = readManifest(deployRoot, 'candidate')!
     manifest.installRoot = realpathSync(nestedRoot)
     writeFileSync(join(slotDir(deployRoot, 'candidate'), RELEASE_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`)
-  }
-  if (options.migrating === true) {
-    const manifest = readManifest(deployRoot, 'candidate')!
-    manifest.statePolicy = { kind: 'migrating' }
-    writeFileSync(join(slotDir(deployRoot, 'candidate'), RELEASE_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`)
-    approveRelease(deployRoot, 'candidate')
   }
   return { deployRoot, stableRoot, candidateRoot }
 }

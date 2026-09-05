@@ -14,9 +14,11 @@ import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   LOCK_DIR,
+  approveRelease,
   POINTER_META,
   RELEASE_MANIFEST,
   promote,
+  readApprovals,
   readManifest,
   recordManifest,
   resolveActive,
@@ -324,4 +326,144 @@ describe('M5 closure — multi-process concurrency races (P1-3)', () => {
       if (meta.active?.slot !== undefined) expect(meta.active.slot).toBe(active)
     } catch { /* fail-closed metadata */ }
   }, 120_000)
+})
+
+describe('M5 closure round 2 — per-package realpath confinement (remaining P1)', () => {
+  const EXTRA = [...CRITICAL, '@deepseek-ai/dsh-llm']
+
+  function foreignPackage(deployRoot: string, content: string): string {
+    const foreign = join(deployRoot, 'foreign')
+    const dir = join(foreign, 'node_modules', '@deepseek-ai', 'dsh-llm', 'lib')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'index.js'), `@deepseek-ai/dsh-llm-${content}\n`)
+    return join(foreign, 'node_modules', '@deepseek-ai', 'dsh-llm')
+  }
+
+  it('H1: a non-critical package symlinked to external identical bytes fails validation and promotion', () => {
+    const deployRoot = mkDeploy()
+    writeSlot(deployRoot, 'stable', 'same', EXTRA)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    const slotPkg = join(slotDir(deployRoot, 'stable'), 'install', 'node_modules', '@deepseek-ai', 'dsh-llm')
+    rmSync(slotPkg, { recursive: true, force: true })
+    symlinkSync(foreignPackage(deployRoot, 'same'), slotPkg)
+    const validation = validateSlot(deployRoot, 'stable')
+    expect(validation.ok).toBe(false)
+    expect(validation.failures.join(' ')).toContain('realpath escapes the install root')
+    expect(() => promote(deployRoot, 'stable', 'stable')).toThrow(/promotion blocked/)
+  })
+
+  it('H2: a non-critical package symlinked to the OTHER slot fails validation', () => {
+    const deployRoot = mkDeploy()
+    writeSlot(deployRoot, 'stable', 'same', EXTRA)
+    writeSlot(deployRoot, 'candidate', 'same', EXTRA)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    recordManifest(deployRoot, 'candidate', { releaseId: 'candidate-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    const candidatePkg = join(slotDir(deployRoot, 'candidate'), 'install', 'node_modules', '@deepseek-ai', 'dsh-llm')
+    rmSync(candidatePkg, { recursive: true, force: true })
+    symlinkSync(join(slotDir(deployRoot, 'stable'), 'install', 'node_modules', '@deepseek-ai', 'dsh-llm'), candidatePkg)
+    expect(validateSlot(deployRoot, 'candidate').ok).toBe(false)
+  })
+
+  it('H3: an in-slot package whose entry file symlinks outside fails validation', () => {
+    const deployRoot = mkDeploy()
+    writeSlot(deployRoot, 'stable', 's', EXTRA)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    const outside = join(deployRoot, 'outside-entry')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'index.js'), '@deepseek-ai/dsh-llm-s\n')
+    const entry = join(slotDir(deployRoot, 'stable'), 'install', 'node_modules', '@deepseek-ai', 'dsh-llm', 'lib', 'index.js')
+    rmSync(entry)
+    symlinkSync(join(outside, 'index.js'), entry)
+    const validation = validateSlot(deployRoot, 'stable')
+    expect(validation.ok).toBe(false)
+    expect(validation.failures.join(' ')).toContain('entry realpath escapes')
+  })
+
+  it('H5: workspace/global-style borrow (any external root) fails validation', () => {
+    const deployRoot = mkDeploy()
+    writeSlot(deployRoot, 'stable', 'same', EXTRA)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    const externalRoot = mkdtempSync(join(tmpdir(), 'dsh-borrow-'))
+    roots.push(externalRoot)
+    const dir = join(externalRoot, 'node_modules', '@deepseek-ai', 'dsh-llm', 'lib')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'index.js'), '@deepseek-ai/dsh-llm-same\n')
+    const slotPkg = join(slotDir(deployRoot, 'stable'), 'install', 'node_modules', '@deepseek-ai', 'dsh-llm')
+    rmSync(slotPkg, { recursive: true, force: true })
+    symlinkSync(join(externalRoot, 'node_modules', '@deepseek-ai', 'dsh-llm'), slotPkg)
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(false)
+  })
+
+  it('positive: pnpm in-slot .pnpm links for every package remain valid', () => {
+    const deployRoot = mkDeploy()
+    writeSlot(deployRoot, 'stable', 's', EXTRA)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    const installRoot = join(slotDir(deployRoot, 'stable'), 'install')
+    // Re-point dsh-llm through an in-slot virtual store (pnpm layout).
+    const store = join(installRoot, 'node_modules', '.pnpm', 'llm', 'node_modules', '@deepseek-ai', 'dsh-llm')
+    mkdirSync(join(store, 'lib'), { recursive: true })
+    writeFileSync(join(store, 'lib', 'index.js'), '@deepseek-ai/dsh-llm-s\n')
+    const linked = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    rmSync(linked, { recursive: true, force: true })
+    symlinkSync(store, linked)
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
+  })
+
+  it('digest universe covers every confined package (tampering a non-critical package fails the digest)', () => {
+    const deployRoot = mkDeploy()
+    writeSlot(deployRoot, 'stable', 's', EXTRA)
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    const lib = join(slotDir(deployRoot, 'stable'), 'install', 'node_modules', '@deepseek-ai', 'dsh-llm', 'lib', 'index.js')
+    writeFileSync(lib, 'tampered-llm\n')
+    const validation = validateSlot(deployRoot, 'stable')
+    expect(validation.ok).toBe(false)
+    expect(validation.failures.join(' ')).toContain('artifact digest does not match')
+  })
+})
+
+describe('M5 closure round 2 — approval re-binding (P2-1) and releaseId cross-checks (P2-2)', () => {
+  it('re-approving the same manifest is idempotent; a different manifest under the same releaseId is refused and the registry is unchanged', () => {
+    const deployRoot = mkDeploy()
+    record(deployRoot, 'candidate', 'c')
+    const first = readApprovals(deployRoot)['candidate-r1']!
+    expect(approveRelease(deployRoot, 'candidate')).toBe(first)
+    patchManifest(deployRoot, 'candidate', (m) => { m.sourceRevision = 'rebound-rev' })
+    expect(() => approveRelease(deployRoot, 'candidate')).toThrow(/already approved with a different manifest digest/)
+    expect(readApprovals(deployRoot)['candidate-r1']).toBe(first)
+  })
+
+  it('recordManifest refuses to silently re-bind and leaves the previous manifest on disk', () => {
+    const deployRoot = mkDeploy()
+    record(deployRoot, 'candidate', 'c')
+    const manifestBefore = readFileSync(manifestPath(deployRoot, 'candidate'), 'utf8')
+    // Same releaseId, different bytes.
+    writeFileSync(join(slotDir(deployRoot, 'candidate'), 'install', 'node_modules', '@deepseek-ai', 'dsh-session', 'lib', 'index.js'), 'new-bytes\n')
+    expect(() => recordManifest(deployRoot, 'candidate', { releaseId: 'candidate-r1', version: 'v', sourceRevision: 'r' }, CRITICAL))
+      .toThrow(/already approved with a different manifest digest/)
+    expect(readFileSync(manifestPath(deployRoot, 'candidate'), 'utf8')).toBe(manifestBefore)
+  })
+
+  it('rollback refuses a previous.releaseId mismatch (ghost releaseId) and leaves the pointer', () => {
+    const deployRoot = mkDeploy()
+    record(deployRoot, 'stable', 's')
+    record(deployRoot, 'candidate', 'c')
+    promote(deployRoot, 'candidate', 'stable')
+    const meta = JSON.parse(readFileSync(join(deployRoot, POINTER_META), 'utf8')) as { active: { slot: string; releaseId: string }; previous: { slot: string; releaseId: string } }
+    meta.previous.releaseId = 'ghost-release'
+    writeFileSync(join(deployRoot, POINTER_META), JSON.stringify(meta))
+    expect(() => rollback(deployRoot)).toThrow(/previous releaseId does not match/)
+    expect(resolveActive(deployRoot)).toBe('candidate')
+  })
+
+  it('rollback refuses an active.releaseId mismatch on a still-valid active slot', () => {
+    const deployRoot = mkDeploy()
+    record(deployRoot, 'stable', 's')
+    record(deployRoot, 'candidate', 'c')
+    promote(deployRoot, 'candidate', 'stable')
+    const meta = JSON.parse(readFileSync(join(deployRoot, POINTER_META), 'utf8')) as { active: { slot: string; releaseId: string }; previous: { slot: string; releaseId: string } }
+    meta.active.releaseId = 'ghost-release'
+    writeFileSync(join(deployRoot, POINTER_META), JSON.stringify(meta))
+    expect(() => rollback(deployRoot)).toThrow(/active releaseId does not match/)
+    expect(resolveActive(deployRoot)).toBe('candidate')
+  })
 })
