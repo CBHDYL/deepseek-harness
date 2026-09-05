@@ -45,6 +45,7 @@ import * as fs from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 
 export const RELEASE_MANIFEST = 'release-manifest.json'
 export const ACTIVE_POINTER = 'active'
@@ -249,23 +250,113 @@ function confinePackageEntry(installRoot: string, pkg: { name: string; realPath:
       return failures
     }
   }
-  // Node's own resolution for the actual runtime entry (require condition).
-  let entry: string
-  try {
-    entry = createRequire(join(installRoot, '.m5-entry-probe.cjs')).resolve(pkg.name)
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code === 'MODULE_NOT_FOUND' || code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
-      // No Node-resolvable entry by design (CLI bin, browser-only, workspace root).
-      return failures
-    }
-    failures.push(`package ${pkg.name} entry resolution failed: ${String(error)}`)
+  // BOTH Node resolvers decide the actual runtime entry: the dsh runtime is
+  // ESM, so the import condition matters as much as require. Each resolver's
+  // own NOT_FOUND / NOT_EXPORTED skips THAT resolver (packages without an
+  // entry for that condition); any entry a resolver DOES produce must
+  // realpath inside the install root.
+  const requireEntry = resolveEntryAttempt(() =>
+    createRequire(join(installRoot, '.m5-entry-probe.cjs')).resolve(pkg.name))
+  if (requireEntry.failure !== undefined) {
+    failures.push(`package ${pkg.name} require entry resolution failed: ${requireEntry.failure}`)
     return failures
   }
-  if (!isWithin(installRoot, fs.realpathSync(entry))) {
-    failures.push(`package ${pkg.name} resolved entry realpath escapes the install root`)
+  if (requireEntry.entry !== undefined) {
+    try {
+      if (!isWithin(installRoot, fs.realpathSync(requireEntry.entry))) {
+        failures.push(`package ${pkg.name} require entry realpath escapes the install root`)
+        return failures
+      }
+    } catch {
+      failures.push(`package ${pkg.name} require entry target does not resolve`)
+      return failures
+    }
+  }
+  const importEntry = resolveEntryAttempt(() =>
+    resolveImportEntry(pkg.name, installRoot))
+  if (importEntry.failure !== undefined) {
+    failures.push(`package ${pkg.name} import entry resolution failed: ${importEntry.failure}`)
+    return failures
+  }
+  if (importEntry.entry !== undefined) {
+    try {
+      if (!isWithin(installRoot, fs.realpathSync(importEntry.entry))) {
+        failures.push(`package ${pkg.name} import entry realpath escapes the install root`)
+        return failures
+      }
+    } catch {
+      failures.push(`package ${pkg.name} import entry target does not resolve`)
+      return failures
+    }
   }
   return failures
+}
+
+/**
+ * One Node resolver attempt for a package entry. A resolver-specific
+ * NOT_FOUND / NOT_EXPORTED means the package has no entry under that
+ * condition (CJS-only vs ESM-only vs browser-only) and skips; any other
+ * failure is fail-closed. Either resolver may also skip entirely when its
+ * own entry cannot exist; at least one loadable entry must stay confined.
+ */
+function resolveEntryAttempt(attempt: () => string): { entry?: string; failure?: string } {
+  try {
+    return { entry: attempt() }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND' || code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+      return {}
+    }
+    return { failure: String(error) }
+  }
+}
+
+/** Child-side resolver: one sync ESM resolution, URL or ERR:code on stdout. */
+const IMPORT_RESOLVE_SCRIPT = [
+  'try {',
+  '  console.log(import.meta.resolve(process.argv[1]))',
+  '} catch (e) {',
+  '  console.log("ERR:" + (e?.code ?? "UNKNOWN"))',
+  '}',
+].join('')
+
+const IMPORT_RESOLVE_TIMEOUT_MS = 10_000
+
+/**
+ * Resolve one ESM specifier from one install root in a bare-Node child
+ * process. The in-process `import.meta.resolve` inherits the caller's
+ * loader hooks (tsx maps bare workspace specifiers onto the checkout), while
+ * the deployed runtime is plain Node; the child mirrors the resolver the
+ * runtime actually loads entries with. Node 22 anchors resolution at the
+ * calling module's own location and ignores a parent URL, so the child runs
+ * with the install root as cwd: the eval module base sits there and the
+ * node_modules walk starts at the root. Resolver-specific NOT_FOUND /
+ * NOT_EXPORTED codes ride the thrown error for `resolveEntryAttempt`.
+ * @returns the resolved file path.
+ */
+function resolveImportEntry(specifier: string, installRoot: string): string {
+  const child = spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', IMPORT_RESOLVE_SCRIPT, specifier],
+    { cwd: installRoot, encoding: 'utf8', timeout: IMPORT_RESOLVE_TIMEOUT_MS },
+  )
+  if (child.error !== undefined) {
+    throw child.error
+  }
+  if (child.status !== 0) {
+    throw new Error(`import resolver exited with status ${child.status}: ${child.stderr}`)
+  }
+  const line = child.stdout.trim()
+  if (line.startsWith('ERR:')) {
+    const code = line.slice(4).trim()
+    const error = new Error(`import resolver: ${code}`) as Error & { code?: string }
+    error.code = code
+    throw error
+  }
+  if (!line.startsWith('file:')) {
+    throw new Error(`import resolver returned a non-file URL: ${line}`)
+  }
+  return fileURLToPath(line)
 }
 
 /** Read and narrow an untrusted parsed manifest record. */

@@ -552,3 +552,48 @@ describe('M5 closure round 3 — runtime entry selection confinement (H4)', () =
     expect(validateSlot(deployRoot, 'stable').ok).toBe(false)
   })
 })
+
+describe('M5 closure round 4 — ESM import-condition entry confinement', () => {
+  it('H4-F: an import-condition-only exports entry symlinked outside the slot is blocked at validation and promotion', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', [...CRITICAL, '@deepseek-ai/dsh-llm'])
+    for (const pkg of [...CRITICAL, '@deepseek-ai/dsh-llm']) {
+      writeFileSync(join(installRoot, 'node_modules', ...pkg.split('/'), 'package.json'), JSON.stringify({ name: pkg, main: './lib/index.js' }))
+    }
+    const outside = join(deployRoot, 'esm-escape')
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'payload.js'), 'export default "escaped";\n')
+    const pkgDir = join(installRoot, 'node_modules', '@deepseek-ai', 'dsh-llm')
+    symlinkSync(join(outside, 'payload.js'), join(pkgDir, 'import-target.js'))
+    // Record WITH the malicious metadata (the operator-recorded build shape).
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+      name: '@deepseek-ai/dsh-llm',
+      main: './lib/index.js',
+      exports: { import: './import-target.js' },
+    }))
+    // Fail-closed at PREPARE: recording a build whose ESM entry escapes is refused.
+    expect(() => recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL))
+      .toThrow(/import entry realpath escapes the install root/)
+    expect(resolveActive(deployRoot)).toBeUndefined()
+  })
+
+  it('positive: a package resolvable under BOTH conditions with in-slot entries passes', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', CRITICAL)
+    for (const pkg of CRITICAL) {
+      writeFileSync(join(installRoot, 'node_modules', ...pkg.split('/'), 'package.json'), JSON.stringify({ name: pkg, main: './lib/index.js', exports: { import: './lib/index.js', require: './lib/index.js' } }))
+    }
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
+  })
+
+  it('positive: a require-only package (no exports) passes with its main entry', () => {
+    const deployRoot = mkDeploy()
+    const installRoot = writeSlot(deployRoot, 'stable', 's', CRITICAL)
+    for (const pkg of CRITICAL) {
+      writeFileSync(join(installRoot, 'node_modules', ...pkg.split('/'), 'package.json'), JSON.stringify({ name: pkg, main: './lib/index.js' }))
+    }
+    recordManifest(deployRoot, 'stable', { releaseId: 'stable-r1', version: 'v', sourceRevision: 'r' }, CRITICAL)
+    expect(validateSlot(deployRoot, 'stable').ok).toBe(true)
+  })
+})
