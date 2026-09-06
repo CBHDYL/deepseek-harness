@@ -18,15 +18,16 @@
     persona: >-
       You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
 
-# Full-text session search is opt-in (the base row's `openAt: never`). This
-# restatement keeps the Web values on one ephemeral in-memory index; a
-# deployment enabling content search overrides `openAt` to `first-search` in a
-# later patch layer, which defers the node:sqlite import and in-memory handle
-# to the first search so Node 22 startup stays quiet.
+# Full-text session search is enabled for the Web profile with a durable
+# derived index under the harness home (openAt: first-search keeps the
+# node:sqlite import deferred until the first search, so Node 22 startup stays
+# quiet). The index is derived/cache: deleting it rebuilds from the session
+# logs. The model-facing session-query tools ship in the per-session agent
+# preset (ptc) and are workspace-authorized at the tool consumer.
 - id: session-query-sqlite
   config:
-    path: ':memory:'
-    openAt: never
+    path: !!js dshHomePath('session-query.db')
+    openAt: first-search
 
 - id: tools
   config:

@@ -260,6 +260,12 @@
     fetch: true
     searchTimeoutMs: 60000
 
+# Cross-session discovery: model-facing session-query tools for this agent.
+# Read-only; results are workspace-authorized at the tool consumer and reach
+# the model only through logged tool results (model-visible <=> logged).
+- id: tool-session-query
+  name: '@deepseek-ai/dsh-tool-session-query'
+
 # ── presentation ────────────────────────────────────────────────────────────
 
 # PTC mode for this agent alone. The row waits for the host's `codeRuntime`
