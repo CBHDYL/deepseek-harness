@@ -1,6 +1,6 @@
 ---
 name: multi-model-review
-description: Run the frozen Multi-Model Execution Policy as a real review: pass a task, risk, and provider config to the canonical workflow script; it routes LOW/MEDIUM/HIGH/CRITICAL topology, enforces the deterministic security floor and gate precedence, escalates to a cross-provider strong reviewer, retries at most once, and returns findings only — never authority. Use for PR review, candidate qualification, and any evidence-gated review task.
+description: "Run the frozen Multi-Model Execution Policy as a real review: pass a task, risk, and provider config to the canonical workflow script; it routes LOW/MEDIUM/HIGH/CRITICAL topology, enforces the deterministic security floor and gate precedence, escalates to a cross-provider strong reviewer, retries at most once, and returns findings only, never authority. Use for PR review, candidate qualification, and any evidence-gated review task."
 ---
 
 # Multi-Model Review
