@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "STEP 2 基准前沿（reliability × cost）",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "frontier",
+        "label": "前沿",
+        "focus": [
+          "armA",
+          "armE",
+          "armD",
+          "armC",
+          "armF"
+        ],
+        "note": "A 是 reliability×cost 唯一前沿；E 邻近（claude 未计价）。"
+      },
+      {
+        "id": "dominated",
+        "label": "被支配",
+        "focus": [
+          "armB",
+          "armC",
+          "armF"
+        ],
+        "note": "同价更差或更贵同可靠。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "armA",
+      "type": "backend",
+      "label": "A single-Flash",
+      "sublabel": "7/7 · 0.042/obs · 中位 274s",
+      "pos": [
+        120,
+        120
+      ],
+      "size": [
+        130,
+        64
+      ],
+      "tag": "frontier"
+    },
+    {
+      "id": "armE",
+      "type": "cloud",
+      "label": "E Flash+claude",
+      "sublabel": "6/7 · 170s · T2 唯一检出",
+      "pos": [
+        420,
+        120
+      ],
+      "size": [
+        130,
+        64
+      ],
+      "tag": "邻近"
+    },
+    {
+      "id": "armD",
+      "type": "backend",
+      "label": "D Flash→Pro",
+      "sublabel": "5-6/7 · 0.116/obs · serial 301s",
+      "pos": [
+        720,
+        120
+      ],
+      "size": [
+        130,
+        64
+      ]
+    },
+    {
+      "id": "armC",
+      "type": "backend",
+      "label": "C Flash×2",
+      "sublabel": "5/7 · 0.042/obs · 零增量",
+      "pos": [
+        120,
+        300
+      ],
+      "size": [
+        130,
+        64
+      ],
+      "tag": "被 A 同价支配"
+    },
+    {
+      "id": "armB",
+      "type": "backend",
+      "label": "B single-Pro",
+      "sublabel": "5/7 · 0.137/obs",
+      "pos": [
+        420,
+        300
+      ],
+      "size": [
+        130,
+        64
+      ],
+      "tag": "被支配"
+    },
+    {
+      "id": "armF",
+      "type": "cloud",
+      "label": "F strong-Pro",
+      "sublabel": "5/7 · 0.080/obs · 中位 90s",
+      "pos": [
+        720,
+        300
+      ],
+      "size": [
+        130,
+        64
+      ],
+      "tag": "快但 5/7"
+    }
+  ],
+  "connections": [
+    {
+      "id": "a-dominates-c",
+      "from": "armA",
+      "to": "armC",
+      "label": "同价支配",
+      "variant": "dashed",
+      "labelDy": 34
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "结论",
+      "items": [
+        "A = reliability×cost 唯一前沿（LOW 拓扑来源）",
+        "E 提供 corrective diversity（HIGH 拓扑来源）",
+        "C/B 被支配；F 快但可靠性 5/7"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "口径",
+      "items": [
+        "n=42，4/7 任务有限制 → tier 结论",
+        "cost = 日级均价 × 确定性调用数（估算）"
+      ]
+    }
+  ]
+}

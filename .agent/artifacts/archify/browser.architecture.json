@@ -1,0 +1,308 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Browser 验证能力架构",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "verify-path",
+        "label": "验证主路径",
+        "focus": [
+          "agent",
+          "browserTool",
+          "policy",
+          "manager",
+          "chromium"
+        ],
+        "note": "goto/read_text/click/fill/screenshot 的安全主路径。"
+      },
+      {
+        "id": "evidence-path",
+        "label": "证据链路",
+        "focus": [
+          "browserTool",
+          "screenshotDir",
+          "attachmentStore",
+          "sessionLog",
+          "projection",
+          "consumers"
+        ],
+        "note": "截图与 browser/verify 证据如何流向消费者。"
+      },
+      {
+        "id": "taxonomy",
+        "label": "四类 outcome",
+        "focus": [
+          "policy",
+          "browserTool",
+          "consumers"
+        ],
+        "note": "PASS / PRODUCT_FAILURE / INFRA_FAILURE / POLICY_FAILURE。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "agent",
+      "type": "external",
+      "label": "Agent 会话",
+      "sublabel": "browser 工具调用",
+      "pos": [
+        40,
+        200
+      ],
+      "size": [
+        120,
+        60
+      ]
+    },
+    {
+      "id": "browserTool",
+      "type": "backend",
+      "label": "browser 工具",
+      "sublabel": "goto/read_text/click/fill/screenshot",
+      "pos": [
+        260,
+        200
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "tag": "四类 outcome"
+    },
+    {
+      "id": "policy",
+      "type": "security",
+      "label": "策略层",
+      "sublabel": "http(s) 终态 / 凭据 / 截图名",
+      "pos": [
+        260,
+        60
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "manager",
+      "type": "backend",
+      "label": "BrowserManager",
+      "sublabel": "每会话一页，惰性启动",
+      "pos": [
+        480,
+        200
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "chromium",
+      "type": "external",
+      "label": "headless Chromium",
+      "sublabel": "DSH_BROWSER_EXECUTABLE → 缓存",
+      "pos": [
+        700,
+        200
+      ],
+      "size": [
+        140,
+        60
+      ]
+    },
+    {
+      "id": "screenshotDir",
+      "type": "database",
+      "label": "受限截图目录",
+      "sublabel": "0o700 / 单文件名",
+      "pos": [
+        480,
+        60
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "attachmentStore",
+      "type": "database",
+      "label": "AttachmentStore",
+      "sublabel": "持久内容寻址引用（可选）",
+      "pos": [
+        700,
+        60
+      ],
+      "size": [
+        140,
+        60
+      ]
+    },
+    {
+      "id": "sessionLog",
+      "type": "database",
+      "label": "会话日志",
+      "sublabel": "browser/verify 事件",
+      "pos": [
+        480,
+        360
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "projection",
+      "type": "backend",
+      "label": "browserVerify 投影",
+      "sublabel": "当前 turn 最新证据",
+      "pos": [
+        700,
+        360
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "consumers",
+      "type": "external",
+      "label": "既有消费者",
+      "sublabel": "review / approval / M6",
+      "pos": [
+        920,
+        360
+      ],
+      "size": [
+        130,
+        60
+      ],
+      "tag": "只读证据，无 judge"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "packages/web/tool-browser（opt-in 插件）",
+      "wraps": [
+        "browserTool",
+        "policy",
+        "manager"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "既有 DSH seam（不新建）",
+      "wraps": [
+        "screenshotDir",
+        "attachmentStore",
+        "sessionLog",
+        "projection"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "call",
+      "from": "agent",
+      "to": "browserTool",
+      "label": "action + 参数",
+      "variant": "emphasis"
+    },
+    {
+      "id": "validate",
+      "from": "browserTool",
+      "to": "policy",
+      "label": "校验目标/文件名",
+      "variant": "security",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDy": -58
+    },
+    {
+      "id": "drive",
+      "from": "browserTool",
+      "to": "manager",
+      "label": "sessionId"
+    },
+    {
+      "id": "render",
+      "from": "manager",
+      "to": "chromium",
+      "label": "page.goto/click/fill",
+      "labelDy": 54
+    },
+    {
+      "id": "save-shot",
+      "from": "browserTool",
+      "to": "screenshotDir",
+      "label": "写文件 0o600",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDy": -58
+    },
+    {
+      "id": "attach",
+      "from": "screenshotDir",
+      "to": "attachmentStore",
+      "label": "saveImage（可选）",
+      "variant": "dashed"
+    },
+    {
+      "id": "evidence",
+      "from": "browserTool",
+      "to": "sessionLog",
+      "label": "browser/verify",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 58
+    },
+    {
+      "id": "fold",
+      "from": "sessionLog",
+      "to": "projection",
+      "label": "最新一条 / turn 清零",
+      "labelDy": -24
+    },
+    {
+      "id": "consume",
+      "from": "projection",
+      "to": "consumers",
+      "label": "只读 evidence"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "交互",
+      "items": [
+        "goto/read_text/click/fill/screenshot，全部有界超时",
+        "click/fill 失败 = INFRA，绝不误报 PRODUCT_FAILURE"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "证据",
+      "items": [
+        "截图 = 受限文件 + 持久 attachment 引用",
+        "browser/verify 事件不含页面文本"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "边界",
+      "items": [
+        "session 拥有页面，dispose 必关",
+        "零新权威 / 零新 store / 零新 judge"
+      ]
+    }
+  ]
+}

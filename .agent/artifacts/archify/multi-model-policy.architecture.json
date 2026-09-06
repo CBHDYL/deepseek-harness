@@ -1,0 +1,350 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "多模型执行政策路由",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "gate-first",
+        "label": "先 gate 后模型",
+        "focus": [
+          "task",
+          "riskGate",
+          "gateCheck",
+          "gateFailed",
+          "findings"
+        ],
+        "note": "确定性门在任何模型调用之前短路。"
+      },
+      {
+        "id": "medium-escalation",
+        "label": "MEDIUM 升级",
+        "focus": [
+          "mediumCheap",
+          "mediumStrong",
+          "findings"
+        ],
+        "note": "cheap FAIL 或触发器命中 → cross-provider strong。"
+      },
+      {
+        "id": "high-parallel",
+        "label": "HIGH 并行",
+        "focus": [
+          "highScout",
+          "highStrong",
+          "findings"
+        ],
+        "note": "scout 与 cross-provider strong 并行，不投票。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "task",
+      "type": "frontend",
+      "label": "任务输入",
+      "sublabel": "risk / task / evidence",
+      "pos": [
+        40,
+        260
+      ],
+      "size": [
+        120,
+        60
+      ]
+    },
+    {
+      "id": "riskGate",
+      "type": "security",
+      "label": "风险分档",
+      "sublabel": "封闭集 + security floor",
+      "pos": [
+        220,
+        260
+      ],
+      "size": [
+        130,
+        60
+      ],
+      "tag": "最低 HIGH"
+    },
+    {
+      "id": "gateCheck",
+      "type": "security",
+      "label": "确定性门",
+      "sublabel": "test / typecheck / lint",
+      "pos": [
+        420,
+        260
+      ],
+      "size": [
+        130,
+        60
+      ],
+      "tag": "FAIL → 零模型调用"
+    },
+    {
+      "id": "lowCheap",
+      "type": "backend",
+      "label": "LOW",
+      "sublabel": "1 cheap fresh",
+      "pos": [
+        620,
+        120
+      ],
+      "size": [
+        110,
+        56
+      ]
+    },
+    {
+      "id": "mediumCheap",
+      "type": "backend",
+      "label": "MEDIUM cheap",
+      "sublabel": "fresh reviewer",
+      "pos": [
+        620,
+        260
+      ],
+      "size": [
+        120,
+        56
+      ]
+    },
+    {
+      "id": "mediumStrong",
+      "type": "cloud",
+      "label": "MEDIUM strong",
+      "sublabel": "cross-provider fresh",
+      "pos": [
+        840,
+        260
+      ],
+      "size": [
+        130,
+        56
+      ],
+      "tag": "VERDICT_FAIL"
+    },
+    {
+      "id": "highScout",
+      "type": "backend",
+      "label": "HIGH scout",
+      "sublabel": "cheap fresh 并行",
+      "pos": [
+        620,
+        400
+      ],
+      "size": [
+        120,
+        56
+      ]
+    },
+    {
+      "id": "highStrong",
+      "type": "cloud",
+      "label": "HIGH strong",
+      "sublabel": "cross-provider 并行",
+      "pos": [
+        840,
+        400
+      ],
+      "size": [
+        130,
+        56
+      ],
+      "tag": "同 provider 报错"
+    },
+    {
+      "id": "findings",
+      "type": "backend",
+      "label": "findings 聚合",
+      "sublabel": "任一 FAIL 保留",
+      "pos": [
+        1040,
+        260
+      ],
+      "size": [
+        120,
+        60
+      ],
+      "tag": "不投票"
+    },
+    {
+      "id": "authorityChain",
+      "type": "external",
+      "label": "既有权威链",
+      "sublabel": "gate / review / M6",
+      "pos": [
+        1240,
+        260
+      ],
+      "size": [
+        120,
+        60
+      ]
+    },
+    {
+      "id": "gateFailed",
+      "type": "security",
+      "label": "失败出口",
+      "sublabel": "GATE / INFRA",
+      "pos": [
+        420,
+        440
+      ],
+      "size": [
+        130,
+        56
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "确定性路由（无模型调用）",
+      "wraps": [
+        "task",
+        "riskGate",
+        "gateCheck"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "评审执行",
+      "wraps": [
+        "lowCheap",
+        "mediumCheap",
+        "mediumStrong",
+        "highScout",
+        "highStrong"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "to-risk",
+      "from": "task",
+      "to": "riskGate",
+      "label": "风险输入",
+      "variant": "emphasis"
+    },
+    {
+      "id": "to-gate",
+      "from": "riskGate",
+      "to": "gateCheck"
+    },
+    {
+      "id": "gate-fail",
+      "from": "gateCheck",
+      "to": "gateFailed",
+      "label": "FAIL",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 58
+    },
+    {
+      "id": "gate-low",
+      "from": "gateCheck",
+      "to": "lowCheap",
+      "variant": "dashed"
+    },
+    {
+      "id": "gate-med",
+      "from": "gateCheck",
+      "to": "mediumCheap"
+    },
+    {
+      "id": "gate-high",
+      "from": "gateCheck",
+      "to": "highScout",
+      "variant": "dashed"
+    },
+    {
+      "id": "med-esc",
+      "from": "mediumCheap",
+      "to": "mediumStrong",
+      "label": "trigger 或 FAIL",
+      "variant": "emphasis"
+    },
+    {
+      "id": "high-par",
+      "from": "highScout",
+      "to": "highStrong",
+      "label": "并行不投票",
+      "variant": "dashed"
+    },
+    {
+      "id": "low-out",
+      "from": "lowCheap",
+      "to": "findings"
+    },
+    {
+      "id": "med-out",
+      "from": "mediumStrong",
+      "to": "findings"
+    },
+    {
+      "id": "high-out",
+      "from": "highStrong",
+      "to": "findings"
+    },
+    {
+      "id": "to-authority",
+      "from": "findings",
+      "to": "authorityChain",
+      "label": "只读 evidence",
+      "variant": "emphasis"
+    },
+    {
+      "id": "fail-out",
+      "from": "gateFailed",
+      "to": "findings",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          485,
+          520
+        ],
+        [
+          1100,
+          520
+        ],
+        [
+          1100,
+          326
+        ]
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "路由",
+      "items": [
+        "security/authority 类最低 HIGH，无 bypass",
+        "risk 封闭集，非法值 fail loud"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "执行",
+      "items": [
+        "cross-provider strong；同 provider 配置报错",
+        "transient retry 上限 1，不静默换 provider"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "权威",
+      "items": [
+        "模型只产 findings，绝不产 authority",
+        "任一 FAIL 不被任何 PASS 擦除"
+      ]
+    }
+  ]
+}
