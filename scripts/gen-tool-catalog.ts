@@ -64,6 +64,7 @@ import * as ToolTodo from '@deepseek-ai/dsh-tool-todo'
 import * as ToolSubagent from '@deepseek-ai/dsh-tool-subagent'
 import { registerListSubagentModels } from '../packages/subagent/tool-subagent/src/list-models.ts'
 import * as ToolWeb from '@deepseek-ai/dsh-tool-web'
+import * as ToolBrowser from '@deepseek-ai/dsh-tool-browser'
 import VmWorkflowEngine from '@deepseek-ai/dsh-workflow-worker-thread'
 import * as ToolRalph from '@deepseek-ai/dsh-tool-ralph'
 import * as ToolWorkflow from '@deepseek-ai/dsh-tool-workflow'
@@ -589,6 +590,18 @@ const TOOL_PACKAGES: ToolPackage[] = [
     },
     note:
       'web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps.',
+  },
+  {
+    pkg: '@deepseek-ai/dsh-tool-browser',
+    dir: 'tool-browser',
+    source: 'packages/web/tool-browser/src/index.ts',
+    requires: ['ctx.tools', 'ctx.systemPrompt', 'a headless Chromium at execution time'],
+    writes: ['tool/call', 'tool/result', 'bounded screenshot files'],
+    async mount(ctx) {
+      await ctx.plugin(ToolBrowser)
+    },
+    note:
+      'browser drives one headless Chromium page per agent session for smoke-level verification and interaction (goto/read_text/click/fill/screenshot/close/list) and classifies every result as PASS / PRODUCT_FAILURE / INFRA_FAILURE / POLICY_FAILURE. Screenshots land in the bounded screenshot directory and, when the attachment service is mounted, also register as durable attachment references. The plugin is opt-in: no shipped preset enables it, and it launches no browser at schema-harvest time.',
   },
 ]
 

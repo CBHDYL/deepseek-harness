@@ -44,6 +44,7 @@
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`、`ctx.workflowEngine`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents the script children)` | `tool/call`、`tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`、`web_search` | `ctx.tools`、`ctx.web`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。 |
+| `@deepseek-ai/dsh-tool-browser` | `browser` | `ctx.tools`、`ctx.systemPrompt`、执行时需 headless Chromium、可选 ctx.attachments | `tool/call`、`tool/result`、受限截图文件、持久 attachment 引用 | - | browser 为每个 agent 会话驱动一个 headless Chromium 页面做冒烟级验证与交互（goto/read_text/click/fill/screenshot/close/list），并把每个结果分类为 PASS / PRODUCT_FAILURE / INFRA_FAILURE / POLICY_FAILURE。插件按需启用：发布预设不启用它，且 schema 采集时不启动浏览器。 |
 
 <a id="deepseek-aidsh-tool-ask-user"></a>
 
@@ -2257,3 +2258,76 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 来源：[`packages/web/tool-web/src/index.ts`](../packages/web/tool-web/src/index.ts)
 
 web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。
+
+<a id="deepseek-aidsh-tool-browser"></a>
+
+## `@deepseek-ai/dsh-tool-browser`
+
+### `browser`
+
+每个会话驱动一个 headless Chromium 页面做冒烟级 UI 验证与交互：goto 一个 URL（可选 viewport 尺寸，并可用 expect_text 断言可见文本）、读取受限可见文本、点击元素、填写输入框、把截图存入受限截图目录（挂载了 attachment 服务时同时注册为持久 attachment）、关闭页面或列出会话页面。每个结果携带一个 outcome 类别：PASS（动作与验证成功）、PRODUCT_FAILURE（页面已加载但缺少预期内容）、INFRA_FAILURE（浏览器/网络/工具失败，包括 click/fill 选择器缺失）、POLICY_FAILURE（请求被浏览器安全策略拒绝——绝不是产品失败）。仅允许 http 与 https URL，包括最终导航目标。会话结束时页面与浏览器被关闭。需要 agent 会话。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "What to do with the session page.",
+      "enum": [
+        "goto",
+        "read_text",
+        "click",
+        "fill",
+        "screenshot",
+        "close",
+        "list"
+      ]
+    },
+    "url": {
+      "type": "string",
+      "description": "Target URL for goto (http or https only)."
+    },
+    "expect_text": {
+      "type": "string",
+      "description": "Text that must appear in the visible page text after goto; its absence is PRODUCT_FAILURE."
+    },
+    "selector": {
+      "type": "string",
+      "description": "CSS selector for click/fill, or scoping read_text to one element."
+    },
+    "value": {
+      "type": "string",
+      "description": "Text to fill into the selected input (fill only)."
+    },
+    "viewport": {
+      "type": "object",
+      "description": "Optional browser viewport size for goto (responsive checks).",
+      "additionalProperties": false,
+      "properties": {
+        "width": {
+          "type": "integer"
+        },
+        "height": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ]
+    },
+    "screenshot_name": {
+      "type": "string",
+      "description": "Optional single file name for the screenshot; defaults to a timestamp."
+    }
+  },
+  "required": [
+    "action"
+  ]
+}
+```
+
+来源：[`packages/web/tool-browser/src/index.ts`](../packages/web/tool-browser/src/index.ts)
+
+browser 为每个 agent 会话驱动一个 headless Chromium 页面做冒烟级验证与交互（goto/read_text/click/fill/screenshot/close/list），并把每个结果分类为 PASS / PRODUCT_FAILURE / INFRA_FAILURE / POLICY_FAILURE。插件按需启用：发布预设不启用它，且 schema 采集时不启动浏览器。

@@ -40,6 +40,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
+| `@deepseek-ai/dsh-tool-browser` | `browser` | `ctx.tools`, `ctx.systemPrompt`, `a headless Chromium at execution time` | `tool/call`, `tool/result`, `bounded screenshot files` | - | browser drives one headless Chromium page per agent session for smoke-level verification and interaction (goto/read_text/click/fill/screenshot/close/list) and classifies every result as PASS / PRODUCT_FAILURE / INFRA_FAILURE / POLICY_FAILURE. Screenshots land in the bounded screenshot directory and, when the attachment service is mounted, also register as durable attachment references. The plugin is opt-in: no shipped preset enables it, and it launches no browser at schema-harvest time. |
 
 <a id="deepseek-aidsh-tool-ask-user"></a>
 
@@ -2375,3 +2376,78 @@ Source: [`packages/web/tool-web/src/index.ts`](../packages/web/tool-web/src/inde
 Effects: `undeclared` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
 
 web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps.
+
+<a id="deepseek-aidsh-tool-browser"></a>
+
+## `@deepseek-ai/dsh-tool-browser`
+
+### `browser`
+
+Drive one headless Chromium page per session for smoke-level UI verification and interaction: goto a URL (optionally with a viewport size and asserting visible text with expect_text), read bounded visible text, click an element, fill an input, capture a screenshot into the bounded screenshot directory (also registered as a durable attachment when the attachment service is mounted), close the page, or list the session page. Every result carries an outcome class: PASS (the action and verification succeeded), PRODUCT_FAILURE (the page loaded but the expected content is missing), INFRA_FAILURE (browser/network/tooling failure, including a missing click/fill selector), POLICY_FAILURE (the request was rejected by the browser security policy — never a product failure). Only http and https URLs are allowed, including the final navigation target. The page and its browser are closed when the session ends. Requires an agent session.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "What to do with the session page.",
+      "enum": [
+        "goto",
+        "read_text",
+        "click",
+        "fill",
+        "screenshot",
+        "close",
+        "list"
+      ]
+    },
+    "url": {
+      "type": "string",
+      "description": "Target URL for goto (http or https only)."
+    },
+    "expect_text": {
+      "type": "string",
+      "description": "Text that must appear in the visible page text after goto; its absence is PRODUCT_FAILURE."
+    },
+    "selector": {
+      "type": "string",
+      "description": "CSS selector for click/fill, or scoping read_text to one element."
+    },
+    "value": {
+      "type": "string",
+      "description": "Text to fill into the selected input (fill only)."
+    },
+    "viewport": {
+      "type": "object",
+      "description": "Optional browser viewport size for goto (responsive checks).",
+      "additionalProperties": false,
+      "properties": {
+        "width": {
+          "type": "integer"
+        },
+        "height": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ]
+    },
+    "screenshot_name": {
+      "type": "string",
+      "description": "Optional single file name for the screenshot; defaults to a timestamp."
+    }
+  },
+  "required": [
+    "action"
+  ]
+}
+```
+
+Source: [`packages/web/tool-browser/src/index.ts`](../packages/web/tool-browser/src/index.ts)
+
+Effects: `side-effectful` (runtime-declared classification; `undeclared` counts as side-effectful under enforce)
+
+browser drives one headless Chromium page per agent session for smoke-level verification and interaction (goto/read_text/click/fill/screenshot/close/list) and classifies every result as PASS / PRODUCT_FAILURE / INFRA_FAILURE / POLICY_FAILURE. Screenshots land in the bounded screenshot directory and, when the attachment service is mounted, also register as durable attachment references. The plugin is opt-in: no shipped preset enables it, and it launches no browser at schema-harvest time.
