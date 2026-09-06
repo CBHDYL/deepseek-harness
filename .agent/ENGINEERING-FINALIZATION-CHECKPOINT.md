@@ -22,7 +22,6 @@ PROMOTION_RUNBOOK (supervised; each step verified before next):
 8) Tag stable: create new personal-stable tag from mainline HEAD; do not overwrite old backups/rollback artifacts.
 ROLLBACK_POINT: previous install backups (nvm + ~/.dsh profiles backups/; LOCAL-PATCH-NOTES history) + mainline commits reversible.
 REPORT: final branch w1-w4-usability-closure; HEAD e8e8cf04e(+lock 4847154e7); lockfile commit 4847154e7; tests 174/174 + reconstruction 26/26 (earlier); residuals: runtime promotion pending supervised run; local patch-1 reapply decision; continuity/memory core frozen.
-
 STAGE_PROMOTION (plan b) — executed subset:
   SOURCE_HEAD = 7318c75da ; BUILD_HEAD = 7318c75da ; PACKAGE_VERSION = 0.1.2-alpha.5 (workspace)
   BUILD = PASS (pnpm run build: tsc+tsdown+220 client artifacts, exit 0)
@@ -34,3 +33,13 @@ STAGE_PROMOTION (plan b) — executed subset:
 STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
   (BUILD verified; pack/consumer/slot stage + patch runtime re-verify remain; exact scripts+delta captured for a single supervised continuation)
 NEXT_ACTION (single): SUPERVISED_LIVE_PROMOTION_PENDING — run dsh-root release pack -> tarballs dir, verify-packed-install in isolated dir, reapply patch-1 on staged dsh-tool-workflow lib, M5 candidate-slot prepare+canary on :3099, then (separate, user-gated) active-pointer switch to :3080. Do NOT switch global dsh / :3080 / stable tag in this phase.
+
+STAGE_PROMOTION (plan b) — continuation result:
+  PACK = BLOCKED_AT_OFFICIAL_ENV_GATE (not a code failure): dsh-root scripts/release/pack.ts verifyBuildArtifacts requires an official client-build environment record matching: DSH_CLIENT_BUILD_PROFILE=official, DSH_CLIENT_TITLE="DeepSeek Harness", DSH_CLIENT_COMMIT_HASH (from clean tree), DSH_CLIENT_GIT_DIRTY (omitted only when clean). Plain 'pnpm run build' does not emit that record; worktree is dirty with externally-drifting untracked .agent files (17->19 during this phase) so a truthful clean official provenance cannot be produced now.
+  No tarballs produced (pack failed at verifyBuildArtifacts, before any member pack). /tmp/stage_promo empty.
+  STAGED_SOURCE_REVISION = NOT_STAMPED (blocked before manifest).
+  LIVE_RUNTIME = UNTOUCHED (reconfirmed: PID 95665, installed sourceRevision 55101cc59, ~/.dsh/profiles untouched).
+STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
+STAGING_INCOMPLETE = true
+  PENDING (exact): (1) run official client build via fork dsh-root build path on a CLEAN tree with official env profile (or produce equivalent record), (2) re-run release/pack.ts --family dsh --out isolated, (3) verify-packed-install, (4) isolated consumer install, (5) Patch-1 reapply on staged dsh-tool-workflow + runtime spill probe, (6) web :3099 smoke, (7) headless smoke, (8) manifest sourceRevision=7318c75da (code head), counterfeit audit.
+NEXT_ACTION: SUPERVISED_STAGING_RESUME (same scope; requires a clean-tree official client build first). Do NOT switch :3080 / global dsh / stable tag.
