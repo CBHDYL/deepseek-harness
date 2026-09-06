@@ -101,3 +101,58 @@ describe('ToolCallTree', () => {
     expect(view.getByText('~/docs/a.ts')).toBeTruthy()
   })
 })
+
+describe('ToolCallTree screenshot slot', () => {
+  const screenshotMeta = {
+    screenshotAttachment: {
+      attachmentId: 'fixture:image',
+      mediaType: 'image/png',
+      width: 160,
+      height: 90,
+      bytes: 247,
+    },
+  }
+
+  it('renders the screenshot gallery owner for a settled browser screenshot result', () => {
+    const block = {
+      ...root('b1', { name: 'browser', argsRaw: '{"action":"screenshot"}' }),
+      meta: screenshotMeta,
+    }
+    const screenshotOwners: { images: unknown; align: unknown; loadImage: unknown }[] = []
+    const loadImage = vi.fn(async () => 'blob:fixture')
+    const base = props(block)
+    const renderSlot = ((key: string, owner: unknown, options?: { fallback?: React.ReactNode }) => {
+      if (key === 'tool.call.toolview') return options?.fallback ?? null
+      screenshotOwners.push(owner as never)
+      return <img alt="screenshot-thumb" />
+    }) as unknown as ToolTreeProps['renderSlot']
+    const view = render(<ToolCallTree {...base} loadImage={loadImage} renderSlot={renderSlot} />)
+    expect(view.container.querySelector('[data-tool="browser"]')).not.toBeNull()
+    expect(view.container.querySelector('img[alt="screenshot-thumb"]')).not.toBeNull()
+    expect(screenshotOwners).toEqual([{
+      images: [{
+        attachment: {
+          attachmentId: 'fixture:image',
+          mediaType: 'image/png',
+          width: 160,
+          height: 90,
+          bytes: 247,
+        },
+      }],
+      align: 'start',
+      loadImage,
+    }])
+  })
+
+  it('renders no screenshot outlet without a persisted attachment', () => {
+    const block = root('b2', { name: 'browser', argsRaw: '{"action":"goto"}' })
+    const calls: string[] = []
+    const base = props(block)
+    const renderSlot = ((key: string) => {
+      calls.push(key)
+      return null
+    }) as unknown as ToolTreeProps['renderSlot']
+    render(<ToolCallTree {...base} renderSlot={renderSlot} />)
+    expect(calls).toEqual(['tool.call.toolview'])
+  })
+})

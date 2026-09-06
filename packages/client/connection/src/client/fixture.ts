@@ -812,7 +812,7 @@ function buildAlphaLog(): SessionEvent[] {
     push({ type: 'step/end', data: { turn, step: 0 } })
     push({ type: 'turn/end', data: { turn, reason: { kind: 'completed' } } })
   }
-  // Turn 74: todo_write sample — the TodoRow toolview in the flow plus the
+  // Turn 75: todo_write sample — the TodoRow toolview in the flow plus the
   // todo/write snapshot event feeding the TodoPanel plan strip. Two items are
   // in_progress: this fixture chooses the parallel policy, so both surfaces
   // must render a parallel plan rather than the first active item alone.
@@ -933,8 +933,29 @@ function buildAlphaLog(): SessionEvent[] {
   push({ type: 'step/end', data: { turn: 73, step: 0 } })
   push({ type: 'turn/end', data: { turn: 73, reason: { kind: 'completed' } } })
 
+  // Turn 74: browser screenshot sample — the generic row plus the thumbnail
+  // the browser tool's persisted `screenshotAttachment` meta renders through
+  // the tool-call screenshot slot. The meta mirrors the host's persisted
+  // payload (no display name); the attachment resolves through the same
+  // fixture authorization and bytes as the message images above.
+  toolTurn(
+    74,
+    'browser',
+    '{"action":"screenshot"}',
+    'Captured the fixture page at 1280x720.',
+    {
+      screenshotAttachment: {
+        attachmentId: FIXTURE_IMAGE_REF.attachmentId,
+        mediaType: FIXTURE_IMAGE_REF.mediaType,
+        width: FIXTURE_IMAGE_REF.width,
+        height: FIXTURE_IMAGE_REF.height,
+        bytes: FIXTURE_IMAGE_REF.bytes,
+      },
+    },
+  )
+
   const todoArgs = JSON.stringify({ todos: fixtureTodos })
-  toolTurn(74, 'todo_write', todoArgs, 'Updated todo list: 1 pending, 2 in progress, 1 completed.')
+  toolTurn(75, 'todo_write', todoArgs, 'Updated todo list: 1 pending, 2 in progress, 1 completed.')
   // The real tool appends the snapshot mid-execution — between tool/call and
   // tool/result — so the fixture reproduces that exact ordering (the last
   // toolTurn events run ... tool/call, tool/result, step/end, turn/end).

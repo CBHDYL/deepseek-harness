@@ -3,6 +3,7 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-tool/client'
 import type {} from '@deepseek-ai/dsh-client-ui-trajectory/client'
 import { ComposerAttachments } from './ComposerAttachments.tsx'
 import { MessageImages } from './MessageImages.tsx'
@@ -22,6 +23,10 @@ export function apply(ctx: ClientContext): void {
   }, MessageImages))
   ctx.slots.inject('conversation.trajectory.images', () => ctx.slots.register({
     name: 'conversation.trajectory.images',
+    locale: 'conversation',
+  }, MessageImages))
+  ctx.slots.inject('tool.call.screenshot', () => ctx.slots.register({
+    name: 'tool.call.screenshot',
     locale: 'conversation',
   }, MessageImages))
 }

@@ -46,7 +46,11 @@ it('renders the history image pair through the authorized attachment route and o
       throw new Error('history image galleries missing')
     }
   }, { timeout: 10_000 })
-  const galleryShape = (align: string) => [...document.querySelectorAll(`[data-align="${align}"] img`)]
+  // The tool-call screenshot gallery (fixture turn 74) shares the start
+  // alignment; scope the shape to the message galleries only.
+  const galleryShape = (align: string) => [...document.querySelectorAll(`[data-align="${align}"]`)]
+    .filter(gallery => gallery.closest('[data-chat-call-id]') === null)
+    .flatMap(gallery => [...gallery.querySelectorAll('img')])
     .map(img => ({ alt: img.getAttribute('alt'), scheme: img.getAttribute('src')?.split(':')[0] }))
   expect({ user: galleryShape('end'), assistant: galleryShape('start') }).toMatchInlineSnapshot(`
     {

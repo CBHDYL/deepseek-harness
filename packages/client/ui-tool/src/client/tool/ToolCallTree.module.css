@@ -2,6 +2,12 @@
   border-radius: 6px;
 }
 
+/* The result-image gallery under a collapsed row aligns with the row content
+   (the same indent the nested sub-call branch uses). */
+.screenshot {
+  margin: 6px 0 2px 22px;
+}
+
 .subCalls {
   display: flex;
   flex-direction: column;

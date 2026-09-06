@@ -4,7 +4,9 @@ import type {
 } from '@deepseek-ai/dsh-client-ui-slots'
 import type { RemoteHostFacts } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ToolCallBlock } from '@deepseek-ai/dsh-client-ui-chat/client'
-import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {
+  MessageImageLoader, MessageImagesOwnerProps,
+} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -24,6 +26,12 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * function of what the turn already knows.
      */
     'tool.call.toolview': { kind: 'keyed'; scope: 'session'; owner: ToolCallOwnerProps }
+    /**
+     * Durable images a tool result row displays under its collapsed row (the
+     * browser tool's screenshot). The owner shares the generic message-image
+     * gallery currency; the attachment presentation plugin fills the hole.
+     */
+    'tool.call.screenshot': { kind: 'single'; scope: 'session'; owner: MessageImagesOwnerProps }
   }
 }
 
@@ -59,11 +67,13 @@ export type ToolHostInfoInjected = {
      */
     hostInfo: HostObservable<RemoteHostFacts>
   }
+  /** Session-authorized durable image loader for result-row images (browser screenshots). */
+  loadImage: MessageImageLoader
 }
 
 /** Full props of the Tool call-tree renderer registered as a `tool-call` Chat Node. */
 export type ToolTreeProps = PropsRuntime<'conversation.chat.node', 'tool-call'>
-  & PropsRenderSlots<'tool.call.toolview'>
+  & PropsRenderSlots<'tool.call.toolview' | 'tool.call.screenshot'>
   & PropsLocale<'conversation'>
   & InjectFace<ToolHostInfoInjected>
 
