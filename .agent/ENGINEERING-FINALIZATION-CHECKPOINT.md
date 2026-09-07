@@ -33,7 +33,6 @@ STAGE_PROMOTION (plan b) — executed subset:
 STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
   (BUILD verified; pack/consumer/slot stage + patch runtime re-verify remain; exact scripts+delta captured for a single supervised continuation)
 NEXT_ACTION (single): SUPERVISED_LIVE_PROMOTION_PENDING — run dsh-root release pack -> tarballs dir, verify-packed-install in isolated dir, reapply patch-1 on staged dsh-tool-workflow lib, M5 candidate-slot prepare+canary on :3099, then (separate, user-gated) active-pointer switch to :3080. Do NOT switch global dsh / :3080 / stable tag in this phase.
-
 STAGE_PROMOTION (plan b) — continuation result:
   PACK = BLOCKED_AT_OFFICIAL_ENV_GATE (not a code failure): dsh-root scripts/release/pack.ts verifyBuildArtifacts requires an official client-build environment record matching: DSH_CLIENT_BUILD_PROFILE=official, DSH_CLIENT_TITLE="DeepSeek Harness", DSH_CLIENT_COMMIT_HASH (from clean tree), DSH_CLIENT_GIT_DIRTY (omitted only when clean). Plain 'pnpm run build' does not emit that record; worktree is dirty with externally-drifting untracked .agent files (17->19 during this phase) so a truthful clean official provenance cannot be produced now.
   No tarballs produced (pack failed at verifyBuildArtifacts, before any member pack). /tmp/stage_promo empty.
@@ -43,3 +42,18 @@ STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
   PENDING (exact): (1) run official client build via fork dsh-root build path on a CLEAN tree with official env profile (or produce equivalent record), (2) re-run release/pack.ts --family dsh --out isolated, (3) verify-packed-install, (4) isolated consumer install, (5) Patch-1 reapply on staged dsh-tool-workflow + runtime spill probe, (6) web :3099 smoke, (7) headless smoke, (8) manifest sourceRevision=7318c75da (code head), counterfeit audit.
 NEXT_ACTION: SUPERVISED_STAGING_RESUME (same scope; requires a clean-tree official client build first). Do NOT switch :3080 / global dsh / stable tag.
+
+STAGE_PROMOTION (plan b) — clean-worktree continuation:
+  CLEAN_BUILD_WORKTREE = /tmp/dsh-official-build (detached; HEAD was 7318c75da, status 0)
+  FROZEN_INSTALL = PASS (pnpm install --frozen-lockfile, 34.8s)
+  OFFICIAL_CLIENT_BUILD = PASS (pnpm run build:official; record: official, commit 7318c75, version 0.1.2-alpha.5, dirty omitted, 220 artifacts sha256 2cb0c41a)
+  RELEASE_VERSION_FIX = packages/web/tool-browser 0.1.0 -> 0.1.2-alpha.5 (family must share one version) committed in clean worktree => staged SOURCE_CODE_HEAD = 717cd0cae92788a7f5355546b2ba643fc71edb67 (base 7318c75da + this one fix). NOTE: same bump still needed on mainline w1-w4-usability-closure (recorded residual).
+  PACK = PASS (official verifyBuildArtifacts + pack --family dsh): 244 tarballs + publish-order.txt in /tmp/stage_promo/tarballs
+  VERIFY_PACKED_INSTALL = FAILED (env/npm bug): first npm EPERM on root-owned ~/.npm cache; after npm_config_cache=/tmp/npmcache-staging retry, npm 10.9.8 arborist crash "Cannot read properties of null (reading 'edgesOut')" while resolving the 244 file: closure (monorepo cyclic workspace deps). Not a code/pack defect.
+  PATCH_1 = NOT_YET_REAPPLIED (blocked after verify-packed-install); delta already captured in prior checkpoint.
+  WEB_3099 / HEADLESS / M5_CANDIDATE / manifest sourceRevision stamp = NOT_REACHED (blocked).
+  LIVE_RUNTIME = UNTOUCHED (PID 95665; installed sourceRevision 55101cc59; ~/.dsh/profiles unchanged).
+STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
+STAGING_INCOMPLETE = true
+PENDING (exact): (1) resolve npm install of 244 file: closure (upgrade/repair npm cache or use the fork's consumer/install path with a compatible npm), (2) finish verify-packed-install + isolated consumer, (3) Patch-1 reapply on staged dsh-tool-workflow + runtime spill probe, (4) M5 candidate slot manifest (sourceRevision=717cd0cae), (5) web :3099 smoke, (6) headless smoke, (7) counterfeit audit, (8) mainline tool-browser version bump.
+NEXT_ACTION = STAGING_RESUME (same plan b scope). No :3080 / global dsh / stable tag changes.
