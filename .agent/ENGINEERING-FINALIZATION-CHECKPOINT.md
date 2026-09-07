@@ -75,7 +75,6 @@ STAGE_PROMOTION — deep installer audit result:
   RUNTIME_SOURCE_AUTHORITY = 717cd0cae (parent 7318c75da). LIVE_RUNTIME = UNTOUCHED.
 STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
-
 STAGE_PROMOTION — PHASE A/B adapter result (audit + execution):
   ADAPTER_EQUIVALENCE = PASS (historical consumer = file: dir layout + pnpm; extraction-only transform; no rebuild/repack/registry-fallback/55101cc hardcode; consumer/pnpm-lock historical has 0 registry @deepseek-ai)
   PACKED_INSTALL_COMPAT_ADAPTER = PASS — pnpm (v12.3.4) install of 253 file: dirs in /tmp/stage_promo/consumer-adapter (pkgs-current regenerated from OUR 253 tarballs; allowBuilds mapping added)
@@ -87,3 +86,13 @@ STAGE_PROMOTION — PHASE A/B adapter result (audit + execution):
   LIVE_RUNTIME = UNTOUCHED (PID 95665; installed rev 55101cc59).
 STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 NEXT_ACTION = STAGING_RESUME_REMAINING (patch-1 -> M5 candidate -> packaged e2e). NOT SUPERVISED_LIVE_PROMOTION.
+
+STAGE_PROMOTION — remaining-4 close (partial):
+  PATCH_1_REAPPLIED = PASS (consumer-adapter dsh-tool-workflow lib; BEFORE sha256 3c240ab2b23933acbb2774279dda198d94034d9ab494bd1dd776a3f5296d55bc -> AFTER 18dc3a942b993a0a4829c6edc9624d4079af119e556a1cddab85ac35607e1703; node --check PASS; anchors spillThresholdChars x2 / spillDir x2 / workflow-results x3 confirmed; base == repoBuilt 717cd0cae lib diffstat 0). Base artifact preserved unpatched in pkgs-current (patch is deployment-local on consumer store copy only).
+  FULL_COUNTERFEIT_AUDIT = PASS (consumer installed 253 == pkgs-current 253; 0 consumerOnly; 0 versionDiff; 0 registry @deepseek-ai in consumer lock; 0 55101cc anywhere in consumer)
+  WIRING (from candidate consumer, not source): first-search present (web bundle), ptc tool-session-query present, tool-browser 0.1.2-alpha.5, vendor cordis family staged.
+  NOT_EXECUTED (blocked by turn budget; precise): (1) PATCH_1_RUNTIME_PROBE (needs real workflow execution > spillThresholdChars inside packaged runtime), (2) M5_CANDIDATE slot + confinement (m5 tooling run), (3) packaged cross-session discovery + workspace-isolation + historical-boundary E2E (boot-level only done), (4) PROVENANCE_CHAIN manifest/digest record (blocked by M5 slot).
+  LIVE_RUNTIME identity UNTOUCHED (PID 66861 external restart noted; rev 55101cc59; port 3080; profiles/stable untouched).
+STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
+STAGING_INCOMPLETE = true
+NEXT_ACTION = STAGING_RESUME_FINAL (patch-1 runtime probe -> M5 candidate+manifest -> packaged e2e discovery/isolation). NOT SUPERVISED_LIVE_PROMOTION.
