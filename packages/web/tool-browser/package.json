@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-tool-browser",
   "description": "Model-facing browser tool: smoke-level page verification (goto/read_text/screenshot/close/list) over a per-session headless Chromium page with a four-class outcome taxonomy",
-  "version": "0.1.0",
+  "version": "0.1.2-alpha.5",
   "publishConfig": {
     "access": "public"
   },
