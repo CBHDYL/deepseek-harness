@@ -66,7 +66,6 @@ STAGE_PROMOTION (plan b) — installer-compat result:
   LIVE_RUNTIME = UNTOUCHED (reconfirm at close).
 STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
-
 STAGE_PROMOTION — deep installer audit result:
   VENDOR_PACK = PASS (9 tarballs: cordis + cordis-plugin-* + logger-console; /tmp/stage_promo/tarballs-vendor)
   COMBINED_CLOSURE = 253 tarballs, 253 unique, all 0.1.2-alpha.5; internal dep closure SELF-CONSISTENT (missing only linux-only OPTIONAL @deepseek-ai/node-addon-landlock-run, skipped by --omit=optional). No workspace:/file:/* ranges.
@@ -76,3 +75,15 @@ STAGE_PROMOTION — deep installer audit result:
   RUNTIME_SOURCE_AUTHORITY = 717cd0cae (parent 7318c75da). LIVE_RUNTIME = UNTOUCHED.
 STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
+
+STAGE_PROMOTION — PHASE A/B adapter result (audit + execution):
+  ADAPTER_EQUIVALENCE = PASS (historical consumer = file: dir layout + pnpm; extraction-only transform; no rebuild/repack/registry-fallback/55101cc hardcode; consumer/pnpm-lock historical has 0 registry @deepseek-ai)
+  PACKED_INSTALL_COMPAT_ADAPTER = PASS — pnpm (v12.3.4) install of 253 file: dirs in /tmp/stage_promo/consumer-adapter (pkgs-current regenerated from OUR 253 tarballs; allowBuilds mapping added)
+  INSTALLED_CLOSURE_AUDIT = PASS — 253 internal installed; 244 dsh-family @ 0.1.2-alpha.5 + vendor (cordis 4.0.2, schemastery 3.18.2 ...); tool-browser 0.1.2-alpha.5; tool-session-query/session-query-sqlite/tool-workflow present; cordis family present; 0 registry @deepseek-ai in consumer lock
+  RUNTIME_SOURCE_AUTHORITY = 717cd0cae (parent 7318c75da; delta = tool-browser family version fix)
+  PACKAGED SMOKES = HEADLESS PASS (isolated DSH_HOME real-model reply "consumer-ok"); WEB :3099 PASS (isolated DSH_HOME boot serving GUI URL, 0 error lines)
+  COUNTERFEIT SPOT = PASS — consumer tool-browser lib hash == tarball payload; no 55101cc in consumer dsh/pkgs-current; web patch first-search x2; ptc preset tool-session-query x2
+  STAGING_INCOMPLETE = true — remaining ONLY: (1) Patch-1 reapply on consumer dsh-tool-workflow + runtime spill probe, (2) M5 candidate slot/manifest (sourceRevision=717cd0cae, digests, realpath confinement), (3) packaged-web cross-session tool-flow + workspace-isolation e2e (spot web boot done only), (4) full counterfeit audit (spot checks done).
+  LIVE_RUNTIME = UNTOUCHED (PID 95665; installed rev 55101cc59).
+STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
+NEXT_ACTION = STAGING_RESUME_REMAINING (patch-1 -> M5 candidate -> packaged e2e). NOT SUPERVISED_LIVE_PROMOTION.
