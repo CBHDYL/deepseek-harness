@@ -149,7 +149,6 @@ SUPERVISED_LIVE_PROMOTION — execution result:
   Operator runbook (if M5-managed live is desired): (a) snapshot live runtime -> slots/stable (recordManifest with sourceRevision 55101cc59) OR declare acceptance of candidate as first slot with previous=null rollback semantics; (b) promote(m5root,'candidate','stable'); (c) verify readPointerMeta active/previous + validateSlot(active); (d) operator restarts the :3080 service from slots/candidate/install (isolated or migrated DSH_HOME decision); (e) live smoke; (f) on failure rollback(m5root). Any 3080 cutover that replaces the process hosting this agent session must be executed by the operator, not by the agent it hosts.
 LIVE_PROMOTION = NOT_EXECUTED (safe; blocked on environment model; candidate intact; nothing promoted/touched)
 LIVE_RUNTIME = UNTOUCHED (rev 55101cc59; :3080 PID 66861; profiles/stable/global).
-
 LIVE PROMOTION PREP — all PASS, cutover NOT executed:
   M5_STABLE_SNAPSHOT = PASS (stable slot = byte-faithful cp -R snapshot of live nvm 55101cc runtime incl patched workflow sha 18dc3a94...; self-contained 1.1G; realpaths in-slot; BIN_OK)
   STABLE_MANIFEST/DIGEST/CONFINEMENT = PASS (stable-bootstrap-55101cc; artifactDigest 346882bc30a890f1; validateSlot ok)
@@ -174,3 +173,11 @@ H smoke: GUI load, 0 loader/config error, PTC boot, tool-session-query registere
 I PASS -> leave running; J FAIL -> kill candidate;
 K pointer rollback: m5.rollback($DEPLOY) -> active=stable; L launch stable: DSH_HOME=~/.dsh node $STABLE/lib/bin.js web; M verify 55101cc593ac3b498f1264eb75ebfc67c33af32b restored
 NO live debugging / hot patching / rebuild on failure.
+
+LIVE CUTOVER — OPERATOR RUN (this session):
+  PHASE A = PASS on identity: :3080 listener PID 66861; installed rev 55101cc593ac3b498f1264eb75ebfc67c33af32b; stable manifest (stable-bootstrap-55101cc, rev 55101cc593ac3b498f1264eb75ebfc67c33af32b, artifactDigest 346882bc30a890f18815c1285bcc5d2f0b7c6adcae5ebe5f468efec509a1f108); candidate manifest (stage-candidate-2, rev 717cd0cae92788a7f5355546b2ba643fc71edb67, artifactDigest c33a1cc09bfaeb81dabb3d4cc33b7a355ce4ca48a4d03d30d2fda21ec546aff9); patch hash both slots 18dc3a942b993a0a4829c6edc9624d4079af119e556a1cddab85ac35607e1703.
+  BLOCKER (decisive): the cutover operator required to STOP :3080 is HOSTED BY the :3080 process (agent worker tree is a descendant of listener PID 66861). Stopping :3080 from inside this session terminates the executor before PHASE E identity / F smoke / rollback can run, violating the operation's own rollback guarantee. Consistent with earlier ruling SELF_HOSTED_3080_CUTOVER = FORBIDDEN.
+LIVE_PROMOTION = NOT_EXECUTED
+REASON = SELF_HOSTED_PRE_CUTOVER_BLOCK (executor hosted by target process)
+LIVE_RUNTIME = original 55101cc59 (PID 66861, untouched)
+FULL OPERATOR HANDOFF VALUES: deployRoot=/tmp/stage_promo/m5root; candidate install=$deploy/slots/candidate/install (lib/bin.js); stable install=$deploy/slots/stable/install; candidate rev 717cd0cae92788a7f5355546b2ba643fc71edb67 digest c33a1cc09bfaeb81dabb3d4cc33b7a355ce4ca48a4d03d30d2fda21ec546aff9; stable rev 55101cc593ac3b498f1264eb75ebfc67c33af32b digest 346882bc30a890f18815c1285bcc5d2f0b7c6adcae5ebe5f468efec509a1f108; patch sha 18dc3a942b993a0a4829c6edc9624d4079af119e556a1cddab85ac35607e1703; M5 rollback call: import m5-release.ts then m5.rollback('/tmp/stage_promo/m5root') (pointer active->stable). Snapshot before cutover: ditto ~/.dsh ~/.dsh.pre-candidate-<ts>.
