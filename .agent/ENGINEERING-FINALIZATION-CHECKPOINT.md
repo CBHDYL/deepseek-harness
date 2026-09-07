@@ -140,7 +140,6 @@ STAGING_INCOMPLETE = false
 NEXT_ACTION = SUPERVISED_LIVE_PROMOTION (user-gated; do NOT execute promote()/3080/global/stable)
 ACCEPTED_P2 = Patch-1 locator not in rendered text (recover via runId + .agent/workflow-results/<runId>.json convention); M5_CANARY_LEGACY lineage mismatch preserved as historical record.
 LIVE_RUNTIME = UNTOUCHED (rev 55101cc59; :3080; profiles/stable; PID 66861 external note).
-
 SUPERVISED_LIVE_PROMOTION — execution result:
   Pre-promote verification = PASS (candidate manifest stage-candidate-2 0.1.2-alpha.5 sourceRevision 717cd0cae927... artifactDigest c33a1cc09bfaeb81; workflow sha 18dc3a942b993a0a; live identity rev 55101cc59 :3080 PID 66861 unchanged).
   promote() NOT CALLED — BLOCKED_ON_ENVIRONMENT_MODEL (decision, not deferral):
@@ -150,3 +149,28 @@ SUPERVISED_LIVE_PROMOTION — execution result:
   Operator runbook (if M5-managed live is desired): (a) snapshot live runtime -> slots/stable (recordManifest with sourceRevision 55101cc59) OR declare acceptance of candidate as first slot with previous=null rollback semantics; (b) promote(m5root,'candidate','stable'); (c) verify readPointerMeta active/previous + validateSlot(active); (d) operator restarts the :3080 service from slots/candidate/install (isolated or migrated DSH_HOME decision); (e) live smoke; (f) on failure rollback(m5root). Any 3080 cutover that replaces the process hosting this agent session must be executed by the operator, not by the agent it hosts.
 LIVE_PROMOTION = NOT_EXECUTED (safe; blocked on environment model; candidate intact; nothing promoted/touched)
 LIVE_RUNTIME = UNTOUCHED (rev 55101cc59; :3080 PID 66861; profiles/stable/global).
+
+LIVE PROMOTION PREP — all PASS, cutover NOT executed:
+  M5_STABLE_SNAPSHOT = PASS (stable slot = byte-faithful cp -R snapshot of live nvm 55101cc runtime incl patched workflow sha 18dc3a94...; self-contained 1.1G; realpaths in-slot; BIN_OK)
+  STABLE_MANIFEST/DIGEST/CONFINEMENT = PASS (stable-bootstrap-55101cc; artifactDigest 346882bc30a890f1; validateSlot ok)
+  STABLE_SLOT_BOOT = PASS (:3097 isolated home served GUI, 0 error)
+  M5_TOPOLOGY = ESTABLISHED (control-plane promote only; :3080 untouched): active=candidate(stage-candidate-2)/previous=stable, gen 1; both validate true
+  LIVE_HOME_COMPATIBILITY = PASS_WITH_SNAPSHOT (SESSION_FORMAT_VERSION 0 both lines; snapshot ~/.dsh before cutover required)
+  ROLLBACK_EXECUTABLE = PASS
+  LIVE_RUNTIME still 55101cc59 / :3080 (PID 66861) UNTOUCHED; global dsh NOT replaced
+LIVE_PROMOTION_PREP = PASS
+LIVE_PROMOTION = NOT_YET_EXECUTED
+NEXT_ACTION = EXTERNAL_OPERATOR_LIVE_CUTOVER
+LIVE CUTOVER RUNBOOK (operator; resolved paths):
+DEPLOY=/tmp/stage_promo/m5root; ACTIVE=$DEPLOY/slots/candidate/install; STABLE=$DEPLOY/slots/stable/install
+A preflight: lsof -iTCP:3080 (record PID); installed rev == 55101cc593ac3b498f1264eb75ebfc67c33af32b
+B stable valid: active=candidate/previous=stable, both validateSlot true
+C candidate: digest c33a1cc0..., workflow sha 18dc3a94..., sourceRevision 717cd0cae927...
+D snapshot home: ditto ~/.dsh ~/.dsh.pre-candidate-<ts>  (REQUIRED; sessions ~481MB)
+E stop old :3080 (operator-owned; never from an agent hosted by it)
+F launch candidate: DSH_HOME=~/.dsh node $ACTIVE/lib/bin.js web
+G verify sourceRevision 717cd0cae927... + GUI token
+H smoke: GUI load, 0 loader/config error, PTC boot, tool-session-query registered, one model request, one tool call, historical search reachable, workspace auth intact
+I PASS -> leave running; J FAIL -> kill candidate;
+K pointer rollback: m5.rollback($DEPLOY) -> active=stable; L launch stable: DSH_HOME=~/.dsh node $STABLE/lib/bin.js web; M verify 55101cc593ac3b498f1264eb75ebfc67c33af32b restored
+NO live debugging / hot patching / rebuild on failure.
