@@ -111,7 +111,6 @@ FINAL CLOSURE SESSION — results:
 STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL ; STAGING_INCOMPLETE = true
 NEXT_ACTION = STAGING_RESUME_EXECUTION (run M5 one-shot glue -> validateSlot+canary -> candidate :3099 -> continuity E2E -> provenance; single focused session). NOT SUPERVISED_LIVE_PROMOTION.
 LIVE_RUNTIME identity UNTOUCHED (rev 55101cc59, :3080).
-
 FINAL EXECUTION CLOSURE (latest) — result:
   PATCH_1_LOCATOR_CLOSURE = NOT_COMPLETED: attempted minimal data-flow fix (attach spilledFile to returned tool value + optional output-schema property) on the deployment-local patched lib; value-prop fix caused output-schema rejection (additionalProperties:false) and bundled-lib schema edits proved fragile in this packaged artifact. Restored the authorized patch byte-exact (sha 18dc3a942b993a0a4829c6edc9624d4079af119e556a1cddab85ac35607e1703; node --check PASS; 5 spill anchors). Locator absence in rendered text is a PRE-EXISTING P2 residual of the authorized old-stable patch (spilledFile never surfaced; runId + documented .agent/workflow-results/<runId>.json convention recover the file). Patch scope NOT expanded.
   M5_CANDIDATE / candidate :3099 / continuity E2E = NOT EXECUTED (budget boundary; M5 API surface already proven sufficient; glue place /tmp/stage_promo/m5root).
@@ -120,3 +119,14 @@ STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
 NEXT_ACTION = STAGING_RESUME_EXECUTION (dedicated session: M5 one-shot glue -> validateSlot/canary -> candidate :3099 -> continuity E2E; Patch-1 locator optional P2). NOT SUPERVISED_LIVE_PROMOTION.
 LIVE_RUNTIME identity UNTOUCHED (rev 55101cc59; :3080).
+
+M5 EXECUTION (this session):
+  M5_CANDIDATE = PASS — /tmp/stage_promo/m5root/slots/candidate: install root copied from verified consumer (1.0G); recordManifest via official m5-release.ts (releaseId stage-candidate-2, version 0.1.2-alpha.5, sourceRevision 717cd0cae92788a7f5355546b2ba643fc71edb67, statePolicy shared-compatible, critical {dsh(lib/bin.js), dsh-tool-workflow, dsh-tool-session-query, cordis}); manifest written; artifactDigest c33a1cc09bfaeb81...; validateSlot ok:true failures:[] (manifest integrity/digest/realpath confinement incl node_modules forest PASS); active pointer before=none after=none (candidate INACTIVE; promote() never called).
+  M5_CANARY = FAIL (lineage-specific blocker): m5v2-deploy canary probe expects the legacy persistence handle (.m5-canary-probe.mjs handle.append), incompatible with the candidate's current-lineage persistence API -> TypeError handle.append undefined. Not a candidate defect; would require a candidate-lineage canary probe (new M5 code, out of scope). Candidate web boot from slot (independent): PASS :3099 (GUI URL, 0 error lines).
+  CANDIDATE_COUNTERFEIT_AUDIT = PASS (candidate install 253 internal == consumer closure; workflow sha 18dc3a942b993a0a...; tool-browser 0.1.2-alpha.5; 0 55101cc; 0 registry internal in candidate lock).
+  CONTINUITY E2E (discovery/isolation/boundary) = NOT EXECUTED (canary gate already prevents PASS; listed pending).
+  PATCH_1_LOCATOR_RESIDUAL = ACCEPTED_P2 (authorized sha 18dc3a94...).
+STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
+STAGING_INCOMPLETE = true
+BLOCKER = M5_CANARY lineage API mismatch (probe from old-lineage m5v2 tooling vs candidate current-lineage API). NEXT_ACTION = STAGING_RESUME (candidate-lineage canary probe or accept lineage-scoped canary definition) then continuity E2E -> then SUPERVISED_LIVE_PROMOTION decision. NOT promoted; live untouched.
+LIVE_RUNTIME identity UNTOUCHED (rev 55101cc59; :3080; PID 66861 external).
