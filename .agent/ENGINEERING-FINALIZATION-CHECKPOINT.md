@@ -129,7 +129,6 @@ STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
 BLOCKER = M5_CANARY lineage API mismatch (probe from old-lineage m5v2 tooling vs candidate current-lineage API). NEXT_ACTION = STAGING_RESUME (candidate-lineage canary probe or accept lineage-scoped canary definition) then continuity E2E -> then SUPERVISED_LIVE_PROMOTION decision. NOT promoted; live untouched.
 LIVE_RUNTIME identity UNTOUCHED (rev 55101cc59; :3080; PID 66861 external).
-
 FINAL GATE — ALL ITEMS CLOSED (execution evidence):
   M5_CANARY_CURRENT_LINEAGE = PASS — probe /tmp/stage_promo/m5-canary-current-lineage.mjs against CANDIDATE packaged persistence (coordinator API create/append/load), closed 2-event turn, reopen from fresh ctx; writtenHash==readHash 88f8ae4f8a2851a05494e13174003177ba952da7237fc34a027e29006aec23ad; readEvents==2; REAL_RC=0; isolated home; stderr empty. (M5_CANARY_LEGACY = FAIL_LINEAGE_MISMATCH preserved as history; probe migration, not waiver.)
   CANDIDATE_WEB_3099 = PASS (candidate slot install boot; GUI URL; 0 error) [prior]
@@ -141,3 +140,13 @@ STAGING_INCOMPLETE = false
 NEXT_ACTION = SUPERVISED_LIVE_PROMOTION (user-gated; do NOT execute promote()/3080/global/stable)
 ACCEPTED_P2 = Patch-1 locator not in rendered text (recover via runId + .agent/workflow-results/<runId>.json convention); M5_CANARY_LEGACY lineage mismatch preserved as historical record.
 LIVE_RUNTIME = UNTOUCHED (rev 55101cc59; :3080; profiles/stable; PID 66861 external note).
+
+SUPERVISED_LIVE_PROMOTION — execution result:
+  Pre-promote verification = PASS (candidate manifest stage-candidate-2 0.1.2-alpha.5 sourceRevision 717cd0cae927... artifactDigest c33a1cc09bfaeb81; workflow sha 18dc3a942b993a0a; live identity rev 55101cc59 :3080 PID 66861 unchanged).
+  promote() NOT CALLED — BLOCKED_ON_ENVIRONMENT_MODEL (decision, not deferral):
+    (1) promote(deployRoot, slot, fallbackStable) requires a real stable slot for rollback/fallback; /tmp/stage_promo/m5root has only candidate. Promoting now would leave ROLLBACK=UNAVAILABLE, violating the rollback-on-failure requirement of this very operation.
+    (2) The real :3080 GUI is NOT M5-managed: no active pointer exists in any deploy root; the live runtime is the nvm-global dsh (55101cc59) launched independently. M5 promote inside /tmp/stage_promo/m5root cannot become the live GUI; a true 3080 cutover would require global/profile replacement (explicitly outside authorization) or operator restart of the GUI from an M5-managed install (no such managed stable exists).
+  Safe evidence retained: candidate validated (validateSlot ok), active before/after none (never promoted), :3080 still old stable, live identity untouched.
+  Operator runbook (if M5-managed live is desired): (a) snapshot live runtime -> slots/stable (recordManifest with sourceRevision 55101cc59) OR declare acceptance of candidate as first slot with previous=null rollback semantics; (b) promote(m5root,'candidate','stable'); (c) verify readPointerMeta active/previous + validateSlot(active); (d) operator restarts the :3080 service from slots/candidate/install (isolated or migrated DSH_HOME decision); (e) live smoke; (f) on failure rollback(m5root). Any 3080 cutover that replaces the process hosting this agent session must be executed by the operator, not by the agent it hosts.
+LIVE_PROMOTION = NOT_EXECUTED (safe; blocked on environment model; candidate intact; nothing promoted/touched)
+LIVE_RUNTIME = UNTOUCHED (rev 55101cc59; :3080 PID 66861; profiles/stable/global).
