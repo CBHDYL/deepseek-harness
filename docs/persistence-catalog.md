@@ -259,6 +259,19 @@ Types: [TokenUsage](subsystems/llm-streaming.md)
 
 Source: [`packages/core/session/src/types.ts:300`](../packages/core/session/src/types.ts)
 
+### `browser/*`
+
+<a id="browserverify--log-only"></a>
+
+#### `browser/verify` — log-only
+
+```ts persistence-catalog
+/** One browser-verification attempt and its classified outcome; the projection folds the latest per turn. */
+'browser/verify': BrowserVerificationEvidence
+```
+
+Source: [`packages/web/tool-browser/src/types.ts:49`](../packages/web/tool-browser/src/types.ts)
+
 ### `command/*`
 
 <a id="commanddone--log-only"></a>
