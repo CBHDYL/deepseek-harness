@@ -119,7 +119,6 @@ STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
 NEXT_ACTION = STAGING_RESUME_EXECUTION (dedicated session: M5 one-shot glue -> validateSlot/canary -> candidate :3099 -> continuity E2E; Patch-1 locator optional P2). NOT SUPERVISED_LIVE_PROMOTION.
 LIVE_RUNTIME identity UNTOUCHED (rev 55101cc59; :3080).
-
 M5 EXECUTION (this session):
   M5_CANDIDATE = PASS — /tmp/stage_promo/m5root/slots/candidate: install root copied from verified consumer (1.0G); recordManifest via official m5-release.ts (releaseId stage-candidate-2, version 0.1.2-alpha.5, sourceRevision 717cd0cae92788a7f5355546b2ba643fc71edb67, statePolicy shared-compatible, critical {dsh(lib/bin.js), dsh-tool-workflow, dsh-tool-session-query, cordis}); manifest written; artifactDigest c33a1cc09bfaeb81...; validateSlot ok:true failures:[] (manifest integrity/digest/realpath confinement incl node_modules forest PASS); active pointer before=none after=none (candidate INACTIVE; promote() never called).
   M5_CANARY = FAIL (lineage-specific blocker): m5v2-deploy canary probe expects the legacy persistence handle (.m5-canary-probe.mjs handle.append), incompatible with the candidate's current-lineage persistence API -> TypeError handle.append undefined. Not a candidate defect; would require a candidate-lineage canary probe (new M5 code, out of scope). Candidate web boot from slot (independent): PASS :3099 (GUI URL, 0 error lines).
@@ -130,3 +129,15 @@ STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
 BLOCKER = M5_CANARY lineage API mismatch (probe from old-lineage m5v2 tooling vs candidate current-lineage API). NEXT_ACTION = STAGING_RESUME (candidate-lineage canary probe or accept lineage-scoped canary definition) then continuity E2E -> then SUPERVISED_LIVE_PROMOTION decision. NOT promoted; live untouched.
 LIVE_RUNTIME identity UNTOUCHED (rev 55101cc59; :3080; PID 66861 external).
+
+FINAL GATE — ALL ITEMS CLOSED (execution evidence):
+  M5_CANARY_CURRENT_LINEAGE = PASS — probe /tmp/stage_promo/m5-canary-current-lineage.mjs against CANDIDATE packaged persistence (coordinator API create/append/load), closed 2-event turn, reopen from fresh ctx; writtenHash==readHash 88f8ae4f8a2851a05494e13174003177ba952da7237fc34a027e29006aec23ad; readEvents==2; REAL_RC=0; isolated home; stderr empty. (M5_CANARY_LEGACY = FAIL_LINEAGE_MISMATCH preserved as history; probe migration, not waiver.)
+  CANDIDATE_WEB_3099 = PASS (candidate slot install boot; GUI URL; 0 error) [prior]
+  CANDIDATE_COUNTERFEIT_AUDIT = PASS [prior: 253==consumer, workflow sha 18dc3a94..., tool-browser 0.1.2-alpha.5, 0 55101cc, 0 registry internal]
+  CONTINUITY E2E (candidate packaged runtime, isolated home, real model): CROSS_SESSION_DISCOVERY = PASS (model searched; found session A1 seq3; exact fact ALPHA-Q9K-77621); HISTORICAL_BOUNDARY = PASS (OLD_VALUE_41 recalled as history; NEW_VALUE_87 declared current authoritative and used); WORKSPACE_ISOLATION = PASS (bLeakInToolResults=false; 0 B content in tool results; the single BETA token echo in the answer came from the user's own question string, not B1) ; MODEL_VISIBLE_RECALL_LOGGED = PASS (25 tool/call + 25 tool/result in session log).
+  PROVENANCE_CHAIN = PASS — 717cd0cae -> official build record -> 253 tarballs -> adapter -> consumer -> authorized Patch-1 (18dc3a94...) -> M5 candidate (manifest sourceRevision 717cd0cae, artifactDigest c33a1cc0...) -> current-lineage canary PASS -> candidate :3099 -> continuity E2E.
+STAGE_PROMOTION_VERDICT = PASS_WITH_ACCEPTED_P2
+STAGING_INCOMPLETE = false
+NEXT_ACTION = SUPERVISED_LIVE_PROMOTION (user-gated; do NOT execute promote()/3080/global/stable)
+ACCEPTED_P2 = Patch-1 locator not in rendered text (recover via runId + .agent/workflow-results/<runId>.json convention); M5_CANARY_LEGACY lineage mismatch preserved as historical record.
+LIVE_RUNTIME = UNTOUCHED (rev 55101cc59; :3080; profiles/stable; PID 66861 external note).
