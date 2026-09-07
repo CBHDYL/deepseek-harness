@@ -86,7 +86,6 @@ STAGE_PROMOTION — PHASE A/B adapter result (audit + execution):
   LIVE_RUNTIME = UNTOUCHED (PID 95665; installed rev 55101cc59).
 STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 NEXT_ACTION = STAGING_RESUME_REMAINING (patch-1 -> M5 candidate -> packaged e2e). NOT SUPERVISED_LIVE_PROMOTION.
-
 STAGE_PROMOTION — remaining-4 close (partial):
   PATCH_1_REAPPLIED = PASS (consumer-adapter dsh-tool-workflow lib; BEFORE sha256 3c240ab2b23933acbb2774279dda198d94034d9ab494bd1dd776a3f5296d55bc -> AFTER 18dc3a942b993a0a4829c6edc9624d4079af119e556a1cddab85ac35607e1703; node --check PASS; anchors spillThresholdChars x2 / spillDir x2 / workflow-results x3 confirmed; base == repoBuilt 717cd0cae lib diffstat 0). Base artifact preserved unpatched in pkgs-current (patch is deployment-local on consumer store copy only).
   FULL_COUNTERFEIT_AUDIT = PASS (consumer installed 253 == pkgs-current 253; 0 consumerOnly; 0 versionDiff; 0 registry @deepseek-ai in consumer lock; 0 55101cc anywhere in consumer)
@@ -96,3 +95,13 @@ STAGE_PROMOTION — remaining-4 close (partial):
 STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
 NEXT_ACTION = STAGING_RESUME_FINAL (patch-1 runtime probe -> M5 candidate+manifest -> packaged e2e discovery/isolation). NOT SUPERVISED_LIVE_PROMOTION.
+
+STAGE_PROMOTION — final-three blockers (turn closed honestly):
+  1) PATCH_1_RUNTIME_PROBE = BLOCKED: requires a real packaged workflow execution with renderedFull > spillThresholdChars; packaged headless composition does not deterministically expose tool-workflow + subagent provider path within budget (LLM-volatile output or fixture-provider composition needed; fixture path not executed this turn).
+  2) M5_CANDIDATE = BLOCKED (environment/tooling): m5v2-deploy slot copy of dsh-root ships ONLY scripts/m5-release.ts (slot engine) + {m5-release,m5-deployment}.spec.ts; there is no executable operator prepare/record CLI present in this copy to create a candidate slot + manifest without writing new glue (forbidden: no new release subsystem). Candidate would have been: install root = consumer-adapter node_modules; manifest sourceRevision=717cd0cae version 0.1.2-alpha.5; Patch-1 as deployment-local delta.
+  3) packaged continuity E2E (discovery/isolation/boundary) = BLOCKED by (2) (requires candidate runtime).
+  Provenance so far remains: 717cd0cae -> official build record -> 253 tarballs -> adapter -> consumer(patched, sha 18dc3a94...) ; counterfeit PASS; packaged headless/web-boot PASS.
+STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
+STAGING_INCOMPLETE = true
+NEXT_ACTION = STAGING_RESUME_REQUIRES (a) official M5 prepare CLI or explicit user authorization to create candidate slot via documented m5-release flow; (b) a fixture-composed deterministic workflow probe; (c) candidate E2E. NOT SUPERVISED_LIVE_PROMOTION.
+LIVE_RUNTIME identity UNTOUCHED (rev 55101cc59; :3080; profiles/stable; PID external note only).
