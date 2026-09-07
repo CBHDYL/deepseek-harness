@@ -104,7 +104,6 @@ STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
 NEXT_ACTION = STAGING_RESUME_REQUIRES (a) official M5 prepare CLI or explicit user authorization to create candidate slot via documented m5-release flow; (b) a fixture-composed deterministic workflow probe; (c) candidate E2E. NOT SUPERVISED_LIVE_PROMOTION.
 LIVE_RUNTIME identity UNTOUCHED (rev 55101cc59; :3080; profiles/stable; PID external note only).
-
 FINAL CLOSURE SESSION — results:
   A. PATCH_1_RUNTIME_PROBE = PASS(core) + residual: harness /tmp/stage_promo/probe_p1.mjs exercised the REAL packaged tool-workflow execute path (ctx.plugin(toolWorkflow) on packaged libs) with an engine at the documented ctx.workflowEngine seam executing the script via agent() fixture (AUTH_A). Positive: spilled=true, spill file .agent/workflow-results/<runId>.json created, spill payload sha == JSON(fixture) sha (947104a1cf4bed9d31d872332ae50089bdbd3c911c131000f1936a902d61238d; 15010 chars), returned/model-visible text bounded (10088 chars incl truncation marker), runId present. RESIDUAL(P2): locator note absent from rendered text because the OLD-STABLE patch itself never attaches spilledFile to the returned tool value (render reads value.spilledFile which is undefined) — pre-existing behavior of the copied authorized delta, not introduced here; file+runId recover full payload. NO_SPILL_BELOW_THRESHOLD = PASS (small fixture -> no file, inline preserved, exact).
   B. M5_CANDIDATE = READY_TO_EXECUTE (NOT BLOCKED_BY_API_SURFACE): m5-release.ts exports slotDir/recordManifest/approveRelease/readManifest/validateSlot/resolveActive/readPointerMeta/promote/rollback/installCanaryProbe/runCanary + canonicalManifest/ReleaseManifest; m5-deployment.spec proves exact call order (recordManifest(deployRoot,name,{releaseId,version,sourceRevision},critical) then validateSlot). One-shot glue place: /tmp/stage_promo/m5root (new deployRoot; candidate slot; install root from verified patched consumer). NOT EXECUTED this session.
@@ -112,3 +111,12 @@ FINAL CLOSURE SESSION — results:
 STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL ; STAGING_INCOMPLETE = true
 NEXT_ACTION = STAGING_RESUME_EXECUTION (run M5 one-shot glue -> validateSlot+canary -> candidate :3099 -> continuity E2E -> provenance; single focused session). NOT SUPERVISED_LIVE_PROMOTION.
 LIVE_RUNTIME identity UNTOUCHED (rev 55101cc59, :3080).
+
+FINAL EXECUTION CLOSURE (latest) — result:
+  PATCH_1_LOCATOR_CLOSURE = NOT_COMPLETED: attempted minimal data-flow fix (attach spilledFile to returned tool value + optional output-schema property) on the deployment-local patched lib; value-prop fix caused output-schema rejection (additionalProperties:false) and bundled-lib schema edits proved fragile in this packaged artifact. Restored the authorized patch byte-exact (sha 18dc3a942b993a0a4829c6edc9624d4079af119e556a1cddab85ac35607e1703; node --check PASS; 5 spill anchors). Locator absence in rendered text is a PRE-EXISTING P2 residual of the authorized old-stable patch (spilledFile never surfaced; runId + documented .agent/workflow-results/<runId>.json convention recover the file). Patch scope NOT expanded.
+  M5_CANDIDATE / candidate :3099 / continuity E2E = NOT EXECUTED (budget boundary; M5 API surface already proven sufficient; glue place /tmp/stage_promo/m5root).
+  Probe core evidence (prior runs, authorized patch): spill executed, file exists, payload sha == 947104a1..., bounded render; NO_SPILL PASS.
+STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
+STAGING_INCOMPLETE = true
+NEXT_ACTION = STAGING_RESUME_EXECUTION (dedicated session: M5 one-shot glue -> validateSlot/canary -> candidate :3099 -> continuity E2E; Patch-1 locator optional P2). NOT SUPERVISED_LIVE_PROMOTION.
+LIVE_RUNTIME identity UNTOUCHED (rev 55101cc59; :3080).
