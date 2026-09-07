@@ -226,3 +226,76 @@ P1 BLOCKER FOR THE FINAL LIVE PROMOTION (discovered this session, NOT resolved �
   The live :3080 GUI is composed by the `--profile web` layer, which the M5 slot does not contain. Absent from the candidate slot: @linxin666/dsh-web-all, dshmarket, dsh-plugin-subscriptions, @tt-a1i/archify-dsh, @bohongchen/dsh-governance-gate. Also profile-level only (cordis.patch.yml): governance-gate, mcp-observability, mcp-knowledge, subagent-codex-safe / subagent-claude-code-safe + their tool-subagent instances, web-ui-doctor autoMigrate:false, tool-browser. The profile additionally pins @deepseek-ai/dsh-tools / dsh-session-projection / dsh-attachment / dsh-home-paths to 0.1.1-rc.2 and tool-browser to 0.1.0 — a DIFFERENT lineage from the slot's 0.1.2-alpha.5.
   So `node <slot-entry> web` yields a correct M5-authoritative runtime but NOT today's GUI. Resolving this is a prerequisite for cutover, and the two options conflict: (a) M5 slot as sole authority => those plugins are dropped from the live GUI; (b) keep --profile web => the forbidden dual authority (M5 pointer + profile-selected versions) returns. Choosing between them is a user decision, deliberately left open.
 NEXT_ACTION = FINAL_LIVE_PROMOTION (separate, user-gated round), gated on the P1 profile-composition decision above.
+
+PROFILE COMPOSITION RECONCILIATION (this session) — P1 CLOSED; live still untouched:
+PROFILE_COMPOSITION_RECONCILIATION = PASS ; CORE_LINEAGE_AUTHORITY = M5_ACTIVE_SLOT_ONLY ; LIVE_PROMOTION = NOT_EXECUTED ; LIVE_RUNTIME = 55101cc59 (:3080 PID 66861, launchd runs=119 unchanged all session)
+SUPERVISOR_INTEGRATION_BASE_COMMIT = 69038ca0c393e286e0747e3933c51bb86eb4f98e
+  CORRECTED MODEL — the previous round's P1 framing was wrong in two ways, both now measured:
+   (1) `web` is a HARDCODED ALIAS for `--profile web` (dsh/lib/bin.js args module). The launcher was ALWAYS booting the profile layer; the earlier "composition is absent" reading came from probing with an EMPTY DSH_HOME, which auto-initialized a fresh shipped template profile. No launcher change was needed.
+   (2) The declared pnpm.overrides pinning dsh-tools/dsh-session-projection/dsh-attachment/dsh-home-paths to 0.1.1-rc.2 NEVER MATERIALIZED: those four are peerDependencies and have no resolution entries in the profile lockfile; the installed tree served them at 0.1.2-alpha.5. They were never the real defect.
+  THE REAL DEFECT: all 266 entries of ~/.dsh/profiles/node_modules/@deepseek-ai are symlinks INTO THE GLOBAL NVM INSTALL. External web plugins declare their @deepseek-ai imports as peerDependencies with an EMPTY dependencies map, so Node walks up from each plugin's realpath and lands in that store. The M5 pointer would have chosen the core entry while the global install supplied every bundle and peer package. Both sides are version 0.1.2-alpha.5, so this is a LINEAGE divergence that satisfies every semver range and loads silently — the exact dual authority §6 forbids.
+COMPOSITION ARCHITECTURE (implemented):
+  launchd -> dsh-m5-web-launch.sh -> resolve-active-entry.mjs (core entry, active slot)
+                                  -> verify-composition-anchor.mjs (fail-closed lineage gate)
+                                  -> exec node <slot entry> web --no-open
+  Profile decides WHICH extensions load and their configuration. It no longer decides WHICH core runtime backs them. Slot-provided names are linked THROUGH <deployRoot>/active, so composition follows promote()/rollback() with no edit.
+  anchor-composition.sh <home> --check|--apply|--restore   sha256 c7838f601fdb2c23a5973ec8a0c9a0051480304f0a44a829bfd6ffd2ed7d93e9
+  verify-composition-anchor.mjs                            sha256 91c729a0231066b90dc0c6b7fbecfe1279801fb1399f60eb0903e68dd07676b1
+  dsh-m5-web-launch.sh (now gates on the verifier)         sha256 56d5f04592a90ba812460bf19bd0be91bd78ec1fa556c9dacb5cfdb61a73df64
+  ANCHOR RULE (three cases, deliberately not "repoint everything"): a name the active slot provides -> link through active; a name the slot lacks whose ORIGINAL target was the global install -> drop (global lineage must never survive; use then fails loudly); a name the slot lacks whose original target is PROFILE-LOCAL (local tarball / .dsh-module-fallback) -> LEAVE IT, it is a genuine profile-owned extension.
+  ENFORCED INVARIANT: no @deepseek-ai entry may resolve into the global NVM install; every name the active slot provides must resolve INTO the active slot; slot-absent names may resolve inside the profile. Violation exits 30 and the launcher refuses to boot.
+COMPONENT CLASSIFICATION:
+  A SLOT-OWNED CORE (M5 sole authority) — 146 of the 152 composed entries resolve from the active slot, including cordis + cordis-plugin-*, dsh-tools, dsh-session, dsh-session-projection, dsh-attachment, dsh-home-paths, dsh-llm, dsh-agent, dsh-agent-loop, dsh-system-prompt, dsh-settings, dsh-web-app, dsh-base, dsh-api-*, dsh-client-ui-*, dsh-tool-* (incl. tool-workflow, tool-session-query, tool-subagent, tool-browser), dsh-subagent*, dsh-mcp-client, dsh-agent-presets, dsh-session-query-sqlite.
+  B COMPOSITION EXTENSION (profile authority) — @linxin666/dsh-web-all 0.3.12 (19 entries), @linxin666/dsh-i18n, dshmarket 1.44.0, dsh-plugin-subscriptions 0.7.1, dsh-better-sidebar, @tt-a1i/archify-dsh 0.1.0 (loaded as archify-skill-filesystem via dsh-skill-filesystem, providerName archify-plugin). dshmarket and subscriptions declare @deepseek-ai peers with ranges accepting ^0.1.2-alpha.1, satisfied by the slot's 0.1.2-alpha.5; both resolve their peers INTO the slot after anchoring.
+  C LOCAL/PATCHED EXTENSION — @bohongchen/dsh-governance-gate (link: ~/Projects/dsh-governance-gate); mcp-observability and mcp-knowledge (stdio, ~/Projects/dsh-{observability,knowledge}/dist/src/server.js, both present); subagent-codex-safe and subagent-claude-code-safe + their tool-subagent instances (config only, implementations from the slot); web-ui-doctor autoMigrate:false; tool-browser insert.
+  D OBSOLETE/DUPLICATE (evidence-backed) — the four profile-level copies that SHADOWED the shared store at older lineage: dsh-mcp-client 0.1.0-rc.8, dsh-subagent-claude-code 0.1.1-rc.2, dsh-subagent-codex 0.1.1-rc.2, dsh-tool-browser 0.1.0 (file: tarball). All four exist in the candidate at 0.1.2-alpha.5 and are now anchored there; tool-browser 0.1.0 -> 0.1.2-alpha.5 is precisely the family version fix that DEFINED revision 717cd0cae. Plus 14 shared-store names with no candidate counterpart (dsh-experimental-* x8, dsh-root, dsh-tool-subagent-report, node-addon-landlock-run x2, website) — none referenced by the web composition; dropped, not global-anchored.
+EVIDENCE (isolated; real ~/.dsh never modified):
+  Test home = APFS clonefile of the real ~/.dsh (1.5G logical, 0 bytes real), including 12 real session directories. One fidelity fix was required and is recorded because it invalidated an earlier reading: the profile's @bohongchen/dsh-governance-gate symlink is RELATIVE (../../../../../Projects/...) and therefore dangled in the clone.
+  SILENT-SKIP FINDING (important): a boot with an UNRESOLVABLE @bohongchen/dsh-governance-gate produced ZERO error lines and served the GUI. Plugin load failure is silent for that insert, so "the server started" is NOT evidence the composition loaded. An unresolvable @deepseek-ai/dsh-tool-browser insert, by contrast, hard-fails with ERR_MODULE_NOT_FOUND. Per-plugin resolution evidence is therefore mandatory.
+  COMPOSITION_AUDIT = PASS — every entry of the composed tree resolved the way the loader resolves it: 152 audited, 146 from the ACTIVE SLOT, 5 from the profile (web-all, i18n, better-sidebar, subscriptions, dshmarket), 1 local link (governance-gate), 0 from the GLOBAL NVM install, 0 unresolved.
+  CANDIDATE ISOLATED SMOKE (real composition, isolated port, cloned real home):
+    C1 GUI = PASS (:3099 token URL; unauthenticated 401, tokened 303)
+    C2 no core startup/runtime error = PASS (0 error lines; verifier line "271 checked, 258 in the active slot, 0 global-lineage")
+    C3 PTC = PASS (candidate ships presets/ptc; settings default preset ptc)
+    C4 tool-session-query = PASS (registered by the ptc preset; exercised live below)
+    C5 one REAL model request = PASS (real DeepSeek calls, no mock)
+    C6 one REAL tool invocation = PASS (25 tool/call + 25 tool/result: session_search, session_trace, session_event_read, session_event_search, session_event_trace)
+    C7 historical-session read path = PASS (cross-session discovery recovered ALPHA-Q9K-77621; historical boundary honoured NEW_VALUE_87 over OLD_VALUE_41)
+    C8 workspace authorization = PASS (bLeakInToolResults false; the single BETA token in the answer is an echo of the question string, matching the earlier recorded result)
+    C9 governance gate = PASS at load/resolution (resolves to ~/Projects/dsh-governance-gate once the clone's relative link is faithful). Functional deny-path exercise = NOT_VERIFIED this round.
+    C10 MCP composition = PASS (both servers spawned as REAL child processes of the composed runtime: dsh-observability and dsh-knowledge)
+    C11 browser/tool composition = PASS (dsh-tool-browser resolves from the SLOT at 0.1.2-alpha.5, replacing the profile's 0.1.0 shadow)
+    C12 safe subagent registration = PASS (providerName codex-safe / claude-code-safe with tool names subagent_codex_safe / subagent_claude_code_safe in the composed tree; implementations from the slot)
+  AUTHORITY ATTACKS:
+    A1 global dsh absent from PATH = PASS (every boot ran with PATH=/usr/bin:/bin:/usr/sbin:/sbin, no `dsh` on PATH; only the node executable comes from nvm; 0 global-install file handles in the running process. dsh-doctor's findRealDsh() would have failed outright here, which is exactly the old coupling.)
+    A2 profile attempts core override = PASS (verifier refuses, exit 30: run against the real unanchored ~/.dsh it reports 265-270 entries resolving into the global install and the launcher will not start)
+    A3 missing extension = PASS (removing an anchored entry does NOT fall back to global: it resolves from the slot's own tree, or fails loudly with MODULE_NOT_FOUND; 0 global handles either way)
+    A4 wrong-lineage core injected = PASS (same gate as A2; any entry resolving into the global install is refused by name and target before exec)
+    A5 active slot change = PASS (composition follows the pointer: with symlinks untouched, a real m5.rollback moved dsh-tools' realpath from the candidate slot to the stable slot). CAVEAT, and it is a real one: dsh-app-boot's MODULE-FALLBACK writes slot-specific links into the profile store during boot, so after a pointer change ~69 entries stay pinned to the previous slot. The verifier catches this (exit 30, "entries the active slot provides resolve elsewhere"), and anchor-composition.sh --apply MUST therefore run after every promote/rollback, before the kickstart. This is now a required runbook step, not an optional one.
+    A6 restart = PASS (restarting the composed candidate reproduced activeSlot=candidate, sourceRevision 717cd0cae..., generation 6, verifier OK)
+  ROLLBACK PARITY (found and fixed this session): anchoring naively broke the rollback path. The stable slot has NO @deepseek-ai/dsh-tool-browser (it predates the family version fix), so dropping the profile's own 0.1.0 copy made the composed STABLE boot fail with "Cannot find package '@deepseek-ai/dsh-tool-browser'". The three-case anchor rule keeps profile-local extensions, after which the composed STABLE booted cleanly on :3097 (verifier: 268 in the active slot, 1 profile-owned extension, 0 global-lineage; 0 global handles). Rollback recovery is therefore proven, not assumed.
+REAL ENVIRONMENT AT CLOSE (unchanged):
+  :3080 = PID 66861, global NVM dsh, sourceRevision 55101cc593ac3b498f1264eb75ebfc67c33af32b; launchd com.dsh.web pid 66858, runs=119, program still ~/.dsh/bin/dsh-web-launch.sh
+  ~/.dsh/profiles composition deliberately STILL global-anchored (verifier reports 265 global entries by design) — anchoring the live home is a CUTOVER step, because it changes what the currently running global runtime would load on its next restart.
+  Control plane: generation 6, active=candidate(stage-candidate-2), previous=stable(stable-bootstrap-55101cc); generations 4->6 are this session's rollback/promote composition tests.
+CONCEPT CORRECTION (supersedes any earlier reading): profile != runtime authority. M5 active slot = runtime/core authority; profile/composition = extension authority only. Proven by COMPOSITION_AUDIT (0 of 152 composed entries from the global install) plus the fail-closed verifier, not asserted.
+REMAINING LIVE-ONLY VERIFICATION (cannot be done off :3080): real-GUI interactive acceptance on the live port; governance-gate functional deny path; MCP tool round-trips through the live GUI; the live ~/.dsh under a candidate runtime with SESSION_FORMAT_VERSION 0 shared state.
+FINAL LIVE PROMOTION RUNBOOK (next round; supersedes every earlier one):
+  0 preflight  : lsof -iTCP:3080 (record PID); global sourceRevision == 55101cc593ac...; resolve-active-entry.mjs --explain == candidate/717cd0cae...; validateSlot(stable)==true && validateSlot(candidate)==true
+  1 snapshot   : ditto ~/.dsh ~/.dsh.pre-candidate-$(date +%Y%m%d-%H%M%S)   [REQUIRED, ~1.5G]
+  2 anchor     : ~/.dsh-deploy/bin/anchor-composition.sh ~/.dsh --check, then --apply   [records originals on first apply]
+  3 verify     : DSH_HOME=~/.dsh verify-composition-anchor.mjs  -> must print OK, 0 global-lineage
+  4 install    : launchctl bootout gui/$UID/com.dsh.web
+                 cp ~/.dsh-deploy/supervisor-backup/com.dsh.web.m5.plist ~/Library/LaunchAgents/com.dsh.web.plist
+                 launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.dsh.web.plist
+  5 identity   : ~/Library/Logs/dsh-web.log must show activeSlot=candidate, sourceRevision=717cd0cae..., composition OK; :3080 listener cmdline inside slots/candidate/install
+  6 smoke      : S1-S8 on the real DSH_HOME (GUI, no core error, PTC, tool-session-query, one REAL model request, one REAL tool call, historical session retrieval, workspace authorization). GUI-reachable alone is NOT a pass; per-plugin resolution evidence is required because plugin load failure can be silent.
+ROLLBACK RUNBOOK (no debugging, no hot patch, no rebuild):
+  R1 m5.rollback('/Users/bohongchen/.dsh-deploy')                        # pointer -> stable
+  R2 anchor-composition.sh ~/.dsh --apply                                 # MANDATORY: module-fallback pins the old slot
+  R3 launchctl kickstart -k gui/$UID/com.dsh.web                          # launchd re-resolves -> stable slot
+  R4 verify :3080 sourceRevision == 55101cc593ac...; recovery smoke (GUI, no core error, history reachable, real model + real tool)
+  R5 if the stable SLOT will not serve: anchor-composition.sh ~/.dsh --restore ; restore-original-supervisor.sh --apply  -> byte-exact original plist + launcher, back to the global NVM dsh
+  Data rollback stays SEPARATE: do not restore the ~/.dsh snapshot without explicit evidence of data damage.
+STAGE_PROMOTION_VERDICT = PASS_WITH_ACCEPTED_P2 ; STAGING_INCOMPLETE = false
+NEXT_ACTION = INDEPENDENT READ-ONLY FINAL REVIEW, then FINAL_LIVE_PROMOTION (user-gated).
