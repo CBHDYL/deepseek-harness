@@ -56,7 +56,6 @@ STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
 PENDING (exact): (1) resolve npm install of 244 file: closure (upgrade/repair npm cache or use the fork's consumer/install path with a compatible npm), (2) finish verify-packed-install + isolated consumer, (3) Patch-1 reapply on staged dsh-tool-workflow + runtime spill probe, (4) M5 candidate slot manifest (sourceRevision=717cd0cae), (5) web :3099 smoke, (6) headless smoke, (7) counterfeit audit, (8) mainline tool-browser version bump.
 NEXT_ACTION = STAGING_RESUME (same plan b scope). No :3080 / global dsh / stable tag changes.
-
 STAGE_PROMOTION (plan b) — installer-compat result:
   VERIFY_PACKED_INSTALL = FAILED with precise root cause (NOT a pack/code defect):
     npm 10.9.8 AND npm 9.9.4 (isolated corepack/npx, fresh cache, isolated HOME) both crash identically in arborist #loadPeerSet (build-ideal-tree.js:1302) "Cannot read properties of null (reading 'edgesOut')" while resolving the 244 file: tarball closure's peer-dependency set (cyclic workspace topology + full-closure peer resolution). Tarball manifests themselves are clean (internal deps already rewritten to ^0.1.2-alpha.5, no workspace: specifiers).
@@ -65,5 +64,15 @@ STAGE_PROMOTION (plan b) — installer-compat result:
   RUNTIME_SOURCE_AUTHORITY = 717cd0cae (staged detached; parent 7318c75da). EXPECTED_SOURCE_REVISION = 717cd0cae. Do NOT write 7318c75da into manifest.
   NEXT (fallback per scope §5-§7): read-only audit + use fork consumer/build-runtime-npm.mjs adapter (same 244 tarballs -> flattened file: layout -> isolated install) ONLY as an installer-compat adapter with proven equivalence; do not rebuild/repack from source, do not mix 55101cc artifacts.
   LIVE_RUNTIME = UNTOUCHED (reconfirm at close).
+STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
+STAGING_INCOMPLETE = true
+
+STAGE_PROMOTION — deep installer audit result:
+  VENDOR_PACK = PASS (9 tarballs: cordis + cordis-plugin-* + logger-console; /tmp/stage_promo/tarballs-vendor)
+  COMBINED_CLOSURE = 253 tarballs, 253 unique, all 0.1.2-alpha.5; internal dep closure SELF-CONSISTENT (missing only linux-only OPTIONAL @deepseek-ai/node-addon-landlock-run, skipped by --omit=optional). No workspace:/file:/* ranges.
+  VERIFY_PACKED_INSTALL = STILL FAILED (npm 9.9.4 AND 10.9.8, isolated cache/HOME): arborist #loadPeerSet build-ideal-tree.js:1302 "Cannot read properties of null (reading 'edgesOut')" after idealTree completes — a peer-dependency-set materialization incompatibility over the 253 file: closure + cyclic peer topology. Root cause is NOT closure incompleteness (vendor family now included) and NOT a tarball defect. This is an installer (npm/arborist) compatibility blocker, explicitly out of scope to fix by mutating the package graph (§19).
+  NOT_EXECUTED (still blocked): isolated consumer, Patch-1 reapply + runtime probe, M5 candidate, web :3099, headless, counterfeit audit.
+  RECOMMENDED NEXT (supervised): use the fork's own evidence-backed consumer/install path (historical pkgs-fresh + pnpm, or a layout arborist can resolve) as an installer-compat adapter over the SAME 253 tarballs — after read-only audit confirms it does not rebuild/repack, skip closure verification, or mix 55101cc artifacts.
+  RUNTIME_SOURCE_AUTHORITY = 717cd0cae (parent 7318c75da). LIVE_RUNTIME = UNTOUCHED.
 STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
