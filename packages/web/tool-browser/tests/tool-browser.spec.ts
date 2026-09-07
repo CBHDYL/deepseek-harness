@@ -97,7 +97,7 @@ async function mount(
   const ctx = new Context()
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
-  ctx.tools.register(createBrowserTool(manager, resolveConfig(config), attachments as never))
+  ctx.tools.register(createBrowserTool(manager, resolveConfig(config), (() => attachments) as never))
   let counter = 0
   const call = (args: object, agentRef?: object, signal?: AbortSignal) => ctx.tools.execute({
     signal: signal ?? new AbortController().signal,

@@ -366,7 +366,7 @@ async function runFill(
 async function runScreenshot(
   manager: BrowserManager,
   config: ResolvedConfig,
-  attachments: AttachmentStore | undefined,
+  getAttachments: () => AttachmentStore | undefined,
   sessionId: string,
   signal: AbortSignal,
   args: BrowserToolArgs,
@@ -399,6 +399,9 @@ async function runScreenshot(
     return infraOrPolicy(error)
   }
   const value: BrowserResultValue = { outcome: 'PASS', screenshot_path: path }
+  // The attachment service is optional and may mount after this plugin applies;
+  // resolve it per execution so registration never depends on activation order.
+  const attachments = getAttachments()
   if (attachments !== undefined) {
     try {
       const ref = await attachments.saveImage({ data: new Uint8Array(buffer), mediaType: 'image/png', name: fileName })
@@ -474,13 +477,14 @@ export function renderBrowserResult(args: BrowserToolArgs, value: BrowserResultV
  * without a real browser.
  * @param manager - the per-session browser manager.
  * @param config - the resolved configuration.
- * @param attachments - optional attachment service; screenshots register as durable refs when mounted.
+ * @param getAttachments - resolves the optional attachment service at execution
+ *   time; screenshots register as durable refs only when it is then available.
  * @returns the registry-ready tool definition.
  */
 export function createBrowserTool(
   manager: BrowserManager,
   config: ResolvedConfig,
-  attachments: AttachmentStore | undefined,
+  getAttachments: () => AttachmentStore | undefined,
 ): ReturnType<typeof defineTool> {
   return defineTool({
     name: 'browser',
@@ -576,7 +580,7 @@ export function createBrowserTool(
         case 'read_text': value = await runReadText(manager, config, sessionId, exec.signal, args); break
         case 'click': value = await runClick(manager, config, sessionId, exec.signal, args); break
         case 'fill': value = await runFill(manager, config, sessionId, exec.signal, args); break
-        case 'screenshot': value = await runScreenshot(manager, config, attachments, sessionId, exec.signal, args); break
+        case 'screenshot': value = await runScreenshot(manager, config, getAttachments, sessionId, exec.signal, args); break
         case 'close': value = await runClose(manager, sessionId); break
         case 'list': value = await runList(manager, sessionId); break
         /* v8 ignore next -- the enum-closed action switch has no other runtime case. */
@@ -598,7 +602,6 @@ export function createBrowserTool(
 export function apply(ctx: Context, config: Config = {}): void {
   const resolved = resolveConfig(config)
   const manager = new BrowserManager()
-  const attachments = ctx.get('attachments')
 
   ctx.effect(() => () => { void manager.closeAll() }, 'tool-browser teardown')
   ctx.on('session/disposed', (session) => {
@@ -611,7 +614,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     text: 'Use browser for quick smoke-level UI verification and interaction (load a page, read visible text, click, fill, screenshot) on one per-session headless page. For deep interaction or assertions, prefer a dedicated test harness.',
   })
 
-  ctx.tools.register(createBrowserTool(manager, resolved, attachments))
+  ctx.tools.register(createBrowserTool(manager, resolved, () => ctx.get('attachments')))
 
   // Standing evidence fold: the latest browser/verify record of the current
   // turn, cleared by the next turn/start; null before the first attempt.
