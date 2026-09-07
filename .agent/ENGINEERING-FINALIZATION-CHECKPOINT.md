@@ -95,7 +95,6 @@ STAGE_PROMOTION — remaining-4 close (partial):
 STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
 NEXT_ACTION = STAGING_RESUME_FINAL (patch-1 runtime probe -> M5 candidate+manifest -> packaged e2e discovery/isolation). NOT SUPERVISED_LIVE_PROMOTION.
-
 STAGE_PROMOTION — final-three blockers (turn closed honestly):
   1) PATCH_1_RUNTIME_PROBE = BLOCKED: requires a real packaged workflow execution with renderedFull > spillThresholdChars; packaged headless composition does not deterministically expose tool-workflow + subagent provider path within budget (LLM-volatile output or fixture-provider composition needed; fixture path not executed this turn).
   2) M5_CANDIDATE = BLOCKED (environment/tooling): m5v2-deploy slot copy of dsh-root ships ONLY scripts/m5-release.ts (slot engine) + {m5-release,m5-deployment}.spec.ts; there is no executable operator prepare/record CLI present in this copy to create a candidate slot + manifest without writing new glue (forbidden: no new release subsystem). Candidate would have been: install root = consumer-adapter node_modules; manifest sourceRevision=717cd0cae version 0.1.2-alpha.5; Patch-1 as deployment-local delta.
@@ -105,3 +104,11 @@ STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL
 STAGING_INCOMPLETE = true
 NEXT_ACTION = STAGING_RESUME_REQUIRES (a) official M5 prepare CLI or explicit user authorization to create candidate slot via documented m5-release flow; (b) a fixture-composed deterministic workflow probe; (c) candidate E2E. NOT SUPERVISED_LIVE_PROMOTION.
 LIVE_RUNTIME identity UNTOUCHED (rev 55101cc59; :3080; profiles/stable; PID external note only).
+
+FINAL CLOSURE SESSION — results:
+  A. PATCH_1_RUNTIME_PROBE = PASS(core) + residual: harness /tmp/stage_promo/probe_p1.mjs exercised the REAL packaged tool-workflow execute path (ctx.plugin(toolWorkflow) on packaged libs) with an engine at the documented ctx.workflowEngine seam executing the script via agent() fixture (AUTH_A). Positive: spilled=true, spill file .agent/workflow-results/<runId>.json created, spill payload sha == JSON(fixture) sha (947104a1cf4bed9d31d872332ae50089bdbd3c911c131000f1936a902d61238d; 15010 chars), returned/model-visible text bounded (10088 chars incl truncation marker), runId present. RESIDUAL(P2): locator note absent from rendered text because the OLD-STABLE patch itself never attaches spilledFile to the returned tool value (render reads value.spilledFile which is undefined) — pre-existing behavior of the copied authorized delta, not introduced here; file+runId recover full payload. NO_SPILL_BELOW_THRESHOLD = PASS (small fixture -> no file, inline preserved, exact).
+  B. M5_CANDIDATE = READY_TO_EXECUTE (NOT BLOCKED_BY_API_SURFACE): m5-release.ts exports slotDir/recordManifest/approveRelease/readManifest/validateSlot/resolveActive/readPointerMeta/promote/rollback/installCanaryProbe/runCanary + canonicalManifest/ReleaseManifest; m5-deployment.spec proves exact call order (recordManifest(deployRoot,name,{releaseId,version,sourceRevision},critical) then validateSlot). One-shot glue place: /tmp/stage_promo/m5root (new deployRoot; candidate slot; install root from verified patched consumer). NOT EXECUTED this session.
+  C. CANDIDATE CONTINUITY E2E = gated by B (not executed).
+STAGE_PROMOTION_VERDICT = PASS_WITH_RESIDUAL ; STAGING_INCOMPLETE = true
+NEXT_ACTION = STAGING_RESUME_EXECUTION (run M5 one-shot glue -> validateSlot+canary -> candidate :3099 -> continuity E2E -> provenance; single focused session). NOT SUPERVISED_LIVE_PROMOTION.
+LIVE_RUNTIME identity UNTOUCHED (rev 55101cc59, :3080).
