@@ -1,14 +1,24 @@
 /** SQLite schema for the disposable session full-text read model. */
 
+import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { mkdir, open } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import { KNOWN_SESSION_EVENT_TYPES, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 
 /** Current derived-index schema version. Incompatible versions reset in place. */
-export const SESSION_QUERY_SQLITE_SCHEMA_VERSION = 8
+export const SESSION_QUERY_SQLITE_SCHEMA_VERSION = 9
 
 /** SQLite application id protecting unrelated databases from derived resets. */
 export const SESSION_QUERY_SQLITE_APPLICATION_ID = 0x44534851
+
+/** Identity of the session-log reader semantics that produced persisted FTS rows. */
+export const SESSION_QUERY_READER_COMPATIBILITY = createHash('sha256')
+  .update(JSON.stringify({
+    formatVersion: SESSION_FORMAT_VERSION,
+    eventTypes: [...KNOWN_SESSION_EVENT_TYPES].sort(),
+  }))
+  .digest('hex')
 
 /** Supported SQLite journal modes. */
 export type JournalMode = 'wal' | 'delete' | 'truncate' | 'persist'
@@ -63,7 +73,10 @@ export async function openSearchDatabase(path: string, journalMode: JournalMode)
     }
     if (applicationId === SESSION_QUERY_SQLITE_APPLICATION_ID) {
       assertDerivedUserTables(actual, userTables)
-      if (version !== SESSION_QUERY_SQLITE_SCHEMA_VERSION) resetDerivedSchema(db, userTables)
+      if (
+        version !== SESSION_QUERY_SQLITE_SCHEMA_VERSION
+        || readerCompatibility(db) !== SESSION_QUERY_READER_COMPATIBILITY
+      ) resetDerivedSchema(db, userTables)
     }
     // Apply mutating pragmas only after refusing foreign or canonical files.
     // journalMode is a validated closed union, not caller-controlled SQL.
@@ -93,6 +106,18 @@ function assertDerivedUserTables(path: string, userTables: readonly string[]): v
   }
 }
 
+function readerCompatibility(db: DatabaseSync): string | undefined {
+  try {
+    const row = db.prepare(
+      'SELECT reader_compatibility FROM search_state WHERE singleton = 1',
+    ).get() as { reader_compatibility: string } | undefined
+    return row?.reader_compatibility
+  } catch {
+    // The application id and table-name allowlist already identify this as a disposable derived index.
+    return undefined
+  }
+}
+
 function resetDerivedSchema(db: DatabaseSync, userTables: readonly string[]): void {
   for (const name of userTables) {
     db.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(name)}`)
@@ -105,10 +130,13 @@ function ensurePersistentSchema(db: DatabaseSync): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS search_state (
       singleton         INTEGER PRIMARY KEY CHECK (singleton = 1),
-      global_generation INTEGER NOT NULL
+      global_generation  INTEGER NOT NULL,
+      reader_compatibility TEXT NOT NULL
     ) STRICT
   `)
-  db.exec('INSERT OR IGNORE INTO search_state (singleton, global_generation) VALUES (1, 0)')
+  db.prepare(
+    'INSERT OR IGNORE INTO search_state (singleton, global_generation, reader_compatibility) VALUES (1, 0, ?)',
+  ).run(SESSION_QUERY_READER_COMPATIBILITY)
   db.exec(`
     CREATE TABLE IF NOT EXISTS persisted_sessions (
       id             TEXT PRIMARY KEY,

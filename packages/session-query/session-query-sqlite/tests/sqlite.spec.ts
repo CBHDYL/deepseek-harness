@@ -1288,6 +1288,40 @@ describe('SQLite reconciliation and source lifecycle', () => {
     expect(after.has(added.id)).toBe(true)
   })
 
+  it('revalidates unchanged revisions after a reader compatibility change', async () => {
+    const path = await temporaryPath()
+    const unsupported = header('reader-incompatible')
+    TestPersistence.reset([{ meta: unsupported, events: messageEvents('stale lineage needle') }])
+    const first = new Context()
+    await first.plugin(SessionStore)
+    await first.plugin(SessionProjectionRegistry)
+    const firstPersistence = await first.plugin(TestPersistence)
+    const firstSearch = await first.plugin(SqliteSessionQueryEngine, { path })
+    await expect(first.sessionQuery.searchSessions({ query: 'stale lineage' }))
+      .resolves.toMatchObject({ items: [{ header: unsupported }] })
+    await firstSearch.dispose()
+    await firstPersistence.dispose()
+
+    const staleDb = new DatabaseSync(path)
+    staleDb.prepare("UPDATE search_state SET reader_compatibility = 'another-lineage'").run()
+    staleDb.close()
+    TestPersistence.inspectFailures.set(
+      unsupported.id,
+      new SessionFormatUnsupportedError('unsupported future event'),
+    )
+
+    const second = new Context()
+    await second.plugin(SessionStore)
+    await second.plugin(SessionProjectionRegistry)
+    const secondPersistence = await second.plugin(TestPersistence)
+    const secondSearch = await second.plugin(SqliteSessionQueryEngine, { path })
+    await expect(second.sessionQuery.searchSessions({ query: 'stale lineage' }))
+      .resolves.toEqual({ items: [] })
+    expect(TestPersistence.inspections.get(unsupported.id)).toBe(2)
+    await secondSearch.dispose()
+    await secondPersistence.dispose()
+  })
+
   it('drops connection-local live overlays on reopen and retains persistent bases', async () => {
     const path = await temporaryPath()
     const shared = header('shared', 10)
@@ -1420,6 +1454,33 @@ describe('SQLite schema, cancellation, and real persistence integration', () => 
       cause: { code: 'ERR_INVALID_ARG_VALUE' },
     })
     expect(ctx.sessionQuery).toBeUndefined()
+  })
+
+  it.each([
+    ['missing singleton', (db: DatabaseSync) => {
+      db.exec('DELETE FROM search_state')
+    }],
+    ['missing reader metadata', (db: DatabaseSync) => {
+      db.exec(
+        'DROP TABLE search_state; CREATE TABLE search_state (singleton INTEGER PRIMARY KEY, global_generation INTEGER NOT NULL) STRICT',
+      )
+    }],
+  ])('rebuilds a recognized current schema with %s', async (_name, damage) => {
+    const path = await temporaryPath()
+    const owner = await liveContext({ path })
+    await (owner.sessionQuery as SqliteSessionQueryEngine).close()
+    const damaged = new DatabaseSync(path)
+    damage(damaged)
+    damaged.close()
+
+    const reopened = await liveContext({ path })
+    await (reopened.sessionQuery as SqliteSessionQueryEngine).close()
+    const rebuilt = new DatabaseSync(path)
+    const state = rebuilt.prepare(
+      'SELECT reader_compatibility FROM search_state WHERE singleton = 1',
+    ).get() as { reader_compatibility: string }
+    expect(state.reader_compatibility).toMatch(/^[0-9a-f]{64}$/)
+    rebuilt.close()
   })
 
   it('resets a recognized incompatible schema but refuses unknown or foreign tables', { timeout: 20_000 }, async () => {

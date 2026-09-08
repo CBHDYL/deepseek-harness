@@ -106,7 +106,7 @@ Persisted FTS rows live in a dedicated derived database and survive restarts; li
 
 ### Schema ownership
 
-The database carries an application id and schema version 8. Opening refuses a file owned by another application or a canonical database, rejects unknown user tables, and only a recognized incompatible derived schema resets in place — so an unrelated or session-persistence database is never touched. On POSIX filesystems, missing directories and database files are created owner-only (`0700` and `0600` before the process umask). Exactly one service in one process owns a derived-index path; generations and TEMP shadow state are connection-owned.
+The database carries an application id, schema version 9, and a reader-compatibility fingerprint derived from the session format version and known event types. Opening resets the recognized derived schema when either the schema version or reader fingerprint changes, so rows produced by another reader lineage are never reused solely because their source revisions match. It refuses a file owned by another application or a canonical database and rejects unknown user tables, so an unrelated or session-persistence database is never touched. On POSIX filesystems, missing directories and database files are created owner-only (`0700` and `0600` before the process umask). Exactly one service in one process owns a derived-index path; generations and TEMP shadow state are connection-owned.
 
 </details>
 
