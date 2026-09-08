@@ -1866,6 +1866,48 @@ describe('SQLite schema, cancellation, and real persistence integration', () => 
     await persistence.dispose()
   })
 
+  it('proactively warms the derived index in the background when backgroundWarmUp is set', async () => {
+    const persistenceRoot = await temporaryPath('warmup')
+    const searchPath = await temporaryPath('warmup.db')
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
+    const persistence = await ctx.plugin(JsonlSessionPersistence, { root: persistenceRoot, compression: 'none' })
+    const meta = header('warm', 10, { cwd: '/work' })
+    // The session exists before the search provider initializes, so its warm-up sees it.
+    await ctx.sessionPersistence.create(meta)
+    await ctx.sessionPersistence.append(meta.id, messageEvents('warmup needle'))
+
+    const search = await ctx.plugin(SqliteSessionQueryEngine, { path: searchPath, backgroundWarmUp: true })
+
+    const waitUntil = async (cond: () => boolean, ms = 5000): Promise<void> => {
+      const started = Date.now()
+      while (!cond()) {
+        if (Date.now() - started > ms) throw new Error('background warm-up timed out')
+        await new Promise(r => setTimeout(r, 20))
+      }
+    }
+    // The background warm-up observes + indexes the session without any search.
+    // Poll the derived index directly: the background warm-up populates it
+    // with no search call, so persisted_docs grows on its own.
+    const countDocs = (): number => {
+      try {
+        const db = new DatabaseSync(searchPath, { readOnly: true })
+        try { return (db.prepare('SELECT count(*) AS c FROM persisted_docs').get() as { c: number }).c }
+        finally { db.close() }
+      } catch { return 0 }
+    }
+    await waitUntil(() => countDocs() > 0)
+    expect(countDocs()).toBeGreaterThan(0)
+
+    // The session is searchable: the warm-up built the index that now answers it.
+    await expect(ctx.sessionQuery.searchSessions({ query: 'warmup needle' }))
+      .resolves.toMatchObject({ items: [{ header: meta, persisted: true, live: false }] })
+
+    await search.dispose()
+    await persistence.dispose()
+  })
+
   it('reconciles colliding local revisions when a derived index reopens against another JSONL store', async () => {
     const persistenceRootA = await temporaryPath('canonical-a')
     const persistenceRootB = await temporaryPath('canonical-b')

@@ -21,13 +21,17 @@
 # Full-text session search is enabled for the Web profile with a durable
 # derived index under the harness home (openAt: first-search keeps the
 # node:sqlite import deferred until the first search, so Node 22 startup stays
-# quiet). The index is derived/cache: deleting it rebuilds from the session
-# logs. The model-facing session-query tools ship in the per-session agent
-# preset (ptc) and are workspace-authorized at the tool consumer.
+# quiet). backgroundWarmUp builds that index in the background at boot, so a
+# large first cold build is not aborted by the per-search searchTimeoutMs
+# deadline (a >30s build used to leave the index permanently empty). The index
+# is derived/cache: deleting it rebuilds from the session logs. The
+# model-facing session-query tools ship in the per-session agent preset (ptc)
+# and are workspace-authorized at the tool consumer.
 - id: session-query-sqlite
   config:
     path: !!js dshHomePath('session-query.db')
     openAt: first-search
+    backgroundWarmUp: true
 
 - id: tools
   config:

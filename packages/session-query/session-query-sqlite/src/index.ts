@@ -108,6 +108,11 @@ export interface Config extends SessionQueryConfig {
    * never imported or opened. Defaults to `startup`.
    */
   openAt?: OpenAt
+  /** Proactively build the derived index in the background at activation so
+   *  a large first cold build is not bounded by a search's `searchTimeoutMs`.
+   *  Defaults to `false` (index built on first search, which the cooperative
+   *  search deadline can abort). */
+  backgroundWarmUp?: boolean
   /** SQLite journal mode. Defaults to `wal`. */
   journalMode?: JournalMode
   /** Page size when a request omits `limit`. At most `Number.MAX_SAFE_INTEGER - 1`; defaults to 20. */
@@ -123,6 +128,7 @@ export interface Config extends SessionQueryConfig {
 interface ResolvedConfig {
   path: string
   openAt: OpenAt
+  backgroundWarmUp: boolean
   journalMode: JournalMode
   defaultLimit: number
   maxLimit: number
@@ -207,6 +213,7 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
   static Config: z<Config> = z.object({
     path: z.string().required(),
     openAt: z.union(['startup', 'first-search', 'never'] as const).default('startup'),
+    backgroundWarmUp: z.boolean().default(false),
     journalMode: z.union(['wal', 'delete', 'truncate', 'persist'] as const).default('wal'),
     defaultLimit: z.number().step(1).min(1).max(SQLITE_MAX_PAGE_LIMIT).default(SESSION_QUERY_SQLITE_DEFAULT_LIMIT),
     maxLimit: z.number().step(1).min(1).max(SQLITE_MAX_PAGE_LIMIT).default(SESSION_QUERY_SQLITE_MAX_LIMIT),
@@ -259,6 +266,25 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
   /** Open eagerly only when activation owns the configured readiness boundary. */
   protected async [Service.init](): Promise<void> {
     if (this.config.openAt === 'startup') await this._ensureReady(undefined)
+    if (this.config.backgroundWarmUp) this._warmUp()
+  }
+
+  /** Proactive cold build: run the one-time observe+index in the background so a
+   *  deployment has the index ready before the first search. Best-effort (the
+   *  search-time reconcile retries); serialized with searches via `_tail`, so a
+   *  search that races it waits for the build instead of aborted mid-observe. */
+  private _warmUp(): void {
+    if (this.config.openAt === 'never') return
+    void (async () => {
+      try {
+        await this._serialized(undefined, async () => {
+          await this._ensureReady(undefined)
+          await this._reconcile(undefined)
+        })
+      } catch {
+        // Background warm-up is best-effort; a later search reconciles on demand.
+      }
+    })()
   }
 
   override async searchSessions(
@@ -1021,6 +1047,7 @@ function resolveConfig(config: Config): ResolvedConfig {
   const resolved: ResolvedConfig = {
     path: config.path,
     openAt: config.openAt ?? 'startup',
+    backgroundWarmUp: config.backgroundWarmUp ?? false,
     journalMode: config.journalMode ?? 'wal',
     defaultLimit: config.defaultLimit ?? SESSION_QUERY_SQLITE_DEFAULT_LIMIT,
     maxLimit: config.maxLimit ?? SESSION_QUERY_SQLITE_MAX_LIMIT,
