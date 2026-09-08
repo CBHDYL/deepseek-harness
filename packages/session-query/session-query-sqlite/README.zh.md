@@ -43,7 +43,8 @@ kind: "package-reference"
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `path` | 必填 | 专用派生索引 SQLite 路径，或 `:memory:`；POSIX 上缺失的路径会以仅所有者可访问的方式创建 |
-| `openAt` | `startup` | `startup` 在激活时打开；`first-search` 把 SQLite 模块推迟到首次搜索；`never` 关闭全文搜索，继承的读取保持可用 |
+| `openAt` | `startup` | `startup` 在激活时打开；`first-search` 在未启用后台预热时把 SQLite 模块推迟到首次搜索；`never` 关闭全文搜索，继承的读取保持可用 |
+| `backgroundWarmUp` | `false` | 在激活时于后台对齐派生索引，不受单次搜索期限约束 |
 | `journalMode` | `wal` | `wal`、`delete`、`truncate` 或 `persist` |
 | `defaultLimit` | `20` | 请求省略 `limit` 时的分页大小 |
 | `maxLimit` | `100` | 接受的最大请求分页大小 |
@@ -67,7 +68,7 @@ kind: "package-reference"
 
 ### 失败与恢复
 
-带类型的 `SessionQueryError` 失败携带稳定代码：搜索配置为关闭时 `SESSION_QUERY_SEARCH_DISABLED`；索引无法打开或对账时 `SESSION_QUERY_INDEX_FAILED`；搜索目标不存在时 `SESSION_QUERY_SESSION_NOT_FOUND`；语料库在分页之间变化时 `SESSION_QUERY_STALE_CURSOR`——请重试完整的搜索调用；游标不属于该请求时 `SESSION_QUERY_INVALID_CURSOR`。取消在同步 SQLite 调用之间被尊重；已在 JavaScript 线程上执行的语句无法被中断。
+带类型的 `SessionQueryError` 失败携带稳定代码：搜索配置为关闭时 `SESSION_QUERY_SEARCH_DISABLED`；索引无法打开或对账时 `SESSION_QUERY_INDEX_FAILED`；搜索目标不存在时 `SESSION_QUERY_SESSION_NOT_FOUND`；语料库在分页之间变化时 `SESSION_QUERY_STALE_CURSOR`——请重试完整的搜索调用；游标不属于该请求时 `SESSION_QUERY_INVALID_CURSOR`。以 `SessionFormatUnsupportedError` 拒绝的持久化日志会从派生语料库中省略；原日志保持不变，兼容会话继续建立索引，而损坏及其他来源错误仍会让对齐失败。取消在同步 SQLite 调用之间被尊重；已在 JavaScript 线程上执行的语句无法被中断。
 
 -----
 

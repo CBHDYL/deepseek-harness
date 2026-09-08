@@ -13,7 +13,10 @@ import SessionStore, {
 } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { SessionEvent, SessionHeader, SessionId as SessionIdType } from '@deepseek-ai/dsh-session'
-import SessionPersistence, { SessionPersistenceRevision } from '@deepseek-ai/dsh-session-persistence'
+import SessionPersistence, {
+  SessionFormatUnsupportedError,
+  SessionPersistenceRevision,
+} from '@deepseek-ai/dsh-session-persistence'
 import type { SessionEventSuffix, SessionInspection, SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persistence'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SqliteSessionQueryEngine, {
@@ -96,6 +99,7 @@ class TestPersistence extends SessionPersistence {
   static snapshotEffect: ((signal?: AbortSignal) => void | Promise<void>) | undefined
   static snapshotOverride: (() => SessionPersistenceSnapshot[]) | undefined
   static failure: unknown
+  static inspectFailures = new Map<SessionIdType, unknown>()
 
   locate(_meta: SessionHeader): undefined {
     return undefined
@@ -124,6 +128,7 @@ class TestPersistence extends SessionPersistence {
     this.snapshotEffect = undefined
     this.snapshotOverride = undefined
     this.failure = undefined
+    this.inspectFailures = new Map()
   }
 
   static set(entry: {
@@ -173,6 +178,8 @@ class TestPersistence extends SessionPersistence {
     TestPersistence.inspections.set(id, (TestPersistence.inspections.get(id) ?? 0) + 1)
     TestPersistence.inspectSignals.push(signal)
     if (TestPersistence.failure !== undefined) throw TestPersistence.failure
+    const inspectFailure = TestPersistence.inspectFailures.get(id)
+    if (inspectFailure !== undefined) throw inspectFailure
     const entry = TestPersistence.entries.get(id)
     if (entry === undefined) throw new Error('missing test session')
     await TestPersistence.inspectEffect?.(entry, signal)
@@ -1145,6 +1152,69 @@ describe('SQLite reconciliation and source lifecycle', () => {
     const typed = new SessionQueryError('typed persistence failure', 'SESSION_QUERY_PERSISTENCE_FAILED')
     TestPersistence.failure = typed
     await expect(ctx.sessionQuery.searchSessions({ query: 'needle' })).rejects.toBe(typed)
+  })
+
+  it('keeps compatible rows and removes stale rows when one persisted revision becomes unsupported', async () => {
+    const compatible = header('compatible')
+    const unsupported = header('unsupported')
+    TestPersistence.reset([
+      { meta: compatible, events: messageEvents('compatible needle') },
+      { meta: unsupported, events: messageEvents('unsupported needle') },
+    ])
+    const ctx = await liveContext()
+    await ctx.plugin(TestPersistence)
+
+    await expect(ctx.sessionQuery.searchSessions({ query: 'unsupported' }))
+      .resolves.toMatchObject({ items: [{ header: unsupported }] })
+
+    TestPersistence.set({
+      meta: unsupported,
+      events: messageEvents('unsupported replacement'),
+    })
+    TestPersistence.inspectFailures.set(
+      unsupported.id,
+      new SessionFormatUnsupportedError('unsupported future event'),
+    )
+
+    await expect(ctx.sessionQuery.searchSessions({ query: 'compatible' }))
+      .resolves.toMatchObject({ items: [{ header: compatible }] })
+    await expect(ctx.sessionQuery.searchSessions({ query: 'unsupported' }))
+      .resolves.toEqual({ items: [] })
+  })
+
+  it('retries an unsupported revision and indexes it when inspection becomes compatible', async () => {
+    const recovered = header('recovered')
+    TestPersistence.reset([{ meta: recovered, events: messageEvents('recovered needle') }])
+    TestPersistence.inspectFailures.set(
+      recovered.id,
+      new SessionFormatUnsupportedError('unsupported future event'),
+    )
+    const ctx = await liveContext()
+    await ctx.plugin(TestPersistence)
+
+    await expect(ctx.sessionQuery.searchSessions({ query: 'recovered' }))
+      .resolves.toEqual({ items: [] })
+    expect(TestPersistence.inspections.get(recovered.id)).toBe(1)
+
+    TestPersistence.inspectFailures.delete(recovered.id)
+    await expect(ctx.sessionQuery.searchSessions({ query: 'recovered' }))
+      .resolves.toMatchObject({ items: [{ header: recovered }] })
+    expect(TestPersistence.inspections.get(recovered.id)).toBe(2)
+  })
+
+  it('fails the complete reconciliation for a non-format per-session inspection error', async () => {
+    const compatible = header('compatible')
+    const failed = header('failed')
+    TestPersistence.reset([
+      { meta: compatible, events: messageEvents('compatible needle') },
+      { meta: failed, events: messageEvents('failed needle') },
+    ])
+    TestPersistence.inspectFailures.set(failed.id, new Error('backend unavailable'))
+    const ctx = await liveContext()
+    await ctx.plugin(TestPersistence)
+
+    await expect(ctx.sessionQuery.searchSessions({ query: 'compatible' }))
+      .rejects.toThrow(expectCode('SESSION_QUERY_PERSISTENCE_FAILED'))
   })
 
   it('rejects immutable header conflicts between live and persisted sources', async () => {

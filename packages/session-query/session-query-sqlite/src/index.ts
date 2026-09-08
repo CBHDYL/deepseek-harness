@@ -16,7 +16,9 @@ import type {
   SessionId,
   SessionLogOffset,
 } from '@deepseek-ai/dsh-session'
-import type SessionPersistence from '@deepseek-ai/dsh-session-persistence'
+import SessionPersistence, {
+  SessionFormatUnsupportedError,
+} from '@deepseek-ai/dsh-session-persistence'
 import type {
   SessionPersistenceRevision,
   SessionPersistenceSnapshot,
@@ -531,6 +533,7 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
           const before = await persistence.listSnapshots(signal)
           assertNotAborted(signal)
           persisted = materializePersistenceSnapshots(before)
+          const stableSnapshots = new Map(persisted)
           for (const entry of persisted.values()) {
             if (canReuseIndexed && indexed.get(entry.header.id)?.revision === entry.revision) continue
             // Skip work already shadowed by a live owner. `inspect()` is
@@ -539,7 +542,20 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
             // the returned observation live-preferred.
             if (initiallyLive.has(entry.header.id) || this.ctx.sessions.get(entry.header.id) !== undefined) continue
             assertNotAborted(signal)
-            const loaded = await persistence.inspect(entry.header.id, signal)
+            let loaded
+            try {
+              loaded = await persistence.inspect(entry.header.id, signal)
+            } catch (error: unknown) {
+              // A log written by a newer lineage cannot be interpreted by this
+              // runtime, but it must not prevent the derived index from serving
+              // every compatible session. Keep the raw log untouched and omit
+              // only that session from this runtime's searchable corpus.
+              if (error instanceof SessionFormatUnsupportedError) {
+                persisted.delete(entry.header.id)
+                continue
+              }
+              throw error
+            }
             assertNotAborted(signal)
             assertSessionHeadersCompatible(entry.header, loaded.meta)
             entry.loaded = observeSession(
@@ -552,7 +568,7 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
           const afterSnapshots = await persistence.listSnapshots(signal)
           assertNotAborted(signal)
           const after = materializePersistenceSnapshots(afterSnapshots)
-          if (!samePersistenceSnapshots(persisted, after)) continue
+          if (!samePersistenceSnapshots(stableSnapshots, after)) continue
           if (this._persistenceBinding !== persistenceBinding) continue
         } catch (error: unknown) {
           if (isAbort(error) || signal?.aborted) {

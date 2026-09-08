@@ -43,7 +43,8 @@ Choose it when you want full-text recall over prior sessions with ranking and pa
 | Field | Default | Meaning |
 |---|---|---|
 | `path` | required | Dedicated derived-index SQLite path, or `:memory:`; missing paths are created owner-only on POSIX |
-| `openAt` | `startup` | `startup` opens at activation; `first-search` defers the SQLite module until the first search; `never` disables full-text search while inherited reads stay available |
+| `openAt` | `startup` | `startup` opens at activation; `first-search` defers the SQLite module until the first search unless background warm-up is enabled; `never` disables full-text search while inherited reads stay available |
+| `backgroundWarmUp` | `false` | Reconcile the derived index in the background at activation, outside any individual search deadline |
 | `journalMode` | `wal` | `wal`, `delete`, `truncate`, or `persist` |
 | `defaultLimit` | `20` | Page size when a request omits `limit` |
 | `maxLimit` | `100` | Largest accepted request page size |
@@ -67,7 +68,7 @@ With `openAt: first-search`, the service activates without importing `node:sqlit
 
 ### Failures and recovery
 
-Typed `SessionQueryError` failures carry stable codes: `SESSION_QUERY_SEARCH_DISABLED` when search is configured off; `SESSION_QUERY_INDEX_FAILED` when the index cannot open or reconcile; `SESSION_QUERY_SESSION_NOT_FOUND` when a search target is absent; `SESSION_QUERY_STALE_CURSOR` when the corpus changed between pages — retry the complete search call; and `SESSION_QUERY_INVALID_CURSOR` for a cursor that does not belong to this request. Cancellation is honored between synchronous SQLite calls; a statement already executing on the JavaScript thread cannot be interrupted.
+Typed `SessionQueryError` failures carry stable codes: `SESSION_QUERY_SEARCH_DISABLED` when search is configured off; `SESSION_QUERY_INDEX_FAILED` when the index cannot open or reconcile; `SESSION_QUERY_SESSION_NOT_FOUND` when a search target is absent; `SESSION_QUERY_STALE_CURSOR` when the corpus changed between pages — retry the complete search call; and `SESSION_QUERY_INVALID_CURSOR` for a cursor that does not belong to this request. A persisted log refused as `SessionFormatUnsupportedError` is omitted from the derived corpus without changing the log or preventing compatible sessions from being indexed; corruption and other source failures still fail reconciliation. Cancellation is honored between synchronous SQLite calls; a statement already executing on the JavaScript thread cannot be interrupted.
 
 -----
 
