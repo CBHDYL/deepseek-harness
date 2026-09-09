@@ -88,14 +88,20 @@ export const SESSION_QUERY_SQLITE_MAX_LIMIT = 100
 /** Default maximum snippet length in Unicode code points. */
 export const SESSION_QUERY_SQLITE_SNIPPET_CHARS = 240
 
-// One transient source change gets a retry; repeated churn fails rather than monopolizing the queue.
+// Content drift and session additions are handled per session inside one
+// attempt (see _observeStable), never by retrying the whole attempt. This
+// retries the attempt only for the two boundary races it cannot resolve
+// locally: the live-session id set changing while live sessions are being
+// read, and the persistence binding itself being replaced mid-observation.
 const STABLE_OBSERVATION_ATTEMPTS = 2
 
-// A session appearing mid-scan is topped up in place (inspected and merged into
-// this attempt) rather than forcing a full-corpus retry, because absorbing one
-// new session is cheap regardless of corpus size. This bounds how many times
-// a steady trickle of new sessions can keep the top-up loop going before it
-// falls back to a full retry like any other unstable observation.
+// A session appearing mid-scan is topped up in place (inspected and merged
+// into this attempt) rather than deferred to the next search, because
+// absorbing one new session costs the same regardless of corpus size. This
+// bounds how many times a steady trickle of new sessions can keep the top-up
+// loop going before this attempt moves on with whatever it has inspected so
+// far; a session still arriving past the budget is picked up on its own next
+// observation, the same as any other content this attempt did not touch.
 const MAX_TOPUP_ROUNDS = 4
 
 /** SQLite module/handle opening phase; `never` disables full-text search entirely. */
@@ -448,6 +454,10 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
     const liveById = new Map(liveRows.map(row => [row.id as SessionId, row]))
     const observation = await this._observeStable(persistedById, signal)
     assertNotAborted(signal)
+    // `loaded` is absent for a cache hit this attempt never inspected, and
+    // for a session `_observeStable` inspected but deferred (format refusal or
+    // content that kept changing mid-inspection): both leave this backend's
+    // existing row, if any, untouched rather than writing a stale or partial one.
     const persistentChanges = observation.persistenceBinding.service === undefined
       ? []
       : [...observation.persisted.values()].filter(entry => entry.loaded !== undefined)
@@ -540,12 +550,12 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
           const before = await persistence.listSnapshots(signal)
           assertNotAborted(signal)
           persisted = materializePersistenceSnapshots(before)
-          // Revision stability is required only for sessions this attempt
-          // actually reads (inspects or omits on a format refusal), not the
-          // whole corpus: an untouched session's revision changing elsewhere
-          // is picked up on its own next observation regardless, so it must
-          // not force a retry whose cost scales with corpus size rather than
-          // this attempt's actual work.
+          // Sessions this attempt actually inspects (skipping cache hits and
+          // live-shadowed ids) are tracked here, keyed by the revision they
+          // were listed at when inspection started. That revision is the
+          // baseline the post-inspection listing below re-checks each one
+          // against; a session never touched this attempt is never compared,
+          // so unrelated churn elsewhere in the corpus cannot affect it.
           const touched = new Map<SessionId, ObservedPersistedSession>()
           const knownIds = new Set<SessionId>(persisted.keys())
 
@@ -589,31 +599,47 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
           for (const entry of persisted.values()) await touchEntry(entry)
 
           // A session appearing between listings is topped up into this same
-          // attempt instead of invalidating it entirely: re-list, and if only
-          // new ids appeared — no known id vanished, no touched session's
-          // revision moved — fold the new ones in and repeat until the corpus
-          // stops growing or the round budget runs out. A vanished known id or
-          // a touched session's revision moving still falls straight through
-          // to the ordinary full retry below, exactly as before top-up existed.
-          let stable = false
+          // attempt instead of being deferred to the next search: re-list, and
+          // inspect whatever ids are still unknown, repeating until the corpus
+          // stops growing or the round budget runs out. This loop's own
+          // re-listing doubles as the freshest available snapshot for the
+          // drift check below, so no extra listing call is needed once it ends.
+          let latestListing = persisted
           for (let round = 0; round < MAX_TOPUP_ROUNDS; round += 1) {
             assertNotAborted(signal)
             const afterSnapshots = await persistence.listSnapshots(signal)
             assertNotAborted(signal)
-            const after = materializePersistenceSnapshots(afterSnapshots)
-            if (!sameKnownIds(knownIds, after) || !sameTouchedRevisions(touched, after)) break
-            const newEntries = [...after.values()].filter(entry => !knownIds.has(entry.header.id))
-            if (newEntries.length === 0) {
-              stable = true
-              break
-            }
+            latestListing = materializePersistenceSnapshots(afterSnapshots)
+            const newEntries = [...latestListing.values()].filter(entry => !knownIds.has(entry.header.id))
+            if (newEntries.length === 0) break
             for (const entry of newEntries) {
               persisted.set(entry.header.id, entry)
               knownIds.add(entry.header.id)
             }
             for (const entry of newEntries) await touchEntry(entry)
           }
-          if (!stable) continue
+
+          // A session this attempt inspected is written only if its revision
+          // and header still match the freshest listing: unlike an addition,
+          // this attempt cannot tell whether inspected content it read mid-
+          // change is an accurate basis for the row it is about to write. A
+          // continuously changing session is deferred — its `loaded` result is
+          // discarded so `_reconcile` neither writes nor deletes its row,
+          // leaving whatever this backend already indexed for it untouched —
+          // rather than failing this attempt or forcing a corpus-wide retry;
+          // the next search re-observes it against its then-current revision.
+          // A session absent from the freshest listing has genuinely gone,
+          // independent of how many other sessions were also being inspected.
+          for (const [id, entry] of touched) {
+            const current = latestListing.get(id)
+            if (current === undefined) {
+              persisted.delete(id)
+              continue
+            }
+            if (current.revision !== entry.revision || !sameHeader(current.header, entry.header)) {
+              delete entry.loaded
+            }
+          }
           if (this._persistenceBinding !== persistenceBinding) continue
         } catch (error: unknown) {
           if (isAbort(error) || signal?.aborted) {
@@ -994,47 +1020,6 @@ function materializePersistenceSnapshots(
   return result
 }
 
-/**
- * Whether every previously known session id is still listed. A vanished id
- * always falls through to a full retry: unlike a purely additive change, this
- * attempt cannot tell whether an already-loaded session's content remains an
- * accurate basis for the row it is about to write, so removal is handled
- * conservatively rather than absorbed by the top-up loop.
- */
-function sameKnownIds(
-  known: ReadonlySet<SessionId>,
-  after: ReadonlyMap<SessionId, ObservedPersistedSession>,
-): boolean {
-  for (const id of known) {
-    if (!after.has(id)) return false
-  }
-  return true
-}
-
-/**
- * Whether every session this attempt actually inspected still has the same
- * revision and header in a freshly re-listed snapshot. A session this attempt
- * did NOT inspect changing its revision does not fail this check — that
- * session's own revision is picked up on its own next observation regardless,
- * so unrelated churn elsewhere in a large, actively written corpus must not
- * force a retry whose cost scales with corpus size rather than this attempt's
- * actual work.
- */
-function sameTouchedRevisions(
-  touched: ReadonlyMap<SessionId, ObservedPersistedSession>,
-  after: ReadonlyMap<SessionId, ObservedPersistedSession>,
-): boolean {
-  for (const [id, first] of touched) {
-    const second = after.get(id)
-    if (
-      second === undefined
-      || first.revision !== second.revision
-      || !sameHeader(first.header, second.header)
-    ) return false
-  }
-  return true
-}
-
 function sameSessionIds(
   before: ReadonlySet<SessionId>,
   after: ReadonlyMap<SessionId, ObservedSession>,
@@ -1046,6 +1031,7 @@ function sameSessionIds(
   return true
 }
 
+/** Whether two headers describe the same session identity and metadata. */
 function sameHeader(a: SessionHeader, b: SessionHeader): boolean {
   return a.version === b.version
     && a.id === b.id

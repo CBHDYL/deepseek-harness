@@ -1088,20 +1088,58 @@ describe('SQLite reconciliation and source lifecycle', () => {
     expect(TestPersistence.inspections.get(added.id)).toBe(1)
   })
 
-  it('fails after one retry when persistence snapshots keep changing', async () => {
+  it('defers a session that keeps changing through every inspection instead of failing the search', async () => {
+    const stable = header('stable-sibling')
     const durable = header('continuous-mutation')
-    TestPersistence.reset([{ meta: durable, events: messageEvents('durable needle') }])
+    TestPersistence.reset([
+      { meta: stable, events: messageEvents('stable needle') },
+      { meta: durable, events: messageEvents('durable needle') },
+    ])
     const ctx = await liveContext()
     await ctx.plugin(TestPersistence)
     let lists = 0
     TestPersistence.snapshotEffect = () => {
       lists += 1
+      // Mutate on every listSnapshots() call (both the pre- and
+      // post-inspection listings), so `durable` can never be read at a
+      // revision that survives to the post-inspection check.
       TestPersistence.set({ meta: durable, events: messageEvents(`durable needle ${lists}`) })
     }
 
+    // The search succeeds and returns the unaffected sibling; the
+    // continuously changing session is silently omitted rather than
+    // failing the whole search or indexing a torn read.
     await expect(ctx.sessionQuery.searchSessions({ query: 'needle' }))
-      .rejects.toThrow(expectCode('SESSION_QUERY_PERSISTENCE_FAILED'))
-    expect(lists).toBe(4)
+      .resolves.toMatchObject({ items: [{ header: stable }] })
+    // Its own next search re-observes it fresh, independent of this attempt.
+    TestPersistence.snapshotEffect = undefined
+    await expect(ctx.sessionQuery.searchSessions({ query: 'durable' }))
+      .resolves.toMatchObject({ items: [{ header: durable }] })
+  })
+
+  it('keeps a previously indexed row when its session starts churning mid-inspection', async () => {
+    const churning = header('was-indexed-now-churning')
+    TestPersistence.reset([{ meta: churning, events: messageEvents('original needle') }])
+    const ctx = await liveContext()
+    await ctx.plugin(TestPersistence)
+    // Index it once while stable, establishing a real prior row.
+    await expect(ctx.sessionQuery.searchSessions({ query: 'original' }))
+      .resolves.toMatchObject({ items: [{ header: churning }] })
+
+    // Now make it unreadable-stably: every listSnapshots() call bumps its
+    // revision, so this attempt can never inspect it at a revision that
+    // still matches by the time the post-inspection check runs.
+    let lists = 0
+    TestPersistence.snapshotEffect = () => {
+      lists += 1
+      TestPersistence.set({ meta: churning, events: messageEvents(`churning ${lists}`) })
+    }
+
+    // The prior indexed row survives untouched — old content, findable by
+    // its original text — rather than being deleted or replaced with a
+    // partially read value.
+    await expect(ctx.sessionQuery.searchSessions({ query: 'original' }))
+      .resolves.toMatchObject({ items: [{ header: churning }] })
   })
 
   it('does not retry when a session outside this attempt\'s touched set keeps changing', async () => {
@@ -1164,25 +1202,30 @@ describe('SQLite reconciliation and source lifecycle', () => {
     expect(TestPersistence.inspections.get(first.id)).toBe(1)
   })
 
-  it('falls back to a full retry when sessions keep appearing past the top-up round budget', async () => {
+  it('returns whatever the top-up loop absorbed when sessions keep appearing past its round budget', async () => {
     const first = header('overrun-first')
     TestPersistence.reset([{ meta: first, events: messageEvents('overrun needle') }])
     const ctx = await liveContext()
     await ctx.plugin(TestPersistence)
 
     // An unbounded stream of new sessions must not keep the top-up loop
-    // running forever: once its round budget is exhausted, this attempt
-    // reports itself unstable and the ordinary STABLE_OBSERVATION_ATTEMPTS
-    // retry budget takes over exactly as it would for any other unstable
-    // observation, eventually failing after both attempts run out.
+    // running forever: once its round budget is exhausted, this attempt moves
+    // on with whatever it already absorbed rather than failing outright — a
+    // session still arriving past the budget is simply picked up on its own
+    // next search, the same as any other content this attempt never touched.
     let n = 0
     TestPersistence.snapshotEffect = () => {
       n += 1
       TestPersistence.set({ meta: header(`overrun-${n}`), events: messageEvents(`overrun needle ${n}`) })
     }
 
-    await expect(ctx.sessionQuery.searchSessions({ query: 'needle' }))
-      .rejects.toThrow(expectCode('SESSION_QUERY_PERSISTENCE_FAILED'))
+    // With MAX_TOPUP_ROUNDS rounds, the loop absorbs one newly appearing
+    // session per round and moves on once the budget runs out — it neither
+    // hangs waiting for the corpus to stop growing nor fails the search;
+    // whichever sessions kept appearing past the budget wait for next time.
+    const page = await ctx.sessionQuery.searchSessions({ query: 'needle' })
+    expect(page.items.length).toBeGreaterThan(1)
+    expect(page.items.map(item => item.header.id)).toContain(first.id)
   })
 
   it('retries if the persistence binding changes while live sessions are observed', async () => {
