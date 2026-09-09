@@ -1102,6 +1102,40 @@ describe('SQLite reconciliation and source lifecycle', () => {
     expect(lists).toBe(4)
   })
 
+  it('does not retry when a session outside this attempt\'s touched set keeps changing', async () => {
+    const cached = header('untouched-churn')
+    const target = header('needs-inspection')
+    TestPersistence.reset([
+      { meta: cached, events: messageEvents('cached needle') },
+      { meta: target, events: messageEvents('target needle') },
+    ])
+    const ctx = await liveContext()
+    await ctx.plugin(TestPersistence)
+    // Index `cached` so a later search can skip re-inspecting it via the
+    // canReuseIndexed/matching-revision fast path, leaving it untouched.
+    await ctx.sessionQuery.searchSessions({ query: 'needle' })
+    expect(TestPersistence.inspections.get(cached.id)).toBe(1)
+
+    let snapshotCalls = 0
+    TestPersistence.snapshotEffect = () => {
+      snapshotCalls += 1
+      // Mutate the untouched session on every listSnapshots() call (both the
+      // `before` and `after` calls of every attempt) — if this session's
+      // churn were still compared, no attempt could ever stabilize.
+      TestPersistence.set({ meta: cached, events: messageEvents(`cached needle ${snapshotCalls}`) })
+    }
+    TestPersistence.set({ meta: target, events: messageEvents('target needle updated') })
+
+    const page = await ctx.sessionQuery.searchSessions({ query: 'updated' })
+    expect(page.items.map(item => item.header.id)).toEqual([target.id])
+    // One observation attempt: exactly the before/after snapshot pair, and
+    // `target` (this attempt's actually-touched session) inspected once more
+    // than its baseline count from the earlier indexing search.
+    expect(snapshotCalls).toBe(2)
+    expect(TestPersistence.inspections.get(target.id)).toBe(2)
+    expect(TestPersistence.inspections.get(cached.id)).toBe(1)
+  })
+
   it('retries if the persistence binding changes while live sessions are observed', async () => {
     const durable = header('live-boundary-retry')
     TestPersistence.reset([{ meta: durable, events: messageEvents('durable needle') }])

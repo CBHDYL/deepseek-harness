@@ -533,7 +533,16 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
           const before = await persistence.listSnapshots(signal)
           assertNotAborted(signal)
           persisted = materializePersistenceSnapshots(before)
-          const stableSnapshots = new Map(persisted)
+          // Membership (ids present) is compared against this immutable copy,
+          // taken before the loop below deletes format-unsupported entries out
+          // of `persisted`. Revision stability is required only for sessions
+          // this attempt actually reads (inspects or omits on a format
+          // refusal), not the whole corpus: narrowing that part of the
+          // comparison to the touched subset keeps the retry budget
+          // proportional to this attempt's actual work instead of total
+          // corpus size, while membership changes still always retry below.
+          const listedIds = new Map(persisted)
+          const touched = new Map<SessionId, ObservedPersistedSession>()
           for (const entry of persisted.values()) {
             if (canReuseIndexed && indexed.get(entry.header.id)?.revision === entry.revision) continue
             // Skip work already shadowed by a live owner. `inspect()` is
@@ -541,6 +550,7 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
             // crash-repair side effects; the live-membership retry below makes
             // the returned observation live-preferred.
             if (initiallyLive.has(entry.header.id) || this.ctx.sessions.get(entry.header.id) !== undefined) continue
+            touched.set(entry.header.id, entry)
             assertNotAborted(signal)
             let loaded
             try {
@@ -568,7 +578,7 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
           const afterSnapshots = await persistence.listSnapshots(signal)
           assertNotAborted(signal)
           const after = materializePersistenceSnapshots(afterSnapshots)
-          if (!samePersistenceSnapshots(stableSnapshots, after)) continue
+          if (!sameObservedSnapshots(listedIds, touched, after)) continue
           if (this._persistenceBinding !== persistenceBinding) continue
         } catch (error: unknown) {
           if (isAbort(error) || signal?.aborted) {
@@ -949,12 +959,27 @@ function materializePersistenceSnapshots(
   return result
 }
 
-function samePersistenceSnapshots(
+/**
+ * Whether one observation attempt's source view stayed usable: the set of
+ * known session ids is unchanged (an addition or removal always retries, so a
+ * session appearing or disappearing mid-scan is never missed), and every
+ * session this attempt actually inspected still has the same revision and
+ * header in a freshly re-listed snapshot. A session this attempt did NOT
+ * inspect changing its revision does not fail this check — that session's own
+ * revision is picked up on its own next observation regardless, so unrelated
+ * churn elsewhere in a large, actively written corpus must not force a retry
+ * whose cost scales with corpus size rather than this attempt's actual work.
+ */
+function sameObservedSnapshots(
   before: ReadonlyMap<SessionId, ObservedPersistedSession>,
+  touched: ReadonlyMap<SessionId, ObservedPersistedSession>,
   after: ReadonlyMap<SessionId, ObservedPersistedSession>,
 ): boolean {
   if (before.size !== after.size) return false
-  for (const [id, first] of before) {
+  for (const id of before.keys()) {
+    if (!after.has(id)) return false
+  }
+  for (const [id, first] of touched) {
     const second = after.get(id)
     if (
       second === undefined
