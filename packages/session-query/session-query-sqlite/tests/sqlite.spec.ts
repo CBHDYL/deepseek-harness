@@ -1082,7 +1082,9 @@ describe('SQLite reconciliation and source lifecycle', () => {
 
     const page = await ctx.sessionQuery.searchSessions({ query: 'needle' })
     expect(page.items.map(item => item.header.id).sort()).toEqual([added.id, first.id].sort())
-    expect(TestPersistence.inspections.get(first.id)).toBe(2)
+    // A session appearing mid-scan is topped up into this same attempt rather
+    // than forcing a full-corpus retry, so `first` is inspected only once.
+    expect(TestPersistence.inspections.get(first.id)).toBe(1)
     expect(TestPersistence.inspections.get(added.id)).toBe(1)
   })
 
@@ -1134,6 +1136,53 @@ describe('SQLite reconciliation and source lifecycle', () => {
     expect(snapshotCalls).toBe(2)
     expect(TestPersistence.inspections.get(target.id)).toBe(2)
     expect(TestPersistence.inspections.get(cached.id)).toBe(1)
+  })
+
+  it('tops up through several rounds of sessions appearing in succession', async () => {
+    const first = header('topup-first')
+    TestPersistence.reset([{ meta: first, events: messageEvents('topup needle') }])
+    const ctx = await liveContext()
+    await ctx.plugin(TestPersistence)
+
+    // Each top-up round's re-listing snapshot introduces exactly one more new
+    // session, so the loop must run multiple rounds — not just absorb one
+    // addition — to reach a listing with no unknown ids.
+    const chain = ['topup-second', 'topup-third', 'topup-fourth']
+    let step = 0
+    TestPersistence.snapshotEffect = () => {
+      const id = chain[step]
+      if (id === undefined) return
+      step += 1
+      TestPersistence.set({ meta: header(id), events: messageEvents(`topup needle ${id}`) })
+    }
+
+    const page = await ctx.sessionQuery.searchSessions({ query: 'needle' })
+    expect(page.items.map(item => item.header.id).sort()).toEqual(
+      [first.id, ...chain.map(id => SessionId(id))].sort(),
+    )
+    for (const id of chain) expect(TestPersistence.inspections.get(SessionId(id))).toBe(1)
+    expect(TestPersistence.inspections.get(first.id)).toBe(1)
+  })
+
+  it('falls back to a full retry when sessions keep appearing past the top-up round budget', async () => {
+    const first = header('overrun-first')
+    TestPersistence.reset([{ meta: first, events: messageEvents('overrun needle') }])
+    const ctx = await liveContext()
+    await ctx.plugin(TestPersistence)
+
+    // An unbounded stream of new sessions must not keep the top-up loop
+    // running forever: once its round budget is exhausted, this attempt
+    // reports itself unstable and the ordinary STABLE_OBSERVATION_ATTEMPTS
+    // retry budget takes over exactly as it would for any other unstable
+    // observation, eventually failing after both attempts run out.
+    let n = 0
+    TestPersistence.snapshotEffect = () => {
+      n += 1
+      TestPersistence.set({ meta: header(`overrun-${n}`), events: messageEvents(`overrun needle ${n}`) })
+    }
+
+    await expect(ctx.sessionQuery.searchSessions({ query: 'needle' }))
+      .rejects.toThrow(expectCode('SESSION_QUERY_PERSISTENCE_FAILED'))
   })
 
   it('retries if the persistence binding changes while live sessions are observed', async () => {
