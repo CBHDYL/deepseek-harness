@@ -854,11 +854,34 @@ function locationIdentity(location: ConversationLocation): string {
   return `${location.kind}:${coordinates.turn ?? ''}:${coordinates.step ?? ''}`
 }
 
+/**
+ * Whether the Chat target reports visible activity for the shell phase.
+ *
+ * Standalone command history normally leaves a session blank: the shell renders
+ * no transcript, because a command is not a turn. A command that produced an
+ * outcome carrying text is the exception. The host durably logged a result the
+ * user asked for, so hiding it leaves them no evidence the command ran at all —
+ * which is what a long-running command looks like while it is the only thing in
+ * the session. A command with no text outcome keeps the previous behaviour, and
+ * the session itself stays blank: surfacing and workspace reuse are unchanged.
+ * @param snapshot - the latest Chat snapshot.
+ * @returns whether the snapshot carries something the shell must show.
+ */
+function hasVisibleActivity(snapshot: ChatSnapshot): boolean {
+  return snapshot.order.some((key) => {
+    const node = snapshot.nodes.get(key)
+    if (node === undefined) return false
+    if (node.kind !== 'command') return true
+    const outcome = (node.data as { readonly outcome?: { readonly text?: unknown } }).outcome
+    return typeof outcome?.text === 'string' && outcome.text.length > 0
+  })
+}
+
 /** Chat target factory contributed to the Conversation view registry. */
 export const chatViewDefinition: ConversationViewDefinition<ChatConversationViewNode, ChatSnapshot> = {
   target: 'chat',
   create: () => new ChatSnapshotBuilder(),
-  isActive: snapshot => snapshot.order.some(key => snapshot.nodes.get(key)?.kind !== 'command'),
+  isActive: hasVisibleActivity,
 }
 
 /**
