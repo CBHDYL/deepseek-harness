@@ -10,6 +10,7 @@ import type {
 } from '@deepseek-ai/dsh-api-session-controller/types'
 import {
   ConversationNodeAssembler,
+  conversationPhase,
   type ConversationNodeDefinition,
   type ConversationViewDefinition,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -212,6 +213,72 @@ describe('built-in conversation node Definitions', () => {
     expect(current.order).toHaveLength(1)
     expect(current.nodes.get(current.order[0] ?? '')?.kind).toBe('command')
     expect(chatViewDefinition.isActive?.(current)).toBe(false)
+  })
+
+  it('treats a command outcome carrying text as visible activity', () => {
+    const value = assembler([
+      at(1, 'command/run', {
+        commandId: 'command-1',
+        name: 'test',
+        source: { kind: 'user' },
+      }),
+      at(2, 'command/done', {
+        commandId: 'command-1',
+        kind: 'success',
+        text: '40/40 tests passed. Report: /tmp/report.html',
+      }),
+    ])
+    const current = snapshot(value)
+
+    // A session whose only content is this result stays blank; the shell still
+    // has to render it, or a run that reported its outcome leaves no trace.
+    expect(current.nodes.get(current.order[0] ?? '')?.kind).toBe('command')
+    expect(chatViewDefinition.isActive?.(current)).toBe(true)
+  })
+
+  it('treats a command error outcome as visible activity', () => {
+    const value = assembler([
+      at(1, 'command/run', {
+        commandId: 'command-1',
+        name: 'test',
+        source: { kind: 'user' },
+      }),
+      at(2, 'command/done', {
+        commandId: 'command-1',
+        kind: 'error',
+        text: 'no configuration file at /tmp/suite.yml',
+      }),
+    ])
+    const current = snapshot(value)
+
+    expect(chatViewDefinition.isActive?.(current)).toBe(true)
+  })
+
+  it('reaches the active shell phase for a text-bearing outcome, so the shell renders it', () => {
+    // The seam the defect lived in: a blank session plus the Chat target's
+    // activity is what ConversationSession reads before it returns null. Driving
+    // both modules here keeps the pair honest without an assembled browser.
+    const chat = snapshot(assembler([
+      at(1, 'command/run', { commandId: 'command-1', name: 'test', source: { kind: 'user' } }),
+      at(2, 'command/done', { commandId: 'command-1', kind: 'success', text: '40/40 tests passed.' }),
+    ]))
+    const activeTargets = chatViewDefinition.isActive?.(chat) === true ? new Set(['chat']) : new Set<string>()
+    // Only the four lifecycle facts conversationPhase reads are meaningful here.
+    const blank = { blank: true, awaitingFirstTurn: true, running: false, promptAttempted: false }
+
+    expect(conversationPhase(blank as never, { views: { get: () => undefined }, activeTargets })).toBe('active')
+  })
+
+  it('leaves a silent command in the blank phase the shell hides', () => {
+    const chat = snapshot(assembler([
+      at(1, 'command/run', { commandId: 'command-1', name: 'help', source: { kind: 'user' } }),
+      at(2, 'command/done', { commandId: 'command-1', kind: 'success' }),
+    ]))
+    const activeTargets = chatViewDefinition.isActive?.(chat) === true ? new Set(['chat']) : new Set<string>()
+    const blank = { blank: true, awaitingFirstTurn: true, running: false, promptAttempted: false }
+
+    expect(activeTargets.size).toBe(0)
+    expect(conversationPhase(blank as never, { views: { get: () => undefined }, activeTargets })).toBe('blank')
   })
 
   it('keeps the Turn rail projection current when a chunk updates one node in place', () => {
