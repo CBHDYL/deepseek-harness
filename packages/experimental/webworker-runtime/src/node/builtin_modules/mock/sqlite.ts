@@ -1,7 +1,9 @@
 /**
- * `node:sqlite` stub. The web profile configures session-query-sqlite with
- * `:memory:` and `openAt: never`, so no database is opened during the acceptance
- * chain; reaching the constructor means that configuration changed.
+ * `node:sqlite` stub. The worker host pins session-query-sqlite to
+ * `openAt: never` at boot (see bootPatches in ../worker-host.ts), so no database
+ * is opened during the acceptance chain; reaching the constructor means that
+ * composition changed. The Web bundle alone enables the index, with
+ * `backgroundWarmUp` opening it at activation, which this host cannot serve.
  */
 import { notAvailableError, notImplementedFail } from '../../notImplementedFail.ts'
 

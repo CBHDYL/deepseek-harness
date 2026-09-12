@@ -409,6 +409,16 @@ function bootPatches(
   if (jsonl !== undefined) {
     patches.push({ id: 'session-persistence-jsonl', config: { ...configOf(jsonl), compression: 'none' } })
   }
+  // This host provides no `node:sqlite` (see ./node/builtin_modules/mock/sqlite.ts).
+  // The Web bundle enables the full-text index with `backgroundWarmUp`, which opens
+  // the database at activation regardless of `openAt: first-search`, so the
+  // composition has to be pinned to the policy that never opens one. The row may
+  // be absent: the base bundle mounts it, and a composition that omits it keeps
+  // the search calls failing closed instead.
+  const sessionQuery = find(rows, 'session-query-sqlite')
+  if (sessionQuery !== undefined) {
+    patches.push({ id: 'session-query-sqlite', config: { ...configOf(sessionQuery), openAt: 'never' } })
+  }
   return { patches, presetOverlay }
 }
 
