@@ -821,6 +821,9 @@ function rawSessionLog(session: Session): string {
   ].join('\n')
 }
 
+/** Zone a refreshed fixture's token resolves to when its history is seeded. */
+const SEED_CLIENT_TIME_ZONE = 'UTC'
+
 function normalizeWebSessionVolatiles(log: string): string {
   const normalizeValue = (value: unknown): unknown => {
     if (typeof value === 'string') {
@@ -828,7 +831,15 @@ function normalizeWebSessionVolatiles(log: string): string {
     }
     if (Array.isArray(value)) return value.map(normalizeValue)
     if (value !== null && typeof value === 'object') {
-      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizeValue(item)]))
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+        key,
+        // The browser reports its own IANA zone, so a recorded session carries
+        // whichever machine recorded it. The zone is not part of what the
+        // session asserts, and both sides of the replay comparison run through
+        // this function, so tokenizing it here keeps fixtures portable without
+        // re-recording them.
+        key === 'clientTimeZone' && typeof item === 'string' ? '{{clientTimeZone}}' : normalizeValue(item),
+      ]))
     }
     return value
   }
@@ -985,6 +996,9 @@ export function realizeSeedFixture(scaffold: WebScaffold, fixtureText: string, i
     .replace(/\{\{(message|approval|workflow|command|rpc|retry|id):([1-9]\d*)\}\}/g, (_token, kind: string, ordinal: string) =>
       fixtureIdentity(kind as 'message' | 'approval' | 'workflow' | 'command' | 'rpc' | 'retry' | 'id', Number(ordinal)))
     .split('{{cwd}}').join(scaffold.workspaceCwd)
+    // A refreshed fixture carries the zone token; a seeded session needs a zone,
+    // so it resolves to a fixed one rather than the literal placeholder.
+    .split('{{clientTimeZone}}').join(SEED_CLIENT_TIME_ZONE)
   const fixtureCwd = (JSON.parse(realized.split('\n', 1)[0]!) as { cwd?: string }).cwd
   return fixtureCwd === undefined
     ? realized
@@ -1034,10 +1048,17 @@ export async function seedSession(
   const decoded = parseSeedFixture(realizeSeedFixture(scaffold, fixtureText, id))
   const events = decoded.events
   if (events.length === 0) throw new Error('seed fixture has no events')
-  const last = events[events.length - 1]!
   // An open final turn would be mutated by resume's crash repair on first
-  // open; a committed seed must be a closed recording.
-  if (last.type !== 'turn/end') throw new Error(`seed fixture must end in turn/end, got ${last.type}`)
+  // open; a committed seed must be a closed recording. Session-scoped events
+  // that carry no turn may follow the final turn/end — the host appends
+  // action-policy candidates after it — so the invariant is about the last
+  // TURN-scoped event, not the literal last line.
+  const lastTurnEvent = [...events].reverse().find(event =>
+    (event.data as { turn?: unknown } | undefined)?.turn !== undefined)
+  if (lastTurnEvent === undefined) throw new Error('seed fixture has no turn-scoped event')
+  if (lastTurnEvent.type !== 'turn/end') {
+    throw new Error(`seed fixture must close its final turn with turn/end, got ${lastTurnEvent.type}`)
+  }
   const meta: SessionHeader = {
     version: SESSION_FORMAT_VERSION,
     id: SessionId(id),
