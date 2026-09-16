@@ -86,7 +86,10 @@ export async function runSshHelper(transport: HelperTransport): Promise<void> {
   const policy = async (raw: unknown, signal: AbortSignal): Promise<SandboxExecutionPolicy> => {
     const parsed = policySchema.parse(raw)
     const target = await ctx.fs.resolve(parsed.workspaceRoot, { signal })
-    return { ...parsed, workspaceRoot: ctx.fs.processPath(target) } as SandboxExecutionPolicy
+    // The mode and path arrive from the client's world. Mint local authority for
+    // the translated root instead of rebuilding the object: a rebuilt policy is
+    // unminted, and the enforcing filesystem refuses it as forged.
+    return ctx.sandboxPolicy.resolve({ mode: parsed.mode, workspaceRoot: ctx.fs.processPath(target) })
   }
   const asTarget = (raw: unknown): FsTarget => targetSchema.parse(raw) as FsTarget
   const peer = new SshRpcPeer(transport.input, transport.output, MAX_FRAME_BYTES, 128, async (method, raw, requestSignal) => {

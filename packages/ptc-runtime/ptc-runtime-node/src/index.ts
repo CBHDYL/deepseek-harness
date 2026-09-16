@@ -101,13 +101,26 @@ export class NodePtcRuntime extends PtcRuntime {
   }
 
   /**
+   * Accept only an authority minted by `ctx.sandboxPolicy`; a caller-constructed
+   * object re-resolves to the deployment default (fail-closed, never wider).
+   * @param policy - candidate authority supplied for this run.
+   * @returns the minted policy, or the deployment default.
+   */
+  private trustedAuthority(policy: SandboxExecutionPolicy | undefined): SandboxExecutionPolicy {
+    if (policy === undefined) return this.ctx.sandboxPolicy.resolve()
+    if (this.ctx.sandboxPolicy.isMinted(policy)) return policy
+    this.ctx.logger.warn('ptc-runtime-node: ignoring a caller-supplied unminted sandbox policy; re-resolving the deployment default')
+    return this.ctx.sandboxPolicy.resolve()
+  }
+
+  /**
    * Resolve an execution under explicit or deployment policy.
-   * @param request - Program, bindings, optional cwd/deadline, and resolved authority.
+   * @param request - Program, bindings, optional cwd/deadline, and minted authority.
    * @returns Complete execution inputs with a capped numeric budget or an explicit null deadline.
    */
   resolve(request: PtcRunRequest): PtcRunSpec {
     if (this.disposed) throw new Error('ptc-runtime-node: resolve after disposal')
-    const sandboxPolicy = request.sandboxPolicy ?? this.ctx.sandboxPolicy.resolve()
+    const sandboxPolicy = this.trustedAuthority(request.sandboxPolicy)
     const cwd = request.cwd ?? sandboxPolicy.workspaceRoot
     if (!isAbsolute(cwd)) throw new Error('ptc-runtime-node: cwd must be absolute')
     return {

@@ -64,7 +64,7 @@ interface SandboxExecutionPolicy {
 }
 ```
 
-`ctx.sandboxPolicy.resolve()` 接收活跃会话；对于已批准的重试，还接收显式模式。该服务拥有优先级与 root 回退规则，使 bash 和 fs 不必重复实现。
+`ctx.sandboxPolicy.resolve()` 接收活跃会话；对于已批准的重试还接收显式模式，对于 root 来自另一个世界的调用方还接收显式工作区边界。该服务拥有优先级与 root 回退规则，使 bash 和 fs 不必重复实现。
 
 ```ts type-equiv
 /** Inputs that select the sandbox policy for one capability call. */
@@ -73,6 +73,14 @@ interface SandboxPolicyRequest {
   session?: Session
   /** Explicit approved mode override, which outranks session policy. */
   mode?: SandboxMode
+  /**
+   * Explicit workspace boundary, outranking both the session cwd and the
+   * configured root. A caller that received a mode and root from another world
+   * (an SSH helper translating a remote path) mints local authority for them
+   * here; assembling the policy itself would produce an unminted object the
+   * enforcing backends refuse.
+   */
+  workspaceRoot?: string
 }
 ```
 
@@ -199,13 +207,25 @@ The sandbox-policy service (`ctx.sandboxPolicy`). Owns the deployment default mo
 /**
  * Resolve the complete policy for one capability call. An approved explicit
  * mode outranks the session's last `sandbox/mode` event, which outranks the
- * deployment default. A session cwd is its workspace-write boundary; the
- * configured root is the fallback for agentless calls and sessions without a
- * cwd.
+ * deployment default. Every resolved mode is capped at the deployment
+ * `maxMode` ceiling, and the returned policy is deep-frozen and recorded in
+ * this owner's minted set — enforcing backends accept only policies that
+ * pass {@link isMinted}, so a caller-constructed object can never select a
+ * mode. An explicit request root outranks a session cwd, which outranks the
+ * configured root.
  * @param request - optional session and approved mode override.
  * @returns the fully resolved per-call mode and absolute workspace root.
  */
 resolve(request: SandboxPolicyRequest = {}): SandboxExecutionPolicy
+
+/**
+ * Answer whether this owner minted the given policy. The enforcing
+ * filesystem and shell backends check this at every entry: a constructed
+ * object fails the check and re-resolves to the deployment default.
+ * @param policy - candidate authority to verify.
+ * @returns true only for policies this service minted.
+ */
+isMinted(policy: unknown): boolean
 
 /**
  * Read the session override without applying the deployment default.

@@ -941,6 +941,12 @@ describe('sandbox escalation API (write/edit)', () => {
       workspaceRoot: '/session-project',
       sessionId: SessionId('sess-fs-esc'),
     }])
+    // The minted set, not just the fields: the enforcing filesystem backend accepts
+    // only an authority minted by ctx.sandboxPolicy. An object assembled from
+    // the standing policy carries the same fields and would be re-resolved to
+    // the deployment default, so the approved escalation would silently not
+    // apply. Asserting the fields alone cannot see that.
+    expect(ctx.sandboxPolicy.isMinted(fs.stamped[0])).toBe(true)
   })
 
   it('a rejected escalation fails closed with its own text and never mutates', async () => {

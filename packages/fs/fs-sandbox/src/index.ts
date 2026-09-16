@@ -109,6 +109,19 @@ export class SandboxedFileSystem extends LocalFileSystem {
   }
 
   /**
+   * Accept only an authority minted by `ctx.sandboxPolicy`; a caller-constructed
+   * object re-resolves to the deployment default (fail-closed, never wider).
+   * @param policy - candidate authority supplied for this call.
+   * @returns the minted policy, or the deployment default.
+   */
+  private trustedAuthority(policy: SandboxExecutionPolicy | undefined): SandboxExecutionPolicy {
+    if (policy === undefined) return this.ctx.sandboxPolicy.resolve()
+    if (this.ctx.sandboxPolicy.isMinted(policy)) return policy
+    this.ctx.logger.warn('fs-sandbox: ignoring a caller-supplied unminted sandbox policy; re-resolving the deployment default')
+    return this.ctx.sandboxPolicy.resolve()
+  }
+
+  /**
    * Enforce the per-call policy against `target` and return the EXACT target the
    * mutation must use, so the checked identity is the mutated one (no
    * check-here-write-there TOCTOU). `read-only` denies; `workspace-write`
@@ -120,7 +133,7 @@ export class SandboxedFileSystem extends LocalFileSystem {
    * and the escalation hint.
    */
   private async checkedTarget(target: FsTarget, sandboxPolicy?: SandboxExecutionPolicy): Promise<FsTarget> {
-    const policy = sandboxPolicy ?? this.ctx.sandboxPolicy.resolve()
+    const policy = this.trustedAuthority(sandboxPolicy)
     const { mode } = policy
     if (mode === 'danger-full-access') return target
     if (mode === 'read-only') {

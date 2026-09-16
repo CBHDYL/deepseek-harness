@@ -13,7 +13,6 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
 import { resolvePwshPath } from '@deepseek-ai/dsh-pwsh-local'
 import { LocalSandboxProvider } from '@deepseek-ai/dsh-sandbox-local'
 import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
@@ -33,6 +32,13 @@ describe.skipIf(!isWin32 || !pwshAvailable())('pwsh-sandbox real ACL confinement
   let secretFile!: string
   let escapeFile!: string
   let executor!: SandboxPwshExecutor
+  let ctx: Context | undefined
+
+  /** The mounted context, or an error naming the missing setup. */
+  function mountedContext(): Context {
+    if (ctx === undefined) throw new Error('beforeAll() has not mounted a context')
+    return ctx
+  }
 
   beforeAll(async () => {
     // The workspace escape sits under the profile. A separate directory under
@@ -46,7 +52,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('pwsh-sandbox real ACL confinement
     writeFileSync(secretFile, 'top secret - must stay readable to prove the read boundary')
     escapeFile = join(scratchRoot, 'escaped.txt')
 
-    const ctx = new Context()
+    ctx = new Context()
     await ctx.plugin(LocalSandboxProvider, {})
     await ctx.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: writableDir })
     await ctx.plugin(LocalSubprocessRuntime)
@@ -60,7 +66,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('pwsh-sandbox real ACL confinement
   })
 
   it('read-only: ordinary path writes denied, reads fine, partial and denial facts ride the result', async () => {
-    const policy: SandboxExecutionPolicy = { mode: 'read-only', workspaceRoot: writableDir }
+    const policy = mountedContext().sandboxPolicy.resolve({ mode: 'read-only', workspaceRoot: writableDir })
     const probe = [
       "$ErrorActionPreference='SilentlyContinue';",
       `try{Set-Content -Path '${writableDir}\\ro-write.txt' -Value ok -ErrorAction Stop;'TARGET-WRITE: OK'}catch{'TARGET-WRITE: DENIED'};`,
@@ -88,7 +94,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('pwsh-sandbox real ACL confinement
   }, 60_000)
 
   it('workspace-write: workspace and private temp writable, ambient temp and escape denied', async () => {
-    const policy: SandboxExecutionPolicy = { mode: 'workspace-write', workspaceRoot: writableDir }
+    const policy = mountedContext().sandboxPolicy.resolve({ mode: 'workspace-write', workspaceRoot: writableDir })
     const probe = [
       "$ErrorActionPreference='SilentlyContinue';",
       `try{Set-Content -Path '${writableDir}\\ww-write.txt' -Value ok -ErrorAction Stop;'TARGET-WRITE: OK'}catch{'TARGET-WRITE: DENIED'};`,

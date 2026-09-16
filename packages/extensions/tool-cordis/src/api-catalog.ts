@@ -1451,15 +1451,26 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [],
       },
       {
+        signature: 'readonly maxMode: SandboxMode',
+        description: 'The hard ceiling no resolution exceeds — the security cap for session overrides and escalations.',
+        parameters: [],
+      },
+      {
         signature: 'readonly workspaceRoot: string',
         description: 'The absolute `workspace-write` fallback root for calls without a session cwd.',
         parameters: [],
       },
       {
         signature: 'resolve(request: SandboxPolicyRequest = {}): SandboxExecutionPolicy',
-        description: 'Resolve the complete policy for one capability call. An approved explicit mode outranks the session\'s last `sandbox/mode` event, which outranks the deployment default. A session cwd is its workspace-write boundary; the configured root is the fallback for agentless calls and sessions without a cwd.',
+        description: 'Resolve the complete policy for one capability call. An approved explicit mode outranks the session\'s last `sandbox/mode` event, which outranks the deployment default. Every resolved mode is capped at the deployment `maxMode` ceiling, and the returned policy is deep-frozen and recorded in this owner\'s minted set — enforcing backends accept only policies that pass isMinted, so a caller-constructed object can never select a mode. An explicit request root outranks a session cwd, which outranks the configured root.',
         parameters: [{ name: 'request', description: 'optional session and approved mode override.' }],
         returns: 'the fully resolved per-call mode and absolute workspace root.',
+      },
+      {
+        signature: 'isMinted(policy: unknown): boolean',
+        description: 'Answer whether this owner minted the given policy. The enforcing filesystem and shell backends check this at every entry: a constructed object fails the check and re-resolves to the deployment default.',
+        parameters: [{ name: 'policy', description: 'candidate authority to verify.' }],
+        returns: 'true only for policies this service minted.',
       },
       {
         signature: 'overrideOf(session: Session): SandboxMode | undefined',
@@ -5148,7 +5159,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SandboxPolicyRequest',
-    declaration: 'export interface SandboxPolicyRequest {\n    session?: Session;\n    mode?: SandboxMode;\n}',
+    declaration: 'export interface SandboxPolicyRequest {\n    session?: Session;\n    mode?: SandboxMode;\n    workspaceRoot?: string;\n}',
   },
   {
     name: 'SaveFileAttachment',

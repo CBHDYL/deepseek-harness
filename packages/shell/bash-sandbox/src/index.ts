@@ -78,16 +78,31 @@ export class SandboxBashExecutor extends LocalBashExecutor {
   }
 
   /**
+   * Accept only an authority minted by `ctx.sandboxPolicy`; a caller-constructed
+   * object re-resolves to the deployment default (fail-closed, never wider).
+   * @param policy - candidate authority stamped on the spec.
+   * @returns the minted policy, or the deployment default.
+   */
+  private trustedAuthority(policy: SandboxExecutionPolicy | undefined): SandboxExecutionPolicy {
+    if (policy === undefined) return this.ctx.sandboxPolicy.resolve()
+    if (this.ctx.sandboxPolicy.isMinted(policy)) return policy
+    this.ctx.logger.warn('bash-sandbox: ignoring a caller-supplied unminted sandbox policy; re-resolving the deployment default')
+    return this.ctx.sandboxPolicy.resolve()
+  }
+
+  /**
    * Stamp a complete per-call policy onto the spec. Tool calls supply the
    * calling session's resolved mode and root; lower-level callers fall back to
-   * the deployment policy.
+   * the deployment policy. A caller-supplied policy must be minted by
+   * `ctx.sandboxPolicy`; a forged object is ignored and re-resolves to the
+   * deployment default (fail-closed).
    */
   override resolve(request: ShellExecRequest): ShellExecSpec {
-    return { ...super.resolve(request), sandboxPolicy: request.sandboxPolicy ?? this.ctx.sandboxPolicy.resolve() }
+    return { ...super.resolve(request), sandboxPolicy: this.trustedAuthority(request.sandboxPolicy) }
   }
 
   override async run(spec: ShellExecSpec): Promise<ShellRunResult> {
-    const policy = spec.sandboxPolicy as SandboxExecutionPolicy
+    const policy = this.trustedAuthority(spec.sandboxPolicy)
     const { mode } = policy
     if (mode === 'danger-full-access') {
       const result = await super.run(spec)
@@ -124,7 +139,7 @@ export class SandboxBashExecutor extends LocalBashExecutor {
   }
 
   override async start(spec: ShellExecSpec): Promise<ShellProcess> {
-    const policy = spec.sandboxPolicy as SandboxExecutionPolicy
+    const policy = this.trustedAuthority(spec.sandboxPolicy)
     const { mode } = policy
     if (mode === 'danger-full-access') return super.start(spec)
     const confined = await this.confine(spec.command, { ...policy, mode }, spec.signal)

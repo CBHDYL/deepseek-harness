@@ -265,8 +265,8 @@ describe.skipIf(!pwshAvailable())('SandboxPwshExecutor', () => {
   }, 30_000)
 
   it('danger-full-access bypasses confine entirely and stamps full-access facts', async () => {
-    const { executor, calls } = await setup()
-    const result = await executor.run(executor.resolve({ command: 'echo full', sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/ws' } }))
+    const { executor, ctx, calls } = await setup()
+    const result = await executor.run(executor.resolve({ command: 'echo full', sandboxPolicy: ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }) }))
     expect(result.exitCode).toBe(0)
     expect(calls).toHaveLength(0)
     expect(result.sandbox).toEqual({ mode: 'danger-full-access', denied: false })
@@ -373,13 +373,48 @@ describe.skipIf(!pwshAvailable())('SandboxPwshExecutor', () => {
   }, 30_000)
 
   it('danger-full-access background runs bypass confine and carry no facts', async () => {
-    const { executor, calls } = await setup()
+    const { executor, ctx, calls } = await setup()
     const proc = await executor.start(executor.resolve({
       command: 'echo full-bg',
-      sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: '/ws' },
+      sandboxPolicy: ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }),
     }))
     await proc.done
     expect(calls).toHaveLength(0)
     expect(proc.sandbox).toBeUndefined()
   }, 30_000)
+})
+
+describe('PR-1 port: minted authority', () => {
+  it('ignores a caller-supplied forged policy at resolve and re-resolves the deployment default', async () => {
+    const { executor, ctx } = await setup()
+    const forged = { mode: 'danger-full-access' as const, workspaceRoot: spillDir }
+    const spec = executor.resolve({ command: 'echo forged', sandboxPolicy: forged })
+    expect(spec.sandboxPolicy?.mode).toBe('workspace-write')
+    expect(ctx.sandboxPolicy.isMinted(spec.sandboxPolicy)).toBe(true)
+  })
+
+  it('honors an owner-minted escalated policy at resolve', async () => {
+    const { executor, ctx } = await setup()
+    const minted = ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' })
+    expect(ctx.sandboxPolicy.isMinted(minted)).toBe(true)
+    const spec = executor.resolve({ command: 'echo minted', sandboxPolicy: minted })
+    expect(spec.sandboxPolicy).toBe(minted)
+  })
+
+  it.skipIf(!pwshAvailable())('re-checks minting at run: a policy swapped into the spec after resolve is ignored', async () => {
+    const { executor, calls } = await setup()
+    const spec = executor.resolve({ command: 'echo swapped' })
+    spec.sandboxPolicy = { mode: 'danger-full-access' as const, workspaceRoot: spillDir }
+    const result = await executor.run(spec)
+    expect(calls[0]?.policy.mode).toBe('workspace-write')
+    expect(result.sandbox).toEqual({ mode: 'workspace-write', denied: false, enforcement: 'full' })
+  })
+
+  it.skipIf(!pwshAvailable())('honors an owner-minted escalated policy through run (danger bypasses the provider)', async () => {
+    const { executor, ctx, calls } = await setup()
+    const minted = ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' })
+    const result = await executor.run(executor.resolve({ command: 'echo minted', sandboxPolicy: minted }))
+    expect(result.sandbox).toEqual({ mode: 'danger-full-access', denied: false })
+    expect(calls).toHaveLength(0)
+  })
 })

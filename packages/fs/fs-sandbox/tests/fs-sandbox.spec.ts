@@ -206,7 +206,7 @@ describe('the per-call policy override (escalation)', () => {
     await boot('read-only')
     const path = join(workspace, 'escalated.txt')
     // Default read-only would deny; the per-call workspace-write policy allows it (contained).
-    await fs.writeText(await target(path), 'granted', undefined, undefined, { mode: 'workspace-write', workspaceRoot: workspace })
+    await fs.writeText(await target(path), 'granted', undefined, undefined, ctx.sandboxPolicy.resolve({ mode: 'workspace-write' }))
     expect(await readFile(path, 'utf8')).toBe('granted')
     // A neighboring plain call still runs under the read-only default.
     await expect(fs.writeText(await target(join(workspace, 'plain.txt')), 'x'))
@@ -216,8 +216,31 @@ describe('the per-call policy override (escalation)', () => {
   it('a danger-full-access stamp bypasses the fence for that call', async () => {
     await boot('read-only')
     const path = join(outside, 'granted-full.txt')
-    await fs.writeText(await target(path), 'full', undefined, undefined, { mode: 'danger-full-access', workspaceRoot: workspace })
+    await fs.writeText(await target(path), 'full', undefined, undefined, ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }))
     expect(await readFile(path, 'utf8')).toBe('full')
+  })
+})
+
+describe('PR-1 port: minted authority', () => {
+  it('ignores a forged per-call policy and confines by the deployment default', async () => {
+    await boot('workspace-write')
+    const forged = { mode: 'danger-full-access' as const, workspaceRoot: workspace }
+    const path = join(outside, 'forged.txt')
+    await expect(fs.writeText(await target(path), 'x', undefined, undefined, forged))
+      .rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' })
+    expect(existsSync(path)).toBe(false)
+    // The legal standing mode still works: a workspace-internal write succeeds.
+    await fs.writeText(await target(join(workspace, 'legal.txt')), 'ok')
+    expect(existsSync(join(workspace, 'legal.txt'))).toBe(true)
+  })
+
+  it('honors an owner-minted escalated policy', async () => {
+    await boot('workspace-write')
+    const minted = ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' })
+    expect(ctx.sandboxPolicy.isMinted(minted)).toBe(true)
+    const path = join(outside, 'minted.txt')
+    await fs.writeText(await target(path), 'x', undefined, undefined, minted)
+    expect(existsSync(path)).toBe(true)
   })
 })
 

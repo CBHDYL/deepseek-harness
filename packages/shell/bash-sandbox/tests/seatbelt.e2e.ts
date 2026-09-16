@@ -24,6 +24,12 @@ const probe = spawnSync('sandbox-exec', [...seatbeltProfileArgs({ mode: 'read-on
 const seatbeltUsable = probe.status === 0
 
 let ctx: Context | undefined
+
+/** The mounted context, or an error naming the missing setup. */
+function mountedContext(): Context {
+  if (ctx === undefined) throw new Error('sandboxedBash() has not mounted a context')
+  return ctx
+}
 const tempDirs: string[] = []
 
 afterEach(async () => {
@@ -121,7 +127,7 @@ describe.skipIf(!seatbeltUsable)('bash-sandbox: real Seatbelt confinement throug
     expect(strict.exitCode).not.toBe(0)
     expect(strict.sandbox).toEqual({ mode: 'read-only', denied: true, enforcement: 'full' })
     expect(existsSync(join(workdir, 'escalated.txt'))).toBe(false)
-    const retried = await bash.run(bash.resolve({ command, sandboxPolicy: { mode: 'workspace-write', workspaceRoot: workdir } }))
+    const retried = await bash.run(bash.resolve({ command, sandboxPolicy: mountedContext().sandboxPolicy.resolve({ mode: 'workspace-write', workspaceRoot: workdir }) }))
     expect(retried.exitCode).toBe(0)
     expect(retried.sandbox).toEqual({ mode: 'workspace-write', denied: false, enforcement: 'full' })
     expect(readFileSync(join(workdir, 'escalated.txt'), 'utf8')).toBe('escalated')

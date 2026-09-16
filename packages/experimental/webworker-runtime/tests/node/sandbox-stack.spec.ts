@@ -17,6 +17,13 @@ const OUTSIDE = '/dsh/home'
 let vfs: MemoryVfs
 const contexts: Context[] = []
 
+/** The context mounted by the most recent setup(), or an error naming the missing call. */
+function mountedContext(): Context {
+  const mounted = contexts.at(-1)
+  if (mounted === undefined) throw new Error('setup() has not mounted a context')
+  return mounted
+}
+
 beforeEach(() => {
   vfs = new MemoryVfs()
   setActiveVfs(vfs)
@@ -89,7 +96,7 @@ describe('Worker Landlock through the production sandbox stack', () => {
     }))
     const writable = bash.run(bash.resolve({
       command: `echo allowed > ${WORKSPACE}/writable.txt`,
-      sandboxPolicy: { mode: 'workspace-write', workspaceRoot: WORKSPACE },
+      sandboxPolicy: mountedContext().sandboxPolicy.resolve({ mode: 'workspace-write', workspaceRoot: WORKSPACE }),
     }))
     const [strictResult, writableResult] = await Promise.all([strict, writable])
     expect(strictResult.sandbox).toEqual({ mode: 'read-only', denied: true, enforcement: 'full' })

@@ -64,7 +64,7 @@ interface SandboxExecutionPolicy {
 }
 ```
 
-`ctx.sandboxPolicy.resolve()` accepts the active session and, for an approved retry, an explicit mode. The service owns precedence and root fallback so bash and fs do not repeat it.
+`ctx.sandboxPolicy.resolve()` accepts the active session, an explicit mode for an approved retry, and an explicit workspace boundary for a caller whose root comes from another world. The service owns precedence and root fallback so bash and fs do not repeat it.
 
 ```ts type-equiv
 /** Inputs that select the sandbox policy for one capability call. */
@@ -73,6 +73,14 @@ interface SandboxPolicyRequest {
   session?: Session
   /** Explicit approved mode override, which outranks session policy. */
   mode?: SandboxMode
+  /**
+   * Explicit workspace boundary, outranking both the session cwd and the
+   * configured root. A caller that received a mode and root from another world
+   * (an SSH helper translating a remote path) mints local authority for them
+   * here; assembling the policy itself would produce an unminted object the
+   * enforcing backends refuse.
+   */
+  workspaceRoot?: string
 }
 ```
 
@@ -199,13 +207,25 @@ The sandbox-policy service (`ctx.sandboxPolicy`). Owns the deployment default mo
 /**
  * Resolve the complete policy for one capability call. An approved explicit
  * mode outranks the session's last `sandbox/mode` event, which outranks the
- * deployment default. A session cwd is its workspace-write boundary; the
- * configured root is the fallback for agentless calls and sessions without a
- * cwd.
+ * deployment default. Every resolved mode is capped at the deployment
+ * `maxMode` ceiling, and the returned policy is deep-frozen and recorded in
+ * this owner's minted set — enforcing backends accept only policies that
+ * pass {@link isMinted}, so a caller-constructed object can never select a
+ * mode. An explicit request root outranks a session cwd, which outranks the
+ * configured root.
  * @param request - optional session and approved mode override.
  * @returns the fully resolved per-call mode and absolute workspace root.
  */
 resolve(request: SandboxPolicyRequest = {}): SandboxExecutionPolicy
+
+/**
+ * Answer whether this owner minted the given policy. The enforcing
+ * filesystem and shell backends check this at every entry: a constructed
+ * object fails the check and re-resolves to the deployment default.
+ * @param policy - candidate authority to verify.
+ * @returns true only for policies this service minted.
+ */
+isMinted(policy: unknown): boolean
 
 /**
  * Read the session override without applying the deployment default.

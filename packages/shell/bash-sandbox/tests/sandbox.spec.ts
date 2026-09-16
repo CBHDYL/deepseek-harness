@@ -397,24 +397,24 @@ describe('per-call sandbox policy (the session and escalation carrier)', () => {
     expect(bash.resolve({ command: 'true' }).sandboxPolicy).toEqual(executionPolicy('read-only'))
   })
 
-  it('an explicit policy outranks the default at resolve(), and the wrap follows its mode and root', async () => {
-    const { bash, calls } = await setup()
-    const explicit = executionPolicy('workspace-write', '/session/project')
+  it('an owner-minted explicit policy outranks the default at resolve(), and the wrap follows its mode and root', async () => {
+    const { ctx, bash, calls } = await setup()
+    const explicit = ctx.sandboxPolicy.resolve({ mode: 'workspace-write' })
     expect(bash.resolve({ command: 'true', sandboxPolicy: explicit }).sandboxPolicy).toEqual(explicit)
     await bash.run(bash.resolve({ command: 'true', sandboxPolicy: explicit }))
     await bash.run(bash.resolve({ command: 'true' }))
-    expect(calls.map(call => call.policy)).toEqual([explicit, executionPolicy('read-only')])
+    expect(calls.map(call => call.policy)).toEqual([explicit, ctx.sandboxPolicy.resolve()])
   })
 
   it('an escalated run reports the mode it ACTUALLY ran under', async () => {
-    const { bash } = await setup()
-    const result = await bash.run(bash.resolve({ command: 'true', sandboxPolicy: executionPolicy('workspace-write') }))
+    const { ctx, bash } = await setup()
+    const result = await bash.run(bash.resolve({ command: 'true', sandboxPolicy: ctx.sandboxPolicy.resolve({ mode: 'workspace-write' }) }))
     expect(result.sandbox).toEqual({ mode: 'workspace-write', denied: false, enforcement: 'full' })
   })
 
   it('escalating to danger-full-access bypasses the provider entirely — the grant, not a probe, is the authority there', async () => {
-    const { bash, calls } = await setup()
-    const result = await bash.run(bash.resolve({ command: 'echo free', sandboxPolicy: executionPolicy('danger-full-access') }))
+    const { ctx, bash, calls } = await setup()
+    const result = await bash.run(bash.resolve({ command: 'echo free', sandboxPolicy: ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }) }))
     expect(result.stdout.text).toBe('free\n')
     expect(result.sandbox).toEqual({ mode: 'danger-full-access', denied: false })
     expect(calls).toHaveLength(0)
@@ -424,8 +424,8 @@ describe('per-call sandbox policy (the session and escalation carrier)', () => {
     // With per-call policy, tasks under different modes are in flight at
     // once — anything keyed off the configured default would misreport the
     // escalated one at its settle stamp.
-    const { bash } = await setup()
-    const escalated = await bash.start(bash.resolve({ command: 'sleep 0.3; echo "x: Permission denied" >&2; exit 1', sandboxPolicy: executionPolicy('workspace-write') }))
+    const { ctx, bash } = await setup()
+    const escalated = await bash.start(bash.resolve({ command: 'sleep 0.3; echo "x: Permission denied" >&2; exit 1', sandboxPolicy: ctx.sandboxPolicy.resolve({ mode: 'workspace-write' }) }))
     const plain = await bash.start(bash.resolve({ command: 'true' }))
     await plain.done
     await escalated.done
@@ -434,8 +434,8 @@ describe('per-call sandbox policy (the session and escalation carrier)', () => {
   })
 
   it('an escalated danger-full-access background job carries no facts (nothing confined it)', async () => {
-    const { bash, calls } = await setup()
-    const task = await bash.start(bash.resolve({ command: 'echo bg-free', sandboxPolicy: executionPolicy('danger-full-access') }))
+    const { ctx, bash, calls } = await setup()
+    const task = await bash.start(bash.resolve({ command: 'echo bg-free', sandboxPolicy: ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }) }))
     await task.done
     expect(task.sandbox).toBeUndefined()
     expect(task.readOutput().delta).toContain('bg-free')
@@ -628,5 +628,37 @@ describe('background sandbox facts', () => {
     const task = await bash.start(bash.resolve({ command: 'sleep 30' }))
     await ctx.fiber.dispose()
     expect(task.status).toBe('killed')
+  })
+})
+
+describe('PR-1 port: minted authority', () => {
+  it('ignores a caller-supplied forged policy at resolve and re-resolves the deployment default', async () => {
+    const { bash, calls } = await setup({ mode: 'workspace-write' })
+    const forged = executionPolicy('danger-full-access')
+    const spec = bash.resolve({ command: 'echo forged', sandboxPolicy: forged })
+    expect(spec.sandboxPolicy?.mode).toBe('workspace-write')
+    const result = await bash.run(spec)
+    expect(calls[0]?.policy.mode).toBe('workspace-write')
+    expect(result.sandbox).toEqual({ mode: 'workspace-write', denied: false, enforcement: 'full' })
+  })
+
+  it('re-checks minting at run: a policy swapped into the spec after resolve is ignored', async () => {
+    const { bash, calls } = await setup({ mode: 'workspace-write' })
+    const spec = bash.resolve({ command: 'echo swapped' })
+    spec.sandboxPolicy = executionPolicy('danger-full-access')
+    const result = await bash.run(spec)
+    expect(calls[0]?.policy.mode).toBe('workspace-write')
+    expect(result.sandbox).toEqual({ mode: 'workspace-write', denied: false, enforcement: 'full' })
+  })
+
+  it('honors an owner-minted escalated policy end to end', async () => {
+    const { ctx, bash, calls } = await setup({ mode: 'read-only' })
+    const minted = ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' })
+    expect(ctx.sandboxPolicy.isMinted(minted)).toBe(true)
+    const spec = bash.resolve({ command: 'echo minted', sandboxPolicy: minted })
+    expect(spec.sandboxPolicy?.mode).toBe('danger-full-access')
+    const result = await bash.run(spec)
+    expect(result.sandbox).toEqual({ mode: 'danger-full-access', denied: false })
+    expect(calls).toHaveLength(0) // danger runs unwrapped
   })
 })

@@ -104,7 +104,10 @@ export class FsSandboxController {
         signal: exec.signal,
       },
     )
-    return { ...policy, mode: approvedMode }
+    // Mint the approved escalation through the owner so the enforcing
+    // backend's isMinted check accepts it and the deployment maxMode
+    // ceiling caps it — a constructed object would be refused as forged.
+    return this.policy?.resolve({ ...exec.agent ? { session: exec.agent.session } : {}, mode: approvedMode })
   }
 
   /**

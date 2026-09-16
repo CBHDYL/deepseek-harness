@@ -15,7 +15,7 @@ import SandboxPolicyService, { SANDBOX_MODES, setSandboxMode } from '@deepseek-a
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt, { renderContextSnapshot, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 
-async function mounted(config: { mode?: 'read-only' | 'workspace-write' | 'danger-full-access'; workspaceRoot?: string } = {}) {
+async function mounted(config: { mode?: 'read-only' | 'workspace-write' | 'danger-full-access'; maxMode?: 'read-only' | 'workspace-write' | 'danger-full-access'; workspaceRoot?: string } = {}) {
   const ctx = new Context()
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SandboxPolicyService, config)
@@ -65,6 +65,59 @@ describe('SandboxPolicyService', () => {
     } finally {
       await ctx.fiber.dispose()
     }
+  })
+
+  it('PR-1 port: caps an approved escalation at the deployment maxMode ceiling', async () => {
+    const ctx = await mounted({ mode: 'workspace-write', workspaceRoot: '/fallback', maxMode: 'workspace-write' })
+    const active = session('sess-capped', '/projects/capped')
+    expect(ctx.sandboxPolicy.resolve({ session: active, mode: 'danger-full-access' })).toEqual({
+      mode: 'workspace-write',
+      workspaceRoot: resolve('/projects/capped'),
+      sessionId: 'sess-capped',
+    })
+  })
+
+  it('PR-1 port: caps a session override at the deployment maxMode ceiling', async () => {
+    const ctx = await mounted({ mode: 'read-only', workspaceRoot: '/fallback', maxMode: 'workspace-write' })
+    const active = session('sess-capped-override', '/projects/override')
+    setSandboxMode(active, 'danger-full-access')
+    expect(ctx.sandboxPolicy.resolve({ session: active })).toEqual({
+      mode: 'workspace-write',
+      workspaceRoot: resolve('/projects/override'),
+      sessionId: 'sess-capped-override',
+    })
+  })
+
+  it('PR-1 port: fails load when the deployment default exceeds the maxMode ceiling', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionProjectionRegistry)
+    await expect(ctx.plugin(SandboxPolicyService, { mode: 'danger-full-access', maxMode: 'workspace-write' }))
+      .rejects.toThrow(/exceeds the configured maxMode ceiling/)
+  })
+
+  it('PR-1 port: an explicit request root outranks the session cwd and the configured root', async () => {
+    const ctx = await mounted({ mode: 'workspace-write', workspaceRoot: '/fallback' })
+    const active = session('sess-root', '/projects/session')
+    expect(ctx.sandboxPolicy.resolve({ session: active, workspaceRoot: '/projects/explicit' })).toEqual({
+      mode: 'workspace-write',
+      workspaceRoot: resolve('/projects/explicit'),
+      sessionId: 'sess-root',
+    })
+    // No session: the explicit root still outranks the configured fallback.
+    expect(ctx.sandboxPolicy.resolve({ workspaceRoot: '/projects/agentless' })).toEqual({
+      mode: 'workspace-write',
+      workspaceRoot: resolve('/projects/agentless'),
+    })
+  })
+
+  it('PR-1 port: mints every resolved policy so the enforcing backends can verify the minted set', async () => {
+    const ctx = await mounted({ mode: 'workspace-write', workspaceRoot: '/fallback' })
+    const resolved = ctx.sandboxPolicy.resolve()
+    expect(ctx.sandboxPolicy.isMinted(resolved)).toBe(true)
+    expect(ctx.sandboxPolicy.isMinted({ mode: 'danger-full-access', workspaceRoot: '/fallback' })).toBe(false)
+    expect(ctx.sandboxPolicy.isMinted({ ...resolved })).toBe(false)
+    expect(ctx.sandboxPolicy.isMinted(null)).toBe(false)
+    expect(ctx.sandboxPolicy.isMinted('danger-full-access')).toBe(false)
   })
 
   it('resolves the deployment policy for an agentless call', async () => {

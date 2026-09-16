@@ -24,6 +24,7 @@ import { isAbsolute } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { z as zod } from 'zod'
 import z from '@deepseek-ai/schemastery'
+import { deepFreeze } from '@deepseek-ai/dsh-util-values'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import type { Session } from '@deepseek-ai/dsh-session'
@@ -31,6 +32,9 @@ import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 
 export { SANDBOX_MODES, setSandboxMode } from './session-mode.ts'
+
+/** Widening ladder: index order is the authority order for ceiling comparisons. */
+const SANDBOX_MODE_LADDER = ['read-only', 'workspace-write', 'danger-full-access'] as const
 
 /** Preserve execution-world spelling; enforcing providers resolve filesystem identity on their host. */
 function resolveWorkspaceRoot(path: string): string {
@@ -72,6 +76,12 @@ export interface Config {
   /** File-sandbox mode a session starts from (default: `read-only`). */
   mode?: SandboxMode
   /**
+   * Hard deployment ceiling (default: `danger-full-access`, preserving the
+   * historical semantics where an approved escalation may reach the widest
+   * mode). No session override or approved escalation resolves above it.
+   */
+  maxMode?: SandboxMode
+  /**
    * Absolute fallback root for agentless calls and sessions without a cwd (default:
    * `process.cwd()`). Normal agent calls use their session cwd instead.
    */
@@ -84,6 +94,14 @@ export interface SandboxPolicyRequest {
   session?: Session
   /** Explicit approved mode override, which outranks session policy. */
   mode?: SandboxMode
+  /**
+   * Explicit workspace boundary, outranking both the session cwd and the
+   * configured root. A caller that received a mode and root from another world
+   * (an SSH helper translating a remote path) mints local authority for them
+   * here; assembling the policy itself would produce an unminted object the
+   * enforcing backends refuse.
+   */
+  workspaceRoot?: string
 }
 
 /** The sandbox-mode projection's state schema (state equals the public shape). */
@@ -111,6 +129,7 @@ export class SandboxPolicyService extends Service {
   // Inline schema call: the config catalog walks `static Config` statically.
   static Config: z<Config> = z.object({
     mode: z.union(['read-only', 'workspace-write', 'danger-full-access'] as const).default('read-only'),
+    maxMode: z.union(['read-only', 'workspace-write', 'danger-full-access'] as const).default('danger-full-access'),
     // No schema default: process.cwd() is resolved in the constructor so the
     // stored root is always absolute regardless of how it was supplied.
     workspaceRoot: z.string(),
@@ -120,14 +139,22 @@ export class SandboxPolicyService extends Service {
 
   /** The deployment default mode — the fallback beneath a session override. */
   readonly defaultMode: SandboxMode
+  /** The hard ceiling no resolution exceeds — the security cap for session overrides and escalations. */
+  readonly maxMode: SandboxMode
   /** The absolute `workspace-write` fallback root for calls without a session cwd. */
   readonly workspaceRoot: string
+  /** Authorities this owner minted — the set the enforcing backends check membership in. */
+  private readonly minted = new WeakSet<object>()
   constructor(ctx: Context, config: Config) {
     super(ctx, 'sandboxPolicy')
     // schemastery (static Config) already filled `mode`; the cast records that
     // runtime fact. `workspaceRoot` has NO schema default, so its fallback to
     // the process cwd is real branching, resolved absolute either way.
     this.defaultMode = config.mode as SandboxMode
+    this.maxMode = config.maxMode as SandboxMode
+    if (SANDBOX_MODE_LADDER.indexOf(this.defaultMode) > SANDBOX_MODE_LADDER.indexOf(this.maxMode)) {
+      throw new Error(`sandbox-policy: deployment default mode ${this.defaultMode} exceeds the configured maxMode ceiling ${this.maxMode}`)
+    }
     this.workspaceRoot = resolveWorkspaceRoot(config.workspaceRoot ?? process.cwd())
 
     ctx.sessionProjections.register({
@@ -155,19 +182,39 @@ export class SandboxPolicyService extends Service {
   /**
    * Resolve the complete policy for one capability call. An approved explicit
    * mode outranks the session's last `sandbox/mode` event, which outranks the
-   * deployment default. A session cwd is its workspace-write boundary; the
-   * configured root is the fallback for agentless calls and sessions without a
-   * cwd.
+   * deployment default. Every resolved mode is capped at the deployment
+   * `maxMode` ceiling, and the returned policy is deep-frozen and recorded in
+   * this owner's minted set — enforcing backends accept only policies that
+   * pass {@link isMinted}, so a caller-constructed object can never select a
+   * mode. An explicit request root outranks a session cwd, which outranks the
+   * configured root.
    * @param request - optional session and approved mode override.
    * @returns the fully resolved per-call mode and absolute workspace root.
    */
   resolve(request: SandboxPolicyRequest = {}): SandboxExecutionPolicy {
     const { session } = request
-    return {
-      mode: request.mode ?? (session === undefined ? undefined : this.overrideOf(session)) ?? this.defaultMode,
-      workspaceRoot: resolveWorkspaceRoot(session?.header.cwd ?? this.workspaceRoot),
+    const requested = request.mode ?? (session === undefined ? undefined : this.overrideOf(session)) ?? this.defaultMode
+    const mode = SANDBOX_MODE_LADDER.indexOf(requested) > SANDBOX_MODE_LADDER.indexOf(this.maxMode)
+      ? this.maxMode
+      : requested
+    const policy = deepFreeze<SandboxExecutionPolicy>({
+      mode,
+      workspaceRoot: resolveWorkspaceRoot(request.workspaceRoot ?? session?.header.cwd ?? this.workspaceRoot),
       ...session === undefined ? {} : { sessionId: session.id },
-    }
+    })
+    this.minted.add(policy)
+    return policy
+  }
+
+  /**
+   * Answer whether this owner minted the given policy. The enforcing
+   * filesystem and shell backends check this at every entry: a constructed
+   * object fails the check and re-resolves to the deployment default.
+   * @param policy - candidate authority to verify.
+   * @returns true only for policies this service minted.
+   */
+  isMinted(policy: unknown): boolean {
+    return typeof policy === 'object' && policy !== null && this.minted.has(policy)
   }
 
   /**

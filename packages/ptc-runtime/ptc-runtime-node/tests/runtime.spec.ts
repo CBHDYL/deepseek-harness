@@ -304,3 +304,20 @@ it('preserves empty console entries and bounds native output overflow', async ()
   const bytes = Buffer.byteLength(JSON.stringify(overflow.logs)) + Buffer.byteLength(JSON.stringify(overflow.error?.message))
   expect(bytes).toBeLessThanOrEqual(100)
 })
+
+describe('PR-1 port: minted authority', () => {
+  it('ignores a caller-supplied forged policy and re-resolves the deployment default', async () => {
+    const { ctx, runtime, cwd } = await setup({}, 'read-only')
+    const forged = { mode: 'danger-full-access' as const, workspaceRoot: cwd }
+    const spec = runtime.resolve({ program: '', bindings: [], sandboxPolicy: forged })
+    expect(spec.sandboxPolicy?.mode).toBe('read-only')
+    expect(ctx.sandboxPolicy.isMinted(spec.sandboxPolicy)).toBe(true)
+  })
+
+  it('honors an owner-minted escalated policy', async () => {
+    const { ctx, runtime } = await setup({}, 'read-only')
+    const minted = ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' })
+    expect(ctx.sandboxPolicy.isMinted(minted)).toBe(true)
+    expect(runtime.resolve({ program: '', bindings: [], sandboxPolicy: minted }).sandboxPolicy).toBe(minted)
+  })
+})
