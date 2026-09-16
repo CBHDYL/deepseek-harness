@@ -20,7 +20,8 @@ This extends the [subprocess sandbox decision](../feature/2026-07-06-sandbox.md)
 - The enforcing consumers — the filesystem backend, both shell executors, and the PTC Node runtime — accept a caller-supplied policy only when `isMinted` holds. Otherwise they warn and re-resolve the deployment default, so a forged object narrows rather than widening past it.
 - Escalation paths mint through the owner (`resolve({ session, mode: approvedMode })`) instead of spreading the standing policy, so `maxMode` also caps an approved escalation.
 - `SandboxPolicyRequest.workspaceRoot` lets a caller that received a mode and a path from another world mint local authority for them, outranking the session cwd. The SSH helper uses it to translate a client-sent policy into its own filesystem: the wire value is an intent, and the local owner issues the authority.
-- The shell executors verify the minted set at `resolve`, `run`, and `start`. A check at `resolve` alone leaves the spec mutable between resolution and execution.
+- The shell executors check `isMinted` at `resolve`, `run`, and `start`. A check at `resolve` alone leaves the spec mutable between resolution and execution.
+- `verify-sandbox-authority` admits every confinement consumer through a manifest that names where its policy comes from. A resolved owner policy elsewhere in the same file is not evidence: the PTC runtime read `request.sandboxPolicy ?? this.ctx.sandboxPolicy.resolve()`, which satisfies that check while still forwarding a forged policy.
 
 ## Alternatives considered
 

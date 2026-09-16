@@ -20,7 +20,8 @@ Status: implemented
 - 强制型消费者 —— 文件系统后端、两个 shell 执行器与 PTC Node 运行时 —— 仅在 `isMinted` 成立时接受调用方提供的策略；否则发出警告并重新解析为部署默认值，于是伪造的对象只会收窄，而不会变宽。
 - 升级路径经由所有者铸造（`resolve({ session, mode: approvedMode })`），而不是展开既有策略，因此 `maxMode` 同样约束已批准的升级。
 - `SandboxPolicyRequest.workspaceRoot` 让「从另一个世界收到模式与路径」的调用方为它们铸造本地授权，其优先级高于会话 cwd。SSH helper 用它把客户端发来的策略翻译进自己的文件系统：线上传来的值是意图，本地所有者才签发授权。
-- shell 执行器在 `resolve`、`run` 与 `start` 三处校验溯源。只在 `resolve` 校验会让 spec 在解析与执行之间保持可变。
+- shell 执行器在 `resolve`、`run` 与 `start` 三处检查 `isMinted`。只在 `resolve` 校验会让 spec 在解析与执行之间保持可变。
+- `verify-sandbox-authority` 通过一份清单接纳每个强制型消费者，并写明其策略来源。同一文件他处出现过所有者解析不构成证据：PTC 运行时曾写 `request.sandboxPolicy ?? this.ctx.sandboxPolicy.resolve()`，它满足那种检查却仍然转发了伪造策略。
 
 ## Alternatives considered
 
