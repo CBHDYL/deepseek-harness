@@ -85,6 +85,15 @@ export const SESSION_QUERY_SQLITE_SNIPPET_CHARS = 240
 // One transient source change gets a retry; repeated churn fails rather than monopolizing the queue.
 const STABLE_OBSERVATION_ATTEMPTS = 2
 
+// A session appearing mid-scan is topped up into the same attempt rather than
+// deferred to the next observation, because absorbing one new session costs the
+// same regardless of corpus size. This bounds how many times a steady trickle of
+// new sessions can keep the top-up loop going before the attempt moves on with
+// what it has inspected so far; a session still arriving past the budget is
+// picked up on its own next observation, the same as any other content this
+// attempt did not touch.
+const MAX_TOPUP_ROUNDS = 4
+
 /** SQLite module/handle opening phase; `never` disables full-text search entirely. */
 export type OpenAt = 'startup' | 'first-search' | 'never'
 
@@ -104,6 +113,13 @@ export interface Config extends SessionQueryConfig {
    * never imported or opened. Defaults to `startup`.
    */
   openAt?: OpenAt
+  /** Build the derived index once the persistence service attaches, so a first
+   *  cold build is charged to activation instead of to a search. A search issued
+   *  while the build runs waits for it through the same queue, and still fails if
+   *  its own `searchTimeoutMs` expires during that wait. Defaults to `false`:
+   *  the index is built on the first search, which the cooperative search
+   *  deadline can abort. */
+  backgroundWarmUp?: boolean
   /** SQLite journal mode. Defaults to `wal`. */
   journalMode?: JournalMode
   /** Page size when a request omits `limit`. At most `Number.MAX_SAFE_INTEGER - 1`; defaults to 20. */
@@ -121,6 +137,7 @@ export interface Config extends SessionQueryConfig {
 interface ResolvedConfig {
   path: string
   openAt: OpenAt
+  backgroundWarmUp: boolean
   journalMode: JournalMode
   defaultLimit: number
   maxLimit: number
@@ -206,6 +223,7 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
   static Config: z<Config> = z.object({
     path: z.string().required(),
     openAt: z.union(['startup', 'first-search', 'never'] as const).default('startup'),
+    backgroundWarmUp: z.boolean().default(false),
     journalMode: z.union(['wal', 'delete', 'truncate', 'persist'] as const).default('wal'),
     defaultLimit: z.number().step(1).min(1).max(SQLITE_MAX_PAGE_LIMIT).default(SESSION_QUERY_SQLITE_DEFAULT_LIMIT),
     maxLimit: z.number().step(1).min(1).max(SQLITE_MAX_PAGE_LIMIT).default(SESSION_QUERY_SQLITE_MAX_LIMIT),
@@ -248,6 +266,10 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
       const service = childCtx.sessionPersistence
       const binding = { identity: Symbol(), service }
       this._persistenceBinding = binding
+      // The binding is only observable from here, so the warm-up starts on
+      // injection rather than at activation: activation runs before an optional
+      // service attaches, where a reconcile would observe an empty corpus.
+      if (this.config.backgroundWarmUp) this._warmUp()
       childCtx.effect(() => () => {
         /* v8 ignore next -- a stale optional-service disposer cannot clear a replacement */
         if (this._persistenceBinding !== binding) return
@@ -263,6 +285,26 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
   /** Open eagerly only when activation owns the configured readiness boundary. */
   protected async [Service.init](): Promise<void> {
     if (this.config.openAt === 'startup') await this._ensureReady(undefined)
+  }
+
+  /** Proactive cold build: run the one-time observe and index in the background
+   *  once persistence attaches, so a deployment has the index ready before the
+   *  first search. Best-effort (the search-time reconcile retries). Serialized
+   *  with searches through `_tail`, so a search issued while it runs waits for
+   *  the build rather than observing a corpus midway through one; a search whose
+   *  own deadline expires during that wait still fails. */
+  private _warmUp(): void {
+    if (this.config.openAt === 'never') return
+    void (async () => {
+      try {
+        await this._serialized(undefined, async () => {
+          await this._ensureReady(undefined)
+          await this._reconcile(undefined)
+        })
+      } catch {
+        // The warm-up is best-effort; a later search reconciles on demand.
+      }
+    })()
   }
 
   override async searchSessions(
@@ -455,7 +497,7 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
         began = true
         for (const row of persistentDeletes) this._deleteSession('persisted', row.id as SessionId)
         for (const entry of persistentChanges) {
-          /* v8 ignore next -- observation loads every entry whose revision differs */
+          /* v8 ignore next -- the change list above keeps only entries that carry a loaded observation */
           if (entry.loaded === undefined) throw new Error(`missing loaded revision for session "${entry.header.id}"`)
           this._replacePersistedSession(entry.loaded, entry.revision, nextMainGeneration)
         }
@@ -510,25 +552,107 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
           const before = await persistence.list(listOptions)
           assertNotAborted(signal)
           persisted = materializePersistenceSnapshots(before)
-          for (const entry of persisted.values()) {
-            if (canReuseIndexed && indexed.get(entry.header.id)?.revision === entry.revision) continue
-            // Skip work already shadowed by a live owner. The cold read is
-            // non-mutating (interrupted turns are balanced in memory only), so
-            // an owner attaching after this check cannot cause side effects;
-            // the live-membership retry below makes the returned observation
-            // live-preferred.
-            if (initiallyLive.has(entry.header.id) || this.ctx.sessions.get(entry.header.id) !== undefined) continue
+          const knownIds = new Set<SessionId>(persisted.keys())
+          const touched = new Map<SessionId, ObservedPersistedSession>()
+
+          // Inspects one entry unless it is a cache hit (matching indexed
+          // revision) or shadowed by a live owner, mutating `persisted` and
+          // `touched` in place. Shared by the initial pass below and every later
+          // top-up round, so both apply identical cache and live-shadow rules to
+          // a session regardless of when it was discovered. The cold read is
+          // non-mutating (interrupted turns are balanced in memory only), so an
+          // owner attaching after this check cannot cause side effects; the
+          // live-membership retry below makes the returned observation
+          // live-preferred.
+          const touchEntry = async (entry: ObservedPersistedSession): Promise<void> => {
+            if (canReuseIndexed && indexed.get(entry.header.id)?.revision === entry.revision) return
+            if (initiallyLive.has(entry.header.id) || this.ctx.sessions.get(entry.header.id) !== undefined) return
+            touched.set(entry.header.id, entry)
             assertNotAborted(signal)
-            const loaded = await readColdSessionLog(persistence, entry.header.id, signal)
+            let loaded: Awaited<ReturnType<typeof readColdSessionLog>>
+            try {
+              loaded = await readColdSessionLog(persistence, entry.header.id, signal)
+            } catch (error: unknown) {
+              // A log this runtime cannot interpret is omitted from the
+              // searchable corpus; the raw log stays untouched and every
+              // compatible session is still indexed.
+              if (await isFormatUnsupported(error)) {
+                persisted.delete(entry.header.id)
+                return
+              }
+              throw error
+            }
             assertNotAborted(signal)
             assertSessionHeadersCompatible(entry.header, loaded.header)
             entry.loaded = observeSession(loaded.header, loaded.inheritedEventCount, loaded.events)
           }
-          assertNotAborted(signal)
-          const afterSnapshots = await persistence.list(listOptions)
-          assertNotAborted(signal)
-          const after = materializePersistenceSnapshots(afterSnapshots)
-          if (!samePersistenceSnapshots(persisted, after)) continue
+
+          for (const entry of persisted.values()) await touchEntry(entry)
+
+          // A session appearing between listings is topped up into this attempt
+          // instead of being deferred to the next observation, bounded by
+          // MAX_TOPUP_ROUNDS. This loop's own re-listing doubles as the freshest
+          // available snapshot for the drift check below, so no extra listing
+          // call is needed once it ends.
+          let latestListing = persisted
+          let settled = false
+          for (let round = 0; round < MAX_TOPUP_ROUNDS; round += 1) {
+            assertNotAborted(signal)
+            const afterSnapshots = await persistence.list(listOptions)
+            assertNotAborted(signal)
+            latestListing = materializePersistenceSnapshots(afterSnapshots)
+            const newEntries = [...latestListing.values()].filter(entry => !knownIds.has(entry.header.id))
+            if (newEntries.length === 0) {
+              settled = true
+              break
+            }
+            for (const entry of newEntries) {
+              persisted.set(entry.header.id, entry)
+              knownIds.add(entry.header.id)
+            }
+            for (const entry of newEntries) await touchEntry(entry)
+          }
+
+          // The listing that ended the loop is the one the final batch was read
+          // from, so comparing that batch against it would compare each entry
+          // with itself. When the budget ran out before a listing came back
+          // empty, take one more so every inspected entry is checked against a
+          // snapshot taken after its read. Sessions in it that this attempt did
+          // not touch are left to the next observation.
+          if (!settled) {
+            assertNotAborted(signal)
+            const confirmSnapshots = await persistence.list(listOptions)
+            assertNotAborted(signal)
+            latestListing = materializePersistenceSnapshots(confirmSnapshots)
+            // This listing can reveal sessions the attempt never inspected.
+            // Recording them as present keeps the reconcile from deleting a row
+            // for a session that exists, while leaving them unloaded leaves them
+            // to the next observation, exactly like a cache hit.
+            for (const [id, entry] of latestListing) {
+              if (!persisted.has(id)) persisted.set(id, entry)
+            }
+          }
+
+          // An inspected entry is kept only when its revision and header still
+          // match the freshest listing: this attempt cannot tell whether content
+          // it read mid-change is an accurate basis for the row it is about to
+          // write. A continuously changing session defers alone — its `loaded`
+          // result is discarded so `_reconcile` neither writes nor deletes its
+          // row, leaving whatever this backend already indexed for it untouched —
+          // rather than failing this attempt or forcing a corpus-wide retry; the
+          // next observation re-reads it against its then-current revision. An
+          // inspected session absent from the freshest listing has genuinely
+          // gone, independent of how many other sessions were also inspected.
+          for (const [id, entry] of touched) {
+            const current = latestListing.get(id)
+            if (current === undefined) {
+              persisted.delete(id)
+              continue
+            }
+            if (current.revision !== entry.revision || !sameHeader(current.header, entry.header)) {
+              delete entry.loaded
+            }
+          }
           if (this._persistenceBinding !== persistenceBinding) continue
         } catch (error: unknown) {
           if (isAbort(error) || signal?.aborted) {
@@ -908,22 +1032,6 @@ function materializePersistenceSnapshots(
   return result
 }
 
-function samePersistenceSnapshots(
-  before: ReadonlyMap<SessionId, ObservedPersistedSession>,
-  after: ReadonlyMap<SessionId, ObservedPersistedSession>,
-): boolean {
-  if (before.size !== after.size) return false
-  for (const [id, first] of before) {
-    const second = after.get(id)
-    if (
-      second === undefined
-      || first.revision !== second.revision
-      || !sameHeader(first.header, second.header)
-    ) return false
-  }
-  return true
-}
-
 function sameSessionIds(
   before: ReadonlySet<SessionId>,
   after: ReadonlyMap<SessionId, ObservedSession>,
@@ -933,6 +1041,27 @@ function sameSessionIds(
     if (!after.has(id)) return false
   }
   return true
+}
+
+/**
+ * Whether an error is the persistence layer's refusal to interpret a stored log.
+ * The class is resolved on demand rather than imported at module scope: this
+ * plugin declares @deepseek-ai/dsh-session-persistence an optional peer, and a
+ * value import would make the whole plugin unloadable in a deployment that
+ * mounts it without that peer.
+ * @param error - the caught value.
+ * @returns whether the persistence layer refused the log's format.
+ */
+async function isFormatUnsupported(error: unknown): Promise<boolean> {
+  try {
+    const { SessionFormatUnsupportedError } = await import('@deepseek-ai/dsh-session-persistence')
+    return error instanceof SessionFormatUnsupportedError
+  } catch {
+    // Resolving the class is what failed, not the read; report the read's own
+    // error rather than replacing it.
+    /* v8 ignore next -- a read cannot raise this error without the peer that defines it installed */
+    return false
+  }
 }
 
 function sameHeader(a: SessionHeader, b: SessionHeader): boolean {
@@ -1021,6 +1150,7 @@ function resolveConfig(config: Config): ResolvedConfig {
   const resolved: ResolvedConfig = {
     path: config.path,
     openAt: config.openAt ?? 'startup',
+    backgroundWarmUp: config.backgroundWarmUp ?? false,
     journalMode: config.journalMode ?? 'wal',
     defaultLimit: config.defaultLimit ?? SESSION_QUERY_SQLITE_DEFAULT_LIMIT,
     maxLimit: config.maxLimit ?? SESSION_QUERY_SQLITE_MAX_LIMIT,

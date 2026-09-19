@@ -9,6 +9,7 @@ import SessionStore, { SessionLogOffset, SessionSeq, SESSION_FORMAT_VERSION, Ses
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { SessionEvent, SessionHeader, SessionId as SessionIdType } from '@deepseek-ai/dsh-session'
 import SessionPersistence, {
+  SessionFormatUnsupportedError,
   SessionPersistenceNotFoundError,
   SessionPersistenceRevision,
   SessionReadOnlyError,
@@ -1017,7 +1018,7 @@ describe('SQLite reconciliation and source lifecycle', () => {
     expect(lists).toBe(2)
   })
 
-  it('retries when the snapshot population changes during observation', async () => {
+  it('tops a session added during observation up into the same attempt', async () => {
     const first = header('first')
     const added = header('added-during-list')
     TestPersistence.reset([{ meta: first, events: messageEvents('first needle') }])
@@ -1030,24 +1031,199 @@ describe('SQLite reconciliation and source lifecycle', () => {
 
     const page = await ctx.sessionQuery.searchSessions({ query: 'needle' })
     expect(page.items.map(item => item.header.id).sort()).toEqual([added.id, first.id].sort())
-    expect(TestPersistence.reads.get(first.id)).toBe(2)
+    // Absorbing the arrival costs one read of the newcomer; the settled session
+    // is not re-read, because the attempt never restarts.
+    expect(TestPersistence.reads.get(first.id)).toBe(1)
     expect(TestPersistence.reads.get(added.id)).toBe(1)
   })
 
-  it('fails after one retry when persistence snapshots keep changing', async () => {
-    const durable = header('continuous-mutation')
-    TestPersistence.reset([{ meta: durable, events: messageEvents('durable needle') }])
+  it('builds the index at activation when backgroundWarmUp is set', async () => {
+    const durable = header('warm-up')
+    TestPersistence.reset([{ meta: durable, events: messageEvents('warm needle') }])
+    const ctx = await liveContext({ path: ':memory:', backgroundWarmUp: true })
+    await ctx.plugin(TestPersistence)
+
+    // No search is issued: the cold read can only come from the warm-up.
+    await vi.waitFor(() => expect(TestPersistence.reads.get(durable.id)).toBe(1))
+    const page = await ctx.sessionQuery.searchSessions({ query: 'needle' })
+    expect(page.items.map(item => item.header.id)).toEqual([durable.id])
+  })
+
+  it('omits a session whose stored log this runtime cannot interpret', async () => {
+    const foreign = header('foreign-format')
+    TestPersistence.reset([{ meta: foreign, events: messageEvents('foreign needle') }])
     const ctx = await liveContext()
     await ctx.plugin(TestPersistence)
-    let lists = 0
-    TestPersistence.listEffect = () => {
-      lists += 1
-      TestPersistence.set({ meta: durable, events: messageEvents(`durable needle ${lists}`) })
+    TestPersistence.readEffect = () => {
+      throw new SessionFormatUnsupportedError('format v0 carries an event type this build refuses')
+    }
+
+    // The refusal removes that session from the corpus; it does not fail the search.
+    await expect(ctx.sessionQuery.searchSessions({ query: 'needle' }))
+      .resolves.toMatchObject({ items: [] })
+    expect(TestPersistence.reads.get(foreign.id)).toBe(1)
+  })
+
+  it('does not warm up a database the deployment keeps closed', async () => {
+    const durable = header('warm-up-never')
+    TestPersistence.reset([{ meta: durable, events: messageEvents('needle') }])
+    const ctx = await liveContext({ path: ':memory:', openAt: 'never', backgroundWarmUp: true })
+    await ctx.plugin(TestPersistence)
+
+    // Nothing is opened behind an explicit refusal to open.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(TestPersistence.reads.get(durable.id)).toBeUndefined()
+  })
+
+  it('propagates a read failure that is not a format refusal', async () => {
+    const durable = header('read-boom')
+    TestPersistence.reset([{ meta: durable, events: messageEvents('needle') }])
+    const ctx = await liveContext()
+    await ctx.plugin(TestPersistence)
+    TestPersistence.readEffect = () => {
+      throw new Error('read exploded')
     }
 
     await expect(ctx.sessionQuery.searchSessions({ query: 'needle' }))
       .rejects.toThrow(expectCode('SESSION_QUERY_PERSISTENCE_FAILED'))
-    expect(lists).toBe(4)
+  })
+
+  it('takes a confirming listing when the top-up budget runs out', async () => {
+    const first = header('arrival-0')
+    TestPersistence.reset([{ meta: first, events: messageEvents('needle first') }])
+    const ctx = await liveContext()
+    await ctx.plugin(TestPersistence)
+    let arrivals = 0
+    TestPersistence.listEffect = () => {
+      arrivals += 1
+      TestPersistence.set({
+        meta: header(`arrival-${arrivals}`),
+        events: messageEvents(`needle arrival ${arrivals}`),
+      })
+    }
+
+    const page = await ctx.sessionQuery.searchSessions({ query: 'needle' })
+    // A newcomer on every listing exhausts the budget instead of ending the loop
+    // on an empty diff: one initial listing, four top-up rounds, then the
+    // confirming listing that supplies the drift check's snapshot.
+    expect(arrivals).toBeGreaterThan(4)
+    expect(TestPersistence.listSignals.length).toBe(6)
+    expect(page.items.length).toBeGreaterThan(0)
+  })
+
+  it('keeps the row of a session only the confirming listing reveals', async () => {
+    const visible = header('confirm-visible')
+    const hidden = header('confirm-hidden')
+    TestPersistence.reset([
+      { meta: visible, events: messageEvents('needle visible') },
+      { meta: hidden, events: messageEvents('needle hidden') },
+    ])
+    const path = await temporaryPath('confirm.db')
+    const ctx = await liveContext({ path })
+    await ctx.plugin(TestPersistence)
+
+    // Index both first, so the hidden one has a row worth preserving.
+    await ctx.sessionQuery.searchSessions({ query: 'needle' })
+    const indexed = new DatabaseSync(path)
+    const rows = indexed.prepare('SELECT id FROM persisted_sessions').all() as Array<{ id: string }>
+    indexed.close()
+    expect(rows.map(row => row.id)).toContain(hidden.id)
+
+    // Hide it from the initial listing and from all four top-up rounds, then let
+    // the confirming listing reveal it: a session that exists must not be read as
+    // gone, and this attempt must leave it to the next observation. The visible
+    // session keeps changing so the budget is exhausted rather than settled.
+    let listings = 0
+    TestPersistence.listOverride = () => {
+      listings += 1
+      const all = [...TestPersistence.entries.values()].map(entry => ({
+        header: structuredClone(entry.meta),
+        revision: SessionPersistenceRevision(`test:${TestPersistence.revisions.get(entry.meta.id)}`),
+      }))
+      return listings <= 5 ? all.filter(snapshot => snapshot.header.id !== hidden.id) : all
+    }
+    // A newcomer on every listing is what exhausts the top-up budget, so the
+    // attempt reaches the confirming listing rather than settling early.
+    TestPersistence.listEffect = () => {
+      TestPersistence.set({
+        meta: header(`confirm-arrival-${listings}`),
+        events: messageEvents(`needle arrival ${listings}`),
+      })
+    }
+    await ctx.sessionQuery.searchSessions({ query: 'needle' })
+    TestPersistence.listOverride = undefined
+    TestPersistence.listEffect = undefined
+
+    const after = new DatabaseSync(path)
+    const survivors = (after.prepare('SELECT id FROM persisted_sessions').all() as Array<{ id: string }>).map(row => row.id)
+    after.close()
+    expect(survivors).toContain(hidden.id)
+  })
+
+  it('drops a session that disappears while the reconciliation reads it', async () => {
+    const vanishing = header('vanishing')
+    TestPersistence.reset([{ meta: vanishing, events: messageEvents('vanishing needle') }])
+    const ctx = await liveContext()
+    await ctx.plugin(TestPersistence)
+    // Removed after its read, so the initial pass inspects it and the next
+    // listing no longer carries it.
+    TestPersistence.readEffect = () => {
+      TestPersistence.entries.delete(vanishing.id)
+    }
+
+    // Gone from the confirming listing, so nothing is written for it.
+    await expect(ctx.sessionQuery.searchSessions({ query: 'needle' }))
+      .resolves.toMatchObject({ items: [] })
+  })
+
+  it('keeps a deferred session indexed instead of deleting its row', async () => {
+    const churning = header('churn-after-index')
+    TestPersistence.reset([{ meta: churning, events: messageEvents('needle before churn') }])
+    const ctx = await liveContext()
+    await ctx.plugin(TestPersistence)
+
+    // First search settles it and writes its row.
+    await expect(ctx.sessionQuery.searchSessions({ query: 'needle' }))
+      .resolves.toMatchObject({ items: [expect.objectContaining({ header: churning })] })
+
+    // Move the revision once so the next attempt's first listing is a cache miss
+    // and the entry actually reaches the drift check, then keep moving it on every
+    // listing so it can never match. The attempt must defer it rather than delete
+    // it: the row written above is what stays searchable.
+    TestPersistence.set({ meta: churning, events: messageEvents('needle churn 0') })
+    let revisions = 0
+    TestPersistence.listEffect = () => {
+      revisions += 1
+      TestPersistence.set({ meta: churning, events: messageEvents(`needle churn ${revisions}`) })
+    }
+    const page = await ctx.sessionQuery.searchSessions({ query: 'before churn' })
+    expect(revisions).toBeGreaterThan(0)
+    expect(page.items.map(item => item.header.id)).toEqual([churning.id])
+  })
+
+  it('defers a continuously changing session without failing the search', async () => {
+    const churning = header('continuous-mutation')
+    const settled = header('settled-neighbour')
+    TestPersistence.reset([
+      { meta: churning, events: messageEvents('churning needle') },
+      { meta: settled, events: messageEvents('settled needle') },
+    ])
+    const ctx = await liveContext()
+    await ctx.plugin(TestPersistence)
+    let revisions = 0
+    TestPersistence.listEffect = () => {
+      revisions += 1
+      TestPersistence.set({
+        meta: churning,
+        events: messageEvents(`churning needle ${revisions}`),
+      })
+    }
+
+    const page = await ctx.sessionQuery.searchSessions({ query: 'needle' })
+    // The neighbour every attempt could settle is served; the one whose revision
+    // never held still is deferred alone, and its row is not written.
+    expect(page.items.map(item => item.header.id)).toEqual([settled.id])
+    expect(TestPersistence.reads.get(settled.id)).toBe(1)
   })
 
   it('retries if the persistence binding changes while live sessions are observed', async () => {

@@ -2132,6 +2132,13 @@ export interface Config extends SessionQueryConfig {
    * never imported or opened. Defaults to `startup`.
    */
   openAt?: OpenAt
+  /** Build the derived index once the persistence service attaches, so a first
+   *  cold build is charged to activation instead of to a search. A search issued
+   *  while the build runs waits for it through the same queue, and still fails if
+   *  its own `searchTimeoutMs` expires during that wait. Defaults to `false`:
+   *  the index is built on the first search, which the cooperative search
+   *  deadline can abort. */
+  backgroundWarmUp?: boolean
   /** SQLite journal mode. Defaults to `wal`. */
   journalMode?: JournalMode
   /** Page size when a request omits `limit`. At most `Number.MAX_SAFE_INTEGER - 1`; defaults to 20. */

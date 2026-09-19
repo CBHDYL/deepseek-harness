@@ -44,6 +44,7 @@ kind: "package-reference"
 |---|---|---|
 | `path` | 必填 | 专用派生索引 SQLite 路径，或 `:memory:`；POSIX 上缺失的路径会以仅所有者可访问的方式创建 |
 | `openAt` | `startup` | `startup` 在激活时打开；`first-search` 把 SQLite 模块推迟到首次搜索；`never` 关闭全文搜索，继承的读取保持可用 |
+| `backgroundWarmUp` | `false` | 持久化服务接入后立即构建派生索引，使首次冷建不计入某次搜索的截止时间；预热失败则由下一次搜索按需重建 |
 | `journalMode` | `wal` | `wal`、`delete`、`truncate` 或 `persist` |
 | `defaultLimit` | `20` | 请求省略 `limit` 时的分页大小 |
 | `maxLimit` | `100` | 接受的最大请求分页大小 |

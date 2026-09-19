@@ -44,6 +44,7 @@ Choose it when you want full-text recall over prior sessions with ranking and pa
 |---|---|---|
 | `path` | required | Dedicated derived-index SQLite path, or `:memory:`; missing paths are created owner-only on POSIX |
 | `openAt` | `startup` | `startup` opens at activation; `first-search` defers the SQLite module until the first search; `never` disables full-text search while inherited reads stay available |
+| `backgroundWarmUp` | `false` | Build the derived index as soon as the persistence service attaches, so a first cold build is not charged to a search's deadline; a warm-up that fails leaves the next search to reconcile on demand |
 | `journalMode` | `wal` | `wal`, `delete`, `truncate`, or `persist` |
 | `defaultLimit` | `20` | Page size when a request omits `limit` |
 | `maxLimit` | `100` | Largest accepted request page size |
